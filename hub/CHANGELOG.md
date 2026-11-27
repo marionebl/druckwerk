@@ -1,5 +1,9 @@
 # Changelog
 
+## 3.6.0 (unreleased)
+
+- Progress from Start to the first layer. Slicing shows its percent and the slicer's step text, in the browser (the engine's progress messages) and on the Pi (step lines from the slicer log, `GET /api/jobs/{id}` has `progress` `{percent, message}`). After Start, a list of steps shows where the print is: upload to the Bambu cloud (percent), the printer downloads the plate (percent from `gcode_file_prepare_percent`), the printer prepares (stage name, such as heating the bed), then printing. The steps are on the printer card, the printer page, the queue row and the job page, and in the Start dialogs while the request runs. `GET /api/printers` adds `start` (the steps, or null) and `start_job` (the job being started, or null).
+- The bridge reads the upload percent from the daemon's `print progress` log lines, so the daemon patch and the base image stay as they are. `GET /api/print-progress/<serial>` on the bridge answers `{stage, percent}` while a print is being sent, else `{}`.
 ## 3.5.0 (unreleased)
 
 - Plates inbox. A cloud agent that cannot reach Home Assistant pushes a sliced plate to a private GitHub repo, and the app adds it to the print queue. Two new app options: `plates_repo` (default `marionebl/druckwerk-plates`) and `plates_token` (a GitHub token with Contents read and write on that repo). Without a token the feature is off and the app makes no request.

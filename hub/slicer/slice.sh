@@ -28,11 +28,13 @@ done
 # Without this the CLI slices for Cool Plate; BED must match the plate in the printer.
 $BS set "$W/process.json" curr_bed_type "\"${BED:-High Temp Plate}\""
 STEM=$(basename "$IN"); STEM=${STEM%.*}
+# SLICE_LOG lets the app read the progress while the slicer runs.
+LOG=${SLICE_LOG:-$W/log}
 # The wrapper sets up the runtime itself; LD_LIBRARY_PATH only matters for a bundled slicer.
 env -u DISPLAY -u WAYLAND_DISPLAY LC_ALL=C LD_LIBRARY_PATH="$APP/bin:$ROOT/lib" XDG_RUNTIME_DIR=${XDG_RUNTIME_DIR:-$W} "$APP/bin/studio" --datadir "$W/data" --allow-newer-file ${BS_ARGS:-} \
   --slice 1 --load-settings "$W/machine.json;$W/process.json" --load-filaments "$FL" \
-  --outputdir "$W" --export-3mf "$STEM.gcode.3mf" "$IN" >"$W/log" 2>&1 || { tail -20 "$W/log" >&2; exit 3; }
-[ -s "$W/$STEM.gcode.3mf" ] || { tail -20 "$W/log" >&2; echo "FAIL: no .gcode.3mf written" >&2; exit 3; }
+  --outputdir "$W" --export-3mf "$STEM.gcode.3mf" "$IN" >"$LOG" 2>&1 || { tail -20 "$LOG" >&2; exit 3; }
+[ -s "$W/$STEM.gcode.3mf" ] || { tail -20 "$LOG" >&2; echo "FAIL: no .gcode.3mf written" >&2; exit 3; }
 MID=$(python3 -I -c 'import json,sys;print(json.load(open(sys.argv[1]))["model_id"])' "$PROF/$PROFILE_DIR/machine/$(J "$W/machine.json" printer_model).json")
 $BS fixup "$W/$STEM.gcode.3mf" "$MID"; $BS preview "$W/$STEM.gcode.3mf"; mv "$W/$STEM.gcode.3mf" "$OUT/"
 echo "$OUT/$STEM.gcode.3mf"
