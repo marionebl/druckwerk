@@ -76,6 +76,9 @@ export const api = {
   addSpool: (s) => post('api/spools', s),
   saveSpool: (id, s) => put('api/spools/' + q(id), s),
   deleteSpool: (id) => del('api/spools/' + q(id)),
+  loadRequests: () => get('api/load-requests'),
+  askLoad: (id, printer, note) => post(`api/spools/${q(id)}/load-request`, { printer, note }),
+  cancelLoad: (id) => del('api/load-requests/' + q(id)),
   // access
   grants: () => get('api/grants'),
   addGrant: (g) => post('api/grants', g),

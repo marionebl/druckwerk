@@ -171,6 +171,7 @@ SPOOLS = [
     cloud_spool("5004", "Bambu Lab", "PLA", "PLA Matte Charcoal", "2E2E2E", None, None),
 ]
 PRICES = {"5000": 19.99, "5001": 27.5, "5002": 14.0, "5003": 32.0}
+LOAD_REQUESTS = []  # open "ask to load" requests
 SPOOLS_DOWN = {"on": False}  # test hook: the cloud library does not answer
 GRANTS = [
     {"id": "c00000000001", "user_id": "u-lena", "user_name": "Lena Tester", "printer": H2S, "role": "user",
@@ -559,6 +560,34 @@ class H(BaseHTTPRequestHandler):
             return ok({"on": SPOOLS_DOWN["on"]})
         if path.startswith("api/spools") and SPOOLS_DOWN["on"]:
             raise Err(502, "Bambu Cloud filament library: Bambu cloud answered HTTP 401 for /v1/design-user-service/my/filament/v2")
+        if path == "api/load-requests" and m == "GET":
+            return ok([r for r in LOAD_REQUESTS if admin or r["printer"] in USER_PRINTERS])
+        r = re.fullmatch(r"api/load-requests/([0-9a-f]{12})", path)
+        if r and m == "DELETE":
+            req = next((x for x in LOAD_REQUESTS if x["id"] == r.group(1)), None)
+            if not req:
+                raise Err(404, "no such load request")
+            if not admin and req["user_id"] != uid:
+                raise Err(403, "rule: only the requester or an admin of the printer can cancel this request")
+            LOAD_REQUESTS.remove(req)
+            return ok({"removed": req["id"]})
+        r = re.fullmatch(r"api/spools/(\d+)/load-request", path)
+        if r and m == "POST":
+            b = J()
+            sp = next((s for s in SPOOLS if s["id"] == r.group(1)), None)
+            if not sp:
+                raise Err(404, "no such spool")
+            if b.get("printer") not in PRINTERS or not (admin or b["printer"] in USER_PRINTERS):
+                raise Err(403, "rule: you have no active grant on this printer")
+            if not PRINTERS[b["printer"]]["ams"]:
+                raise Err(400, "this printer has no AMS")
+            old = next((x for x in LOAD_REQUESTS if x["spool_id"] == sp["id"] and x["printer"] == b["printer"]), None)
+            if old:
+                return ok(old)
+            req = {"id": secrets.token_hex(6), "spool_id": sp["id"], "spool_label": f"{sp['brand']} {sp['type']} {sp['name']}", "colour": sp["colour"],
+                   "printer": b["printer"], "user_id": uid, "user_name": IDENT[ident]["name"], "note": b.get("note") or "", "created_at": int(NOW())}
+            LOAD_REQUESTS.append(req)
+            return ok(req)
         if path == "api/spools":
             if m == "GET":
                 return ok([dict(s, price_per_kg=PRICES.get(s["id"])) for s in SPOOLS])

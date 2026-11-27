@@ -157,6 +157,31 @@ def check_cloud_down(page, go, shot):
     ALLOW_502.clear()
 
 
+def check_load_request(page, base, go, shot):
+    """The user asks for a spool, the admin sees the pill, the user cancels."""
+    card = lambda: page.locator(".spool", has_text="PLA Matte Charcoal")
+    card().get_by_role("button", name="Ask to load").click()
+    page.wait_for_selector("dialog[open]")
+    page.locator("dialog label.field", has_text="Printer").locator("select").select_option(label="Office P1S")
+    page.get_by_label("Note").fill("for the grey bracket")
+    shot("filament-load-modal")
+    page.get_by_role("button", name="Send", exact=True).click()
+    page.wait_for_selector("dialog[open]", state="detached")
+    pill = "Requested for Office P1S by Lena Tester"
+    card().get_by_text(pill).wait_for()
+    assert card().get_by_role("button", name="Cancel request").count() == 1, "the requester may cancel"
+    shot("filament-requested")
+    page.goto(f"{base}/?as=admin")  # the owner's view of the same request
+    go("#/filament", ".spool")
+    card().get_by_text(pill).wait_for()
+    assert card().get_by_role("button", name="Cancel request").count() == 1, "an admin may cancel"
+    page.goto(f"{base}/?as=user")
+    go("#/filament", ".spool")
+    card().get_by_role("button", name="Cancel request").click()
+    page.wait_for_selector(".spool:has-text('PLA Matte Charcoal') >> text=Requested for", state="detached")
+    assert card().get_by_role("button", name="Ask to load").count() == 1, "the spool can be requested again"
+
+
 def walk(page, ident, base, shot, inject):
     def go(h, wait):
         page.evaluate("h => { location.hash = h }", h)
@@ -239,6 +264,8 @@ def walk(page, ident, base, shot, inject):
         page.wait_for_selector("dialog[open]", state="detached")
         page.wait_for_selector(".spool:has-text('700 g')")
         assert "no price" in page.locator(".spool", has_text="PLA").first.text_content()
+    if MOCKED and ident == "user":
+        check_load_request(page, base, go, shot)
     # the cloud library does not answer: the tab says so instead of showing old spools
     if MOCKED:
         check_cloud_down(page, go, shot)

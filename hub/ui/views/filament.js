@@ -4,8 +4,9 @@ import { h, clear, icon, btn, field, swatch, empty, modal, attempt, money, pill,
 
 export async function mount(ctx, root) {
   const list = h('div', { class: 'grid' });
-  let printers = [], spools = [];
+  let printers = [], spools = [], requests = [];
   const canEdit = (s) => ctx.me.is_admin || (s?.printer && ctx.canManage(s.printer));
+  const canCancel = (r) => ctx.me.is_admin || r.user_id === ctx.me.user_id || ctx.canManage(r.printer);
   const pname = (serial) => printers.find((p) => p.serial === serial)?.name || serial;
   root.append(h('div', { class: 'page-head' }, h('div', null, h('h1', null, 'Filament'), h('div', { class: 'sub' }, 'Spools from your Bambu Cloud filament library, with remaining grams and your prices')),
     ctx.managesAny() && btn([icon('plus', 18), 'Add spool'], () => edit(null), 'primary')), list);
@@ -14,22 +15,43 @@ export async function mount(ctx, root) {
   const known = (n) => n != null;
 
   async function load() {
-    try { [spools, printers] = await Promise.all([api.spools(), api.printers()]); } catch (e) { clear(list, empty(e.message)); return; }
+    try {
+      // A failing request list must not hide the spools.
+      [spools, printers, requests] = await Promise.all([api.spools(), api.printers(), api.loadRequests().catch(() => [])]);
+    } catch (e) { clear(list, empty(e.message)); return; }
     draw();
   }
 
   function card(s) {
+    const mine = requests.filter((r) => r.spool_id === s.id), targets = askable(s);
     const frac = known(s.grams_left) && s.grams_total ? s.grams_left / s.grams_total : null, low = frac != null && frac < 0.15;
     return h('section', { class: 'card spool' },
       swatch(s.colour, 44),
       h('div', null, h('div', { class: 'row between' }, h('b', null, `${s.brand} ${s.type}`.trim()), s.printer ? pill(where(s), 'ok') : pill('not loaded')),
-        h('small', null, s.name)),
+        h('small', null, s.name),
+        mine.map((r) => h('div', null, pill(`Requested for ${pname(r.printer)} by ${r.user_name}`, 'warn')))),
       h('div', { class: 'bar' + (low ? ' low' : '') }, h('i', { style: `width:${Math.round((frac ?? 0) * 100)}%` })),
       h('div', { class: 'row between', style: 'grid-column:1/-1' },
         h('span', null, known(s.grams_left) ? [h('b', null, Math.round(s.grams_left) + ' g'), known(s.grams_total) && h('small', null, ` of ${s.grams_total} g`)] : h('small', null, 'unknown')),
         h('small', null, s.price_per_kg != null ? money(s.price_per_kg) + ' / kg' : 'no price')),
-      canEdit(s) && h('div', { class: 'acts' }, btn([icon('edit', 16), 'Edit'], () => edit(s), 'sm'),
-        btn([icon('trash', 16), 'Delete'], async () => { if (confirm(`Delete ${s.brand} ${s.type} (${s.name})?`) && await attempt(() => api.deleteSpool(s.id), 'Deleted')) load(); }, 'sm danger')));
+      (canEdit(s) || targets.length > 0 || mine.some(canCancel)) && h('div', { class: 'acts' },
+        targets.length > 0 && btn([icon('plus', 16), 'Ask to load'], () => ask(s, targets), 'sm'),
+        mine.filter(canCancel).map((r) => btn('Cancel request', async () => { if (await attempt(() => api.cancelLoad(r.id), 'Request cancelled')) load(); }, 'sm')),
+        canEdit(s) && btn([icon('edit', 16), 'Edit'], () => edit(s), 'sm'),
+        canEdit(s) && btn([icon('trash', 16), 'Delete'], async () => { if (confirm(`Delete ${s.brand} ${s.type} (${s.name})?`) && await attempt(() => api.deleteSpool(s.id), 'Deleted')) load(); }, 'sm danger')));
+  }
+  // Printers with an AMS that the user sees, where the spool is not loaded and not yet requested.
+  const askable = (s) => printers.filter((p) => p.ams?.length && p.serial !== s.printer && !requests.some((r) => r.spool_id === s.id && r.printer === p.serial));
+
+  function ask(s, targets) {
+    return modal('Ask to load', (close) => {
+      const sel = h('select', null, targets.map((p) => h('option', { value: p.serial }, p.name)));
+      const note = h('input', { type: 'text', maxlength: 200, placeholder: 'Optional' });
+      return h('div', { class: 'body' },
+        h('p', null, `Ask the printer owner to put ${`${s.brand} ${s.type}`.trim()} (${s.name}) into the AMS.`),
+        field('Printer', sel), field('Note', note),
+        btn('Send', async () => { if (await attempt(() => api.askLoad(s.id, sel.value, note.value.trim()), 'Request sent')) { close(true); load(); } }, 'primary'));
+    });
   }
   // What is loaded now comes first, by printer and AMS unit; then the other known spools.
   function draw() {
