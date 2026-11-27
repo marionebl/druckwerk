@@ -1,5 +1,11 @@
 """Mock of the boocloud-bridge daemon: `python3 mock_daemon.py <credentials.toml> <port>`.
-Serves the printers listed in that credentials file, reports it (and HOME) in /health, records /print bodies."""
+Serves the printers listed in that credentials file, reports it (and HOME) in /health, records /print bodies.
+Test controls by environment (they survive a restart of the mock):
+  MOCK_STARTS=<file>  one line is appended at every start
+  MOCK_IGNORE_PUSHALL=<file>  while the file exists a pushall changes nothing, like a plugin that stopped delivering MQTT
+The status is idle: sequence_id and t_utc change only when a pushall command arrives.
+  MOCK_SNAPSHOT=<file>  while the file exists /camera/<serial>/snapshot answers a JPEG instead of the callback timeout
+  MOCK_SLOW=<seconds>  a /print for slow.gcode.3mf takes this long"""
 import base64
 import json
 import os
@@ -108,7 +114,9 @@ class Handler(BaseHTTPRequestHandler):
             extra = {"fun2": "20", "ams": {"ams": DRY_UNITS}} if self.path.endswith("SERIAL001") else {}
             if self.path.endswith("SERIAL002"):
                 extra = {"fun2": "0", "ams": {"ams": DRY_UNITS}}  # a printer without remote drying
-            self.reply(200, {"print": dict({"gcode_state": "IDLE", "nozzle_temper": 21.5}, **np, **extra), "served_by": s.creds})
+            self.reply(200, {"print": dict({"gcode_state": "IDLE", "nozzle_temper": 21.5, "sequence_id": str(s.stamp),
+                                            "t_utc": s.stamp}, **np, **extra),
+                             "served_by": s.creds})
         elif self.path == "/live-log":  # mock only: stream connects and disconnects
             self.reply(200, s.live_log)
         elif self.path.startswith("/camera/") and "/live" in self.path and self.path.split("/")[2] in s.serials:
@@ -116,7 +124,16 @@ class Handler(BaseHTTPRequestHandler):
         elif self.path.startswith("/camera/") and "/snapshot" in self.path and self.path.split("/")[2] in s.live_active:
             s.live_log.append(["snapshot", self.path.split("/")[2]])  # a snapshot that reached the bridge during live
             self.reply(409, {"stage": "busy", "code": -1, "error": "a live stream is running"})
+        elif self.path.startswith("/camera/") and "/snapshot" in self.path and os.path.exists(os.environ.get("MOCK_SNAPSHOT", "/nonexistent")):
+            s.live_log.append(["snapshot", self.path.split("/")[2]])
+            data = sample_jpegs()[0]
+            self.send_response(200)
+            self.send_header("Content-Type", "image/jpeg")
+            self.send_header("Content-Length", str(len(data)))
+            self.end_headers()
+            self.wfile.write(data)
         elif self.path.startswith("/camera/") and "/snapshot" in self.path:
+            s.live_log.append(["snapshot-timeout", self.path.split("/")[2]])
             # Seen live: the plugin never calls back, and the daemon stops serving status until restarted.
             self.reply(502, {"error": "timeout after 20s waiting for camera URL callback", "stage": "mint"})
         elif self.path.startswith("/camera/") and "/url" in self.path:
@@ -128,7 +145,10 @@ class Handler(BaseHTTPRequestHandler):
 
     def do_POST(self):
         if self.path.startswith("/command/") and self.path[9:] in self.server.serials:
-            self.server.commands.append(json.loads(self.rfile.read(int(self.headers["Content-Length"]))))
+            cmd = json.loads(self.rfile.read(int(self.headers["Content-Length"])))
+            self.server.commands.append(cmd)
+            if cmd.get("pushing", {}).get("command") == "pushall" and not os.path.exists(os.environ.get("MOCK_IGNORE_PUSHALL", "/nonexistent")):
+                self.server.stamp += 1
             return self.reply(200, {"sent": True})
         if self.path != "/print":
             return self.reply(404, {"error": "unknown"})
@@ -140,6 +160,8 @@ class Handler(BaseHTTPRequestHandler):
             return self.reply(400, {"error": "missing file or params"})
         params = json.loads(parts["params"])
         self.server.prints.append({"file": parts["file"], "params": params})
+        if params["filename"] == "slow.gcode.3mf":
+            time.sleep(float(os.environ.get("MOCK_SLOW", "3")))
         if params["filename"] == "fail.gcode.3mf":
             return self.reply(502, {"result": "error", "return_code": -3140})
         self.reply(200, {"result": "sent", "return_code": -1, "print_result": -999,
@@ -156,5 +178,9 @@ if __name__ == "__main__":
     server = ThreadingHTTPServer(("127.0.0.1", port), Handler)
     server.creds, server.serials, server.prints, server.commands, server.live_log = creds, serials, [], [], []
     server.live_active = set()
+    server.stamp = 1000
+    if os.environ.get("MOCK_STARTS"):
+        with open(os.environ["MOCK_STARTS"], "a") as f:
+            f.write("start\n")
     print("mock daemon up for " + creds, flush=True)
     server.serve_forever()
