@@ -44,7 +44,7 @@ jobs:
       - name: App layers sit on the base layers (an app update keeps the base on the device)
         run: |
           b=$(docker image inspect "$BASE" --format '{{json .RootFS.Layers}}'); a=$(docker image inspect druckwerk-test --format '{{json .RootFS.Layers}}')
-          python3 -c "import json,sys;b,a=json.loads(sys.argv[1]),json.loads(sys.argv[2]);print(len(b),'base layers,',len(a)-len(b),'app layers');sys.exit(0 if a[:len(b)]==b else 1)" "$b" "$a"
+          python3 -c "import json,sys;b,a=json.loads(sys.argv[1]),json.loads(sys.argv[2]);print(len(b),'base layers,',len(a)-len(b),'app layers');sys.exit(0 if a[:len(b)]==b and len(a)-len(b)==1 else 1)" "$b" "$a"
       - name: Browser tools for the UI tests
         run: pip install -q playwright && python3 -m playwright install --with-deps chromium
       - name: UI end-to-end (real hub in the image, fake HA and bridge, Pi slicing)
