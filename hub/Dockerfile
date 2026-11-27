@@ -40,13 +40,14 @@ RUN /w/hub/slicer/engine/build.sh /out
 
 # ffmpeg with only what hub/bridge/server.py runs: raw H.264 and MPEG-TS in, MJPEG stills and MPEG-TS out. The Debian
 # package pulls ~400 MB of codecs and GPU libraries. Built natively on the builder of each arch.
+# hevc is only there because libavcodec 7.1 links the H.264 SEI code against the HEVC one (aom_film_grain.o).
 FROM debian:trixie-slim AS ffmpeg
 RUN apt-get update && apt-get install -y --no-install-recommends build-essential git ca-certificates && rm -rf /var/lib/apt/lists/*
 RUN git clone --depth 1 --branch n7.1.1 https://github.com/FFmpeg/FFmpeg /src && cd /src \
  && ./configure --prefix=/out --disable-everything --disable-autodetect --disable-doc --disable-debug --disable-network \
       --disable-ffplay --disable-ffprobe --disable-x86asm --enable-small --enable-static --disable-shared \
       --enable-protocol=pipe,file --enable-demuxer=h264,mpegts --enable-muxer=mpegts,image2 --enable-parser=h264 \
-      --enable-decoder=h264 --enable-encoder=mjpeg --enable-bsf=null,h264_mp4toannexb,extract_extradata \
+      --enable-decoder=h264,hevc --enable-encoder=mjpeg --enable-bsf=null,h264_mp4toannexb,extract_extradata \
       --enable-filter=buffer,buffersink,scale,format,null,fps \
  && make -j"$(nproc)" install && strip /out/bin/ffmpeg && /out/bin/ffmpeg -hide_banner -version | head -1
 
