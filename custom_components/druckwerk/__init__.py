@@ -23,7 +23,7 @@ from .const import (
     DOMAIN,
     HUB_PORT,
 )
-from .externals import serial_from_device
+from .devices import serial_from_device
 from .coordinator import SenderCoordinator
 from .hub import HubCoordinator
 from .upload import UploadView

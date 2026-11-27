@@ -18,7 +18,7 @@ from homeassistant.helpers.service import async_set_service_schema
 from homeassistant.helpers.storage import Store
 
 from .const import API_VERSION, DOMAIN
-from .externals import serial_from_device
+from .devices import serial_from_device
 from .llm_api import DruckwerkAPI
 
 if TYPE_CHECKING:
