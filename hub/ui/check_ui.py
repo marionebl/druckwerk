@@ -278,14 +278,27 @@ def check_deep_links(page, base, ident, go):
 
 
 def check_inside_ha_panel(page, base, ident):
-    """HA shows the app in an iframe whose own URL never carries our hash: the frame reads the panel URL's hash and writes its route back."""
-    page.route(f"{base}/?host=1", lambda r: r.fulfill(content_type="text/html", body=f'<iframe id="f" src="{base}/?as={ident}" style="width:100%;height:700px"></iframe>'))
+    """HA's app panel (frontend ha-panel-app.ts) shows the app in an iframe at /app/<slug><path>. The frame subscribes with
+    home-assistant/subscribe-properties, gets the path in home-assistant/properties and changes it with home-assistant/navigate."""
+    host = """<iframe id="f" src="%s/?as=%s" style="width:100%%;height:700px"></iframe><script>
+      const f = document.getElementById('f'); window.haPath = location.hash.slice(1); window.navs = [];
+      const send = () => f.contentWindow.postMessage({type: 'home-assistant/properties', narrow: false, route: {prefix: '/app/druckwerk', path: window.haPath}}, '*');
+      window.haGo = (p) => { window.haPath = p; send(); };  // HA's own URL changes (back button, link)
+      addEventListener('message', (e) => {
+        if (e.source !== f.contentWindow) return;
+        if (e.data.type === 'home-assistant/subscribe-properties') send();
+        if (e.data.type === 'home-assistant/navigate') { window.navs.push(e.data); window.haPath = e.data.path.replace('/app/druckwerk', ''); send(); }
+      });</script>""" % (base, ident)
+    page.route(f"{base}/?host=1", lambda r: r.fulfill(content_type="text/html", body=host))
     page.goto(f"{base}/?host=1#/history/{TASK_BENCHY}")
     fr = page.frame_locator("#f")
     fr.locator(".detail h1").wait_for(timeout=8000)
-    assert "Benchy for the shelf" in fr.locator("h1").text_content(), "the iframe opens the panel URL's hash"
+    assert "Benchy for the shelf" in fr.locator("h1").text_content(), "the iframe opens the HA panel path"
     fr.locator("nav.tabs a[data-id=queue]").click()
-    page.wait_for_function("() => location.hash === '#/queue'", timeout=5000)
+    page.wait_for_function("() => window.haPath === '/queue'", timeout=5000)  # the HA URL follows the app
+    assert page.evaluate("window.navs.at(-1).path") == "/app/druckwerk/queue", page.evaluate("window.navs")
+    page.evaluate(f"window.haGo('/history/{TASK_BENCHY}')")  # HA back button
+    fr.locator(".detail h1").wait_for(timeout=5000)
     page.unroute(f"{base}/?host=1")
     fresh(page, f"{base}/?as={ident}")  # back to the app itself for the rest of the walk
 
@@ -578,6 +591,10 @@ def walk(page, ident, base, shot, inject):
     if ONLY == "reslice":
         check_reslice(page, base, ident)
         return
+    if ONLY == "panel":
+        page.wait_for_selector(".pcard")
+        check_inside_ha_panel(page, base, ident)
+        return
     if ONLY == "cache":
         check_cache(page, base, ident)
         return
@@ -676,7 +693,7 @@ def walk(page, ident, base, shot, inject):
 def main():
     ap = argparse.ArgumentParser()
     ap.add_argument("--shots")
-    ap.add_argument("--only", choices=["cache", "reslice"], help="run one check only")
+    ap.add_argument("--only", choices=["cache", "reslice", "panel"], help="run one check only")
     ap.add_argument("--port", type=int, default=18099, help="port of the mock server")
     ap.add_argument("--inject-absolute", action="store_true")
     ap.add_argument("--base-url")

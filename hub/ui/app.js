@@ -21,16 +21,33 @@ ctx.managesAny = () => ctx.me.is_admin || ctx.me.printers.some((p) => p.role ===
 ctx.every = (ms, fn) => { fn(); ctx.timers.push(setInterval(fn, ms)); };
 ctx.go = (hash) => { location.hash = hash; };
 // Change the hash (a view's sort and filter, "#/filament?sort=name") without a route change or a history entry.
-ctx.replaceHash = (hash) => { try { history.replaceState(history.state, '', hash); mirrorHash(); } catch { /* the URL stays as it is */ } };
+ctx.replaceHash = (hash) => { try { history.replaceState(history.state, '', hash); toHa(); } catch { /* the URL stays as it is */ } };
 // Reslice hands the next New print screen what to start from ({slice_job, model, name, options, target, quality, tray, bed});
 // New print reads it once on mount and clears it.
 ctx.reslice = null;
 
-// The app runs in an iframe of the HA panel, whose own URL never shows our hash. The frame is same-origin with HA,
-// so mirror the route into the parent's hash and read it back on load: <HA panel URL>#/history/123 is a deep link.
-const outer = () => { try { return window.parent !== window && window.parent.location.origin === location.origin ? window.parent : null; } catch { return null; } };
-const readOuterHash = () => { const w = outer(); return w && /^#\//.test(w.location.hash) ? w.location.hash : ''; };
-const mirrorHash = () => { try { const w = outer(); if (w && w.location.hash !== location.hash) w.history.replaceState(w.history.state, '', location.hash || '#/'); } catch { /* the panel keeps its own URL */ } };
+// HA shows the app in an iframe of its app panel (frontend ha-panel-app.ts) at /app/<slug><path>. The panel sends that
+// path in home-assistant/properties and moves its own URL on home-assistant/navigate, so /app/<slug>/history/123 is a deep link.
+// Only the path goes to HA: view options after '?' (filament sort and filter) stay in the frame's hash.
+let haRoute = null;
+const appPath = () => location.hash.replace(/^#/, '').split('?')[0] || '/';
+const inPanel = window.parent !== window;
+const toHa = () => {
+  if (!haRoute) return;
+  const path = appPath();
+  if (path === (haRoute.path || '/')) return;
+  window.parent.postMessage({ type: 'home-assistant/navigate', path: haRoute.prefix + path, options: { replace: !haRoute.path } }, '*');
+};
+if (inPanel) {
+  addEventListener('message', (e) => {
+    if (e.source !== window.parent || e.data?.type !== 'home-assistant/properties' || !e.data.route) return;
+    const first = !haRoute;
+    haRoute = e.data.route;
+    if (haRoute.path && haRoute.path !== appPath()) location.hash = haRoute.path;  // HA's URL wins: first load, back button
+    else if (first) toHa();
+  });
+  window.parent.postMessage({ type: 'home-assistant/subscribe-properties' }, '*');
+}
 
 const app = document.getElementById('app');
 let main, tabs, menuPop;
@@ -82,7 +99,7 @@ async function route(keep) {
   const mine = ++seq;
   tabs.querySelectorAll('a').forEach((a) => (a.getAttribute('data-id') === id ? a.setAttribute('aria-current', 'page') : a.removeAttribute('aria-current')));
   if (!keep) { clear(main, loading()); scrollTo(0, 0); }
-  mirrorHash();
+  toHa();
   try {
     const mod = await VIEWS[id]();
     if (mine !== seq) return;
@@ -102,7 +119,6 @@ async function start() {
     return;
   }
   shell();
-  if (!location.hash) { const o = readOuterHash(); if (o) location.hash = o; }
   if (!location.hash && ctx.isAdmin() && !ctx.me.setup_done) location.hash = '#/setup';
   if (!started) {
     started = true;
