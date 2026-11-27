@@ -734,14 +734,16 @@ def count(path):
 
 
 class CameraRestartTest(unittest.TestCase):
-    """A camera URL timeout restarts the daemon only when the printer status is stale (mock controls: see mock_daemon.py)."""
+    """A camera URL timeout restarts the daemon only when the printer does not answer a pushall probe (mock controls: see mock_daemon.py).
+    The mock status is idle: it changes only after a pushall, unless MOCK_IGNORE_PUSHALL exists."""
+    GRACE = "0"
 
     def setUp(self):
         self.cloud = mock_cloud.start()
         self.dir = tempfile.TemporaryDirectory()
-        self.starts, self.freeze, self.snapshot = (os.path.join(self.dir.name, n) for n in ("starts", "freeze", "snapshot"))
-        env = {"MOCK_STARTS": self.starts, "MOCK_FREEZE": self.freeze, "MOCK_SNAPSHOT": self.snapshot, "MOCK_SLOW": "4",
-               "DW_STATUS_SAMPLE": "0.3", "DW_STALE_AFTER": "1.5", "DW_RESTART_BACKOFF": "30"}
+        self.starts, self.ignore, self.snapshot = (os.path.join(self.dir.name, n) for n in ("starts", "ignore", "snapshot"))
+        env = {"MOCK_STARTS": self.starts, "MOCK_IGNORE_PUSHALL": self.ignore, "MOCK_SNAPSHOT": self.snapshot, "MOCK_SLOW": "4",
+               "DW_STATUS_SAMPLE": "0.3", "DW_PROBE_WAIT": "2", "DW_RESTART_BACKOFF": "30", "DW_START_GRACE": self.GRACE}
         self.s = Server(self.cloud, extra_env=env)
         login(self.s, "a@example.com")
         daemon_up(self.s, self.s.base)
@@ -751,9 +753,8 @@ class CameraRestartTest(unittest.TestCase):
         self.s.close()
         self.dir.cleanup()
 
-    def freeze_status(self):
-        open(self.freeze, "w").close()
-        time.sleep(0.8)  # the monitor sees the last change before the camera call, as in a real stall
+    def pushalls(self):
+        return [c for c in self.s.daemon(self.s.base, "/commands") if c.get("pushing", {}).get("command") == "pushall"]
 
     def snap(self, path="/api/camera/SERIAL001/snapshot"):
         c = http.client.HTTPConnection("127.0.0.1", self.s.port, timeout=30)
@@ -763,36 +764,45 @@ class CameraRestartTest(unittest.TestCase):
         c.close()
         return r.status, data, r.getheader("X-Snapshot-Age")
 
-    def test_a_two_camera_timeouts_with_fresh_status_do_not_restart(self):
+    def test_a_idle_printer_that_answers_the_probe_is_not_restarted(self):
         for _ in range(2):
             self.assertEqual(self.snap()[0], 502)
-        time.sleep(3)  # longer than DW_STALE_AFTER, with several status samples
+        self.assertTrue(wait_for(lambda: self.pushalls(), 5))  # the status did not change by itself: the bridge probed
+        time.sleep(3)
         self.assertEqual(count(self.starts), 1)
         self.assertNotIn("restarting daemon", self.s.logtext())
+        self.assertRegex(self.s.logtext(), r"camera timeout \d+s after daemon start: will probe")
+        self.assertRegex(self.s.logtext(), r"camera timeout probe: status answered in \d+\.\ds, no restart")
 
-    def test_b_timeout_with_stale_status_restarts_once_then_waits_for_the_backoff(self):
-        self.freeze_status()
+    def test_a2_no_probe_without_a_camera_timeout(self):
+        time.sleep(2)
+        self.assertEqual(self.pushalls(), [])
+
+    def test_b_silent_printer_restarts_once_then_waits_for_the_backoff(self):
+        open(self.ignore, "w").close()
         self.assertEqual(self.snap()[0], 502)
         self.assertTrue(wait_for(lambda: count(self.starts) == 2, 10))
         daemon_up(self.s, self.s.base)
         self.assertEqual(self.snap()[0], 502)
-        time.sleep(4)  # status is stale again after 1.5 s, but the backoff is 30 s
+        time.sleep(4)  # a probe would run and fail, but the backoff is 30 s
         self.assertEqual(count(self.starts), 2)
         self.assertEqual(self.s.logtext().count("restarting daemon"), 1)
+        self.assertIn("camera timeout probe: no status in 2s, restarting", self.s.logtext())
 
     def test_c_restart_waits_while_a_print_upload_is_in_flight(self):
-        self.freeze_status()
+        open(self.ignore, "w").close()
         result = []
         body = {"serial": "SERIAL001", "filename": "slow.gcode.3mf", "file_b64": base64.b64encode(b"x").decode()}
         t = threading.Thread(target=lambda: result.append(self.s.req("POST", "/api/print", body)[0]))
         t.start()
         time.sleep(0.5)
         self.assertEqual(self.snap()[0], 502)
-        time.sleep(2.5)  # the status has been stale for more than DW_STALE_AFTER, the print runs for 4 s
+        time.sleep(3)  # longer than the probe wait; the print runs for 4 s
         self.assertEqual(count(self.starts), 1)
+        self.assertEqual(self.pushalls(), [])  # no probe while busy
         t.join()
         self.assertEqual(result, [200])
-        self.assertTrue(wait_for(lambda: count(self.starts) == 2, 10))  # now it may restart
+        self.assertTrue(wait_for(lambda: count(self.starts) == 2, 10))  # now it probes, gets no answer and restarts
 
     def test_d_second_snapshot_within_30_s_comes_from_the_cache(self):
         open(self.snapshot, "w").close()
@@ -812,6 +822,22 @@ class CameraRestartTest(unittest.TestCase):
         self.assertEqual(results, [200] * 3)
         calls = [e for e, who in self.s.daemon(self.s.base, "/live-log") if e == "snapshot"]
         self.assertEqual(len(calls), 1)  # one daemon call for five requests
+
+
+class CameraGraceTest(CameraRestartTest):
+    GRACE = "60"
+
+    def test_f_timeout_soon_after_the_daemon_start_is_ignored(self):
+        open(self.ignore, "w").close()
+        self.assertEqual(self.snap()[0], 502)
+        time.sleep(3)
+        self.assertEqual((count(self.starts), self.pushalls()), (1, []))
+        self.assertIn("ignored", self.s.logtext())
+
+    test_a_idle_printer_that_answers_the_probe_is_not_restarted = None
+    test_b_silent_printer_restarts_once_then_waits_for_the_backoff = None
+    test_c_restart_waits_while_a_print_upload_is_in_flight = None
+    test_d_second_snapshot_within_30_s_comes_from_the_cache = None
 
 
 class DaemonOutageTest(unittest.TestCase):

@@ -295,7 +295,7 @@ The file is stored as `/media/druckwerk/<name>` (mode 0644, replaced atomically)
 ### Picture and camera still
 
 - `GET /api/integration/printers/<serial>/image`: `200 image/png`, or `404 {error: "no preview"}`.
-- `GET /api/integration/printers/<serial>/snapshot`: `200 image/jpeg`. Online printer: the bridge's snapshot is passed through with its `X-Snapshot-Age` header, with the bridge's status and text on failure (it waits up to 90 s). A camera timeout answers 502 and does not restart the bridge daemon. Offline printer: the placeholder picture. `404` for a serial the bridge does not know.
+- `GET /api/integration/printers/<serial>/snapshot`: `200 image/jpeg`. Online printer: the bridge's snapshot is passed through with its `X-Snapshot-Age` header, with the bridge's status and text on failure (it waits up to 90 s). A camera timeout answers 502. It does not restart the bridge daemon by itself: the bridge restarts it only if a pushall probe gets no status change in 15 s. Offline printer: the placeholder picture. `404` for a serial the bridge does not know.
 
 ### Commands
 

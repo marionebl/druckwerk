@@ -11,7 +11,6 @@ import base64
 import binascii
 import contextlib
 from datetime import datetime
-import hashlib
 import http.client
 import json
 import os
@@ -45,12 +44,15 @@ DAEMON_CMD = shlex.split(env("DW_DAEMON_CMD", "/bridge.sh"))
 BACKOFF_MIN = float(env("DW_BACKOFF_MIN", "5"))
 BACKOFF_MAX = float(env("DW_BACKOFF_MAX", "60"))
 LIVE_IDLE = float(env("DW_LIVE_IDLE", "30"))  # seconds an unused live upstream stays open for a quick reopen
-# A camera URL timeout alone does not restart the daemon. It does when the printer status has not changed for STALE_AFTER
-# seconds. The H2S sends a status report every few seconds while it prints and still changes a temperature or the Wi-Fi
-# level while idle, so 60 s without any change is a real stall and not a quiet printer. The monitor samples every 5 s.
-STATUS_SAMPLE = float(env("DW_STATUS_SAMPLE", "5"))
-STALE_AFTER = float(env("DW_STALE_AFTER", "60"))
-RESTART_BACKOFF = float(env("DW_RESTART_BACKOFF", "300"))  # least seconds between two stale-status restarts
+# A camera URL timeout alone does not restart the daemon. It marks the printer as suspect. The monitor then asks the printer
+# for a full report (pushall) and restarts the daemon only if the status does not change within PROBE_WAIT seconds, or
+# /health fails for HEALTH_BAD seconds. An idle printer sends no status by itself, so passive staleness proves nothing.
+# Mint timeouts are common in the first minutes after a daemon login, so a timeout within START_GRACE of a start is ignored.
+STATUS_SAMPLE = float(env("DW_STATUS_SAMPLE", "5"))  # seconds between monitor ticks
+PROBE_WAIT = float(env("DW_PROBE_WAIT", "15"))
+HEALTH_BAD = float(env("DW_HEALTH_BAD", "60"))
+START_GRACE = float(env("DW_START_GRACE", "180"))
+RESTART_BACKOFF = float(env("DW_RESTART_BACKOFF", "300"))  # least seconds between two restarts of this kind
 SUSPECT_TTL = float(env("DW_SUSPECT_TTL", "600"))  # a camera timeout is dropped after this long without a restart
 SNAPSHOT_CACHE = float(env("DW_SNAPSHOT_CACHE", "30"))  # seconds a good snapshot is served again
 RETRY_WINDOW = float(env("DW_RETRY_WINDOW", "60"))  # seconds a print start or command waits for a daemon that is not up
@@ -163,9 +165,8 @@ class Daemon:
         self.dead = False
         self.wake = threading.Event()
         self.busy_lock, self.busy = threading.Lock(), 0  # print starts and commands in flight
-        self.seen = {}  # serial -> (hash of the last status, time it last changed)
         self.started = self.last_restart = 0.0
-        self.suspect = None  # (serial, time) of a camera URL timeout that still needs a look
+        self.suspect = None  # {serial, since, silent} of a camera URL timeout that still needs a look
         self.bad_since = None  # since when /health did not answer although the process runs
         threading.Thread(target=self.loop, daemon=True).start()
         threading.Thread(target=self.monitor, daemon=True).start()
@@ -182,48 +183,70 @@ class Daemon:
                 self.busy -= 1
 
     def camera_timeout(self, serial):
-        """The plugin may have stopped delivering status. The monitor restarts only if the status is stale."""
-        log("[%s] camera URL callback timed out, checking the printer status" % self.acc.id)
-        self.suspect = (serial, time.time())
+        """The plugin may have stopped delivering status. The monitor probes the printer before it restarts anything."""
+        age = time.time() - self.started
+        if age < START_GRACE:
+            log("[%s] camera timeout %.0fs after daemon start: within the grace period, ignored" % (self.acc.id, age))
+            return
+        log("[%s] camera timeout %.0fs after daemon start: will probe the printer status" % (self.acc.id, age))
+        self.suspect = {"serial": serial, "since": time.time(), "silent": False}
+
+    def stamp(self, serial):
+        """(sequence_id, t_utc) of the cached status; None when the daemon does not answer."""
+        try:
+            status, raw, _ = call("GET", self.acc.url("/status/" + serial), timeout=3)
+            p = json.loads(raw).get("print", {}) if status == 200 else None
+        except (Upstream, ValueError, AttributeError):
+            return None
+        return (p.get("sequence_id"), p.get("t_utc")) if isinstance(p, dict) else None
+
+    def probe(self, serial):
+        """Ask the printer for a full report; seconds until the cached status changed, None if it did not within PROBE_WAIT."""
+        began = time.time()
+        before = self.stamp(serial)
+        try:
+            call("POST", self.acc.url("/command/" + serial), {"Content-Type": "application/json"},
+                 json.dumps({"pushing": {"sequence_id": "0", "command": "pushall", "version": 1, "push_target": 1}}).encode(), timeout=15)
+        except Upstream:
+            return None
+        end = began + PROBE_WAIT
+        while time.time() < end and not self.dead:
+            now = self.stamp(serial)
+            if now is not None and now != before:
+                return time.time() - began
+            time.sleep(min(0.5, PROBE_WAIT / 10))
+        return None
 
     def sample(self, now):
-        for d in self.acc.devices():
-            serial = d.get("dev_id")
-            if not serial:
-                continue
-            try:
-                status, raw, _ = call("GET", self.acc.url("/status/" + serial), timeout=3)
-            except Upstream:
-                continue
-            if status == 200:
-                digest = hashlib.sha1(raw).digest()
-                if self.seen.get(serial, (None,))[0] != digest:
-                    self.seen[serial] = (digest, now)
-        if not self.running():
-            self.bad_since = None
-        elif daemon_json(self.acc, "/health", 3) is not None:
+        if not self.running() or daemon_json(self.acc, "/health", 3) is not None:
             self.bad_since = None
         elif self.bad_since is None:
             self.bad_since = now
 
     def check(self, now):
-        if not self.suspect:
+        s = self.suspect
+        if not s:
             return
-        serial, since = self.suspect
-        changed = max(self.seen.get(serial, (None, 0))[1], self.started)
-        if now - since > SUSPECT_TTL or changed > since:
-            self.suspect = None  # too old, or the status moved after the timeout
+        if now - s["since"] > SUSPECT_TTL:
+            self.suspect = None
             return
-        stale = now - changed > STALE_AFTER
-        dead = self.bad_since is not None and now - self.bad_since > STALE_AFTER
-        if not (stale or dead) or now - self.last_restart < RESTART_BACKOFF:
-            return
+        dead = self.bad_since is not None and now - self.bad_since > HEALTH_BAD
+        if now - self.last_restart < RESTART_BACKOFF or self.busy:
+            return  # wait; a print start or command runs, or the last restart was recent
+        if not dead and not s["silent"]:
+            answered = self.probe(s["serial"])
+            if answered is not None:
+                log("[%s] camera timeout probe: status answered in %.1fs, no restart" % (self.acc.id, answered))
+                self.suspect = None
+                return
+            log("[%s] camera timeout probe: no status in %.0fs, restarting" % (self.acc.id, PROBE_WAIT))
+            s["silent"] = True
         with self.busy_lock:
             if self.busy:
-                return  # a print start or command runs: look again at the next sample
+                return  # look again at the next tick
             self.suspect, self.last_restart = None, now
-            log("[%s] %s, restarting daemon" % (self.acc.id, "daemon does not answer /health" if dead and not stale
-                                              else "printer status unchanged for %.0f s after a camera timeout" % (now - changed)))
+            log("[%s] %s, restarting daemon" % (self.acc.id, "daemon does not answer /health" if dead
+                                              else "printer status did not change after a probe"))
             self.restart()
 
     def monitor(self):

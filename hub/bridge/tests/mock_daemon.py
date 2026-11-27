@@ -2,7 +2,8 @@
 Serves the printers listed in that credentials file, reports it (and HOME) in /health, records /print bodies.
 Test controls by environment (they survive a restart of the mock):
   MOCK_STARTS=<file>  one line is appended at every start
-  MOCK_FREEZE=<file>  while the file exists the status does not change, like a plugin that stopped delivering MQTT
+  MOCK_IGNORE_PUSHALL=<file>  while the file exists a pushall changes nothing, like a plugin that stopped delivering MQTT
+The status is idle: sequence_id and t_utc change only when a pushall command arrives.
   MOCK_SNAPSHOT=<file>  while the file exists /camera/<serial>/snapshot answers a JPEG instead of the callback timeout
   MOCK_SLOW=<seconds>  a /print for slow.gcode.3mf takes this long"""
 import base64
@@ -113,8 +114,8 @@ class Handler(BaseHTTPRequestHandler):
             extra = {"fun2": "20", "ams": {"ams": DRY_UNITS}} if self.path.endswith("SERIAL001") else {}
             if self.path.endswith("SERIAL002"):
                 extra = {"fun2": "0", "ams": {"ams": DRY_UNITS}}  # a printer without remote drying
-            tick = 0 if os.path.exists(os.environ.get("MOCK_FREEZE", "/nonexistent")) else int(time.time() * 5)
-            self.reply(200, {"print": dict({"gcode_state": "IDLE", "nozzle_temper": 21.5, "tick": tick}, **np, **extra),
+            self.reply(200, {"print": dict({"gcode_state": "IDLE", "nozzle_temper": 21.5, "sequence_id": str(s.stamp),
+                                            "t_utc": s.stamp}, **np, **extra),
                              "served_by": s.creds})
         elif self.path == "/live-log":  # mock only: stream connects and disconnects
             self.reply(200, s.live_log)
@@ -144,7 +145,10 @@ class Handler(BaseHTTPRequestHandler):
 
     def do_POST(self):
         if self.path.startswith("/command/") and self.path[9:] in self.server.serials:
-            self.server.commands.append(json.loads(self.rfile.read(int(self.headers["Content-Length"]))))
+            cmd = json.loads(self.rfile.read(int(self.headers["Content-Length"])))
+            self.server.commands.append(cmd)
+            if cmd.get("pushing", {}).get("command") == "pushall" and not os.path.exists(os.environ.get("MOCK_IGNORE_PUSHALL", "/nonexistent")):
+                self.server.stamp += 1
             return self.reply(200, {"sent": True})
         if self.path != "/print":
             return self.reply(404, {"error": "unknown"})
@@ -174,6 +178,7 @@ if __name__ == "__main__":
     server = ThreadingHTTPServer(("127.0.0.1", port), Handler)
     server.creds, server.serials, server.prints, server.commands, server.live_log = creds, serials, [], [], []
     server.live_active = set()
+    server.stamp = 1000
     if os.environ.get("MOCK_STARTS"):
         with open(os.environ["MOCK_STARTS"], "a") as f:
             f.write("start\n")
