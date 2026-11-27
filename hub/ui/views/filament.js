@@ -1,8 +1,10 @@
 // The Bambu Cloud filament library: list, edit; the AMS location is read-only and the price is kept by the hub.
 // #/filament/<spool id> shows one spool and the prints done with it.
+// Sort and filter live in the hash (#/filament?sort=remaining&material=PLA&finish=Matte) and in localStorage per user.
 import { api } from '../api.js';
 import { h, clear, icon, btn, field, swatch, empty, modal, attempt, money, pill, hex, loading, dateTime } from '../util.js';
 import * as D from './detail.js';
+import { describe } from './spoolname.js';
 
 export async function mount(ctx, root, parts = []) {
   if (parts[0]) return spoolView(ctx, root, decodeURIComponent(parts[0]));
@@ -11,8 +13,9 @@ export async function mount(ctx, root, parts = []) {
   const canEdit = (s) => ctx.me.is_admin || (s?.printer && ctx.canManage(s.printer));
   const canCancel = (r) => ctx.me.is_admin || r.user_id === ctx.me.user_id || ctx.canManage(r.printer);
   const pname = (serial) => printers.find((p) => p.serial === serial)?.name || serial;
+  const controls = h('div', { class: 'card filters', id: 'filters', hidden: true });
   root.append(h('div', { class: 'page-head' }, h('div', null, h('h1', null, 'Filament'), h('div', { class: 'sub' }, 'Spools from your Bambu Cloud filament library, with remaining grams and your prices')),
-    ctx.managesAny() && btn([icon('plus', 18), 'Add spool'], () => edit(null), 'primary')), list);
+    ctx.managesAny() && btn([icon('plus', 18), 'Add spool'], () => edit(null), 'primary')), controls, list);
 
   const where = (s) => (s.printer ? `${pname(s.printer)}${s.unit != null && s.slot != null ? ` · AMS ${s.unit + 1}·${s.slot + 1}` : ''}` : '');
   const known = (n) => n != null;
@@ -22,7 +25,8 @@ export async function mount(ctx, root, parts = []) {
       // A failing request list must not hide the spools.
       [spools, printers, requests] = await Promise.all([api.spools(), api.printers(), api.loadRequests().catch(() => [])]);
     } catch (e) { clear(list, empty(e.message)); return; }
-    draw();
+    infos.clear();
+    if (spools.length) { buildControls(); refresh(); save(); } else draw();
   }
 
   function card(s) {
@@ -32,6 +36,7 @@ export async function mount(ctx, root, parts = []) {
       swatch(s.colour, 44),
       h('div', null, h('div', { class: 'row between' }, h('b', null, h('a', { href: '#/filament/' + s.id, style: 'color:inherit;text-decoration:none' }, `${s.brand} ${s.type}`.trim() || s.name)), s.printer ? pill(where(s), 'ok') : pill('not loaded')),
         h('small', null, s.name),
+        h('div', { class: 'spoolcolour' }, `${info(s).colour} · ${info(s).finish}`),
         mine.map((r) => h('div', null, pill(`Requested for ${pname(r.printer)} by ${r.user_name}`, 'warn')))),
       h('div', { class: 'bar' + (low ? ' low' : '') }, h('i', { style: `width:${Math.round((frac ?? 0) * 100)}%` })),
       h('div', { class: 'row between', style: 'grid-column:1/-1' },
@@ -56,13 +61,88 @@ export async function mount(ctx, root, parts = []) {
         btn('Send', async () => { if (await attempt(() => api.askLoad(s.id, sel.value, note.value.trim()), 'Request sent')) { close(true); load(); } }, 'primary'));
     });
   }
-  // What is loaded now comes first, by printer and AMS unit; then the other known spools.
+  // Sort and filter. Default "Location": what is loaded now comes first, by printer and AMS unit, then the other spools.
+  const SORTS = { location: 'Location', remaining: 'Remaining (g)', percent: 'Remaining (%)', name: 'Name', material: 'Material', vendor: 'Vendor' };
+  const FILTERS = { material: 'Material', finish: 'Finish' };
+  const store = `dw1:${ctx.me.user_id}:filament-view`;
+  const infos = new Map();
+  const info = (s) => infos.get(s.id) || infos.set(s.id, describe(s)).get(s.id);
+  const frac = (s) => (known(s.grams_left) && s.grams_total ? s.grams_left / s.grams_total : null);
+  const KEY = { remaining: (s) => s.grams_left, percent: frac, name: (s) => s.name, material: (s) => info(s).material, vendor: (s) => s.brand };
+  const state = readState();
+  function readState() {
+    const q = new URLSearchParams(location.hash.split('?')[1] || '');
+    let src = q;
+    if (!['sort', 'dir', ...Object.keys(FILTERS)].some((k) => q.has(k))) {
+      try { src = new URLSearchParams(localStorage.getItem(store) || ''); } catch { src = new URLSearchParams(); }
+    }
+    const sort = SORTS[src.get('sort')] ? src.get('sort') : 'location';
+    return { sort, desc: src.get('dir') === 'desc', material: new Set((src.get('material') || '').split(',').filter(Boolean)), finish: new Set((src.get('finish') || '').split(',').filter(Boolean)) };
+  }
+  function save() {
+    const q = new URLSearchParams();
+    if (state.sort !== 'location') q.set('sort', state.sort);
+    if (state.desc && state.sort !== 'location') q.set('dir', 'desc');
+    for (const k of Object.keys(FILTERS)) if (state[k].size) q.set(k, [...state[k]].join(','));
+    const text = q.toString().replace(/%2C/g, ',');
+    try { localStorage.setItem(store, text); } catch { /* the hash still carries it */ }
+    ctx.replaceHash('#/filament' + (text ? '?' + text : ''));
+  }
+  const passes = (s, except) => Object.keys(FILTERS).every((k) => k === except || !state[k].size || state[k].has(info(s)[k]));
+  function ordered(items) {
+    if (state.sort === 'location') return items;
+    const key = KEY[state.sort], dir = state.desc ? -1 : 1;
+    const num = state.sort === 'remaining' || state.sort === 'percent';
+    // An unknown remaining stays last in both directions.
+    return [...items].sort((a, b) => {
+      const x = key(a), y = key(b);
+      if (num && (x == null || y == null)) return (x == null) - (y == null);
+      return dir * (num ? x - y : String(x).localeCompare(String(y))) || a.name.localeCompare(b.name);
+    });
+  }
+  let chips = [], dirBtn, sortSel;
+  function buildControls() {
+    const options = (k) => [...new Set(spools.map((s) => info(s)[k]))].sort((a, b) => a.localeCompare(b));
+    for (const k of Object.keys(FILTERS)) for (const v of [...state[k]]) if (!options(k).includes(v)) state[k].delete(v);
+    sortSel = h('select', { onchange: () => { state.sort = sortSel.value; save(); refresh(); } }, Object.entries(SORTS).map(([v, t]) => h('option', { value: v }, t)));
+    dirBtn = h('button', { type: 'button', class: 'chip', 'aria-label': 'Sort direction', onclick: () => { state.desc = !state.desc; save(); refresh(); } });
+    chips = [];
+    const group = (k) => h('div', { class: 'fgroup', role: 'group', 'aria-label': FILTERS[k] }, h('b', null, FILTERS[k]),
+      options(k).map((v) => {
+        const c = h('button', { type: 'button', class: 'chip', 'aria-pressed': 'false', 'data-filter': k, 'data-value': v, onclick: () => {
+          state[k].has(v) ? state[k].delete(v) : state[k].add(v); save(); refresh(); } });
+        chips.push([c, k, v]);
+        return c;
+      }));
+    clear(controls,
+      h('div', { class: 'fgroup' }, h('label', { class: 'row' }, h('b', null, 'Sort by'), sortSel), dirBtn),
+      group('material'), group('finish'),
+      h('div', { class: 'fgroup' }, h('button', { type: 'button', class: 'chip', 'data-clear': '1', onclick: clearFilters }, 'Clear filters')));
+    controls.hidden = false;
+  }
+  function clearFilters() { for (const k of Object.keys(FILTERS)) state[k].clear(); save(); refresh(); }
+  function refresh() {
+    sortSel.value = state.sort;
+    const text = !['remaining', 'percent'].includes(state.sort);
+    dirBtn.disabled = state.sort === 'location';
+    dirBtn.textContent = text ? (state.desc ? 'Z to A' : 'A to Z') : (state.desc ? 'High to low' : 'Low to high');
+    for (const [c, k, v] of chips) {
+      const n = spools.filter((s) => info(s)[k] === v && passes(s, k)).length;
+      c.setAttribute('aria-pressed', String(state[k].has(v)));
+      clear(c, v, h('small', null, String(n)));
+    }
+    controls.querySelector('[data-clear]').hidden = !Object.keys(FILTERS).some((k) => state[k].size);
+    draw();
+  }
   function draw() {
-    if (!spools.length) return clear(list, empty('No spools in the Bambu Cloud filament library yet.'));
-    const loaded = spools.filter((s) => s.printer).sort((a, b) => pname(a.printer).localeCompare(pname(b.printer)) || (a.unit ?? -1) - (b.unit ?? -1) || (a.slot ?? -1) - (b.slot ?? -1));
+    if (!spools.length) { controls.hidden = true; return clear(list, empty('No spools in the Bambu Cloud filament library yet.')); }
+    const shown = spools.filter((s) => passes(s));
+    if (!shown.length) return clear(list, empty('No spool matches these filters. Use Clear filters to see all spools.'));
+    if (state.sort !== 'location') return clear(list, h('div', { class: 'grid', style: 'grid-column:1/-1' }, ordered(shown).map(card)));
+    const loaded = shown.filter((s) => s.printer).sort((a, b) => pname(a.printer).localeCompare(pname(b.printer)) || (a.unit ?? -1) - (b.unit ?? -1) || (a.slot ?? -1) - (b.slot ?? -1));
     const groups = new Map();
     for (const s of loaded) { const k = `${pname(s.printer)}${s.unit != null ? ` · AMS ${s.unit + 1}` : ''}`; (groups.get(k) || groups.set(k, []).get(k)).push(s); }
-    const other = spools.filter((s) => !s.printer);
+    const other = shown.filter((s) => !s.printer);
     clear(list, h('div', { class: 'stack', style: 'grid-column:1/-1' },
       [...groups].map(([k, items]) => h('section', { class: 'group' }, h('h3', null, k), h('div', { class: 'grid' }, items.map(card)))),
       other.length > 0 && h('section', { class: 'group' }, h('h3', null, 'Not loaded'), h('div', { class: 'grid' }, other.map(card)))));
@@ -112,6 +192,7 @@ async function spoolView(ctx, root, id) {
   } catch (e) { return clear(box, empty('Could not load this spool: ' + e.message)); }
   if (!spool) return clear(box, empty('This spool is not in the Bambu Cloud filament library (any more).'));
   const pname = (serial) => printers.find((p) => p.serial === serial)?.name || serial;
+  const info = describe(spool);
   const frac = spool.grams_left != null && spool.grams_total ? spool.grams_left / spool.grams_total : null;
   const total = prints.reduce((n, p) => n + (p.spool_grams || 0), 0);
   const rows = prints.map((p) => h('a', { class: 'spoolprint', href: '#/history/' + encodeURIComponent(p.id) },
@@ -121,7 +202,7 @@ async function spoolView(ctx, root, id) {
     title: `${spool.brand} ${spool.type}`.trim() || spool.name, sub: spool.name,
     pills: [spool.printer ? pill(`${pname(spool.printer)}${spool.unit != null && spool.slot != null ? ` · AMS ${spool.unit + 1}·${spool.slot + 1}` : ''}`, 'ok') : pill('not loaded')],
     image: h('div', { class: 'detail-img', style: 'display:grid;place-items:center' }, swatch(spool.colour, 120)),
-    facts: D.facts([['Remaining', spool.grams_left != null ? Math.round(spool.grams_left) + ' g' + (frac != null ? ` (${Math.round(frac * 100)}%)` : '') : 'unknown'],
+    facts: D.facts([['Colour', info.colour], ['Material', info.material], ['Finish', info.finish], ['Remaining', spool.grams_left != null ? Math.round(spool.grams_left) + ' g' + (frac != null ? ` (${Math.round(frac * 100)}%)` : '') : 'unknown'],
       ['Spool size', spool.grams_total != null ? spool.grams_total + ' g' : null], ['Price', spool.price_per_kg != null ? money(spool.price_per_kg) + ' / kg' : 'no price'],
       ['Prints', prints.length ? `${prints.length} · ${Math.round(total)} g` : null]]),
     blocks: [h('section', { class: 'card stack', style: 'gap:6px', id: 'spool-prints' }, h('h2', { style: 'margin:0' }, 'Prints with this spool'),

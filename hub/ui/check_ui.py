@@ -147,6 +147,62 @@ def check_viewer(page, shot):
     assert note["disabled"] and note["note"] == "One object on this plate", note
 
 
+def check_filament_list(page, base, ident, go, shot):
+    """Sort, filter and colour names on the Filament list; the choice is in the hash and survives a reload and a bare #/filament."""
+    spools = page.locator(".spool")
+    first = lambda: spools.first.text_content()
+    chip = lambda kind, value: page.locator(f"#filters .chip[data-filter={kind}][data-value={value}]")
+    state = lambda: page.evaluate("Object.fromEntries(new URLSearchParams(location.hash.split('?')[1] || ''))")
+    fresh(page, f"{base}/?as={ident}#/filament")
+    page.wait_for_selector(".spool")
+    assert spools.count() == 10
+    page.get_by_label("Sort by").select_option("remaining")
+    assert "50 g" in first() and "Blue" in first(), "least remaining first: " + first()
+    page.get_by_role("button", name="Sort direction").click()
+    assert "960 g" in first(), "most remaining first: " + first()
+    page.get_by_role("button", name="Sort direction").click()
+    chip("finish", "Matte").click()
+    chip("material", "PLA").click()
+    assert spools.count() == 2, "Matte and PLA leave two spools: %d" % spools.count()
+    text = page.locator("#view").text_content()
+    assert "Ash Gray" in text and "Charcoal" in text and "Orange" not in text and "Navy" not in text
+    assert state() == {"sort": "remaining", "material": "PLA", "finish": "Matte"}, state()
+    shot("filament-sort-filter")
+    for url in (f"{base}/?as={ident}#/filament?sort=remaining&material=PLA&finish=Matte", f"{base}/?as={ident}#/filament"):  # deep link, then the stored choice
+        fresh(page, url)
+        page.wait_for_selector(".spool")
+        assert spools.count() == 2 and page.get_by_label("Sort by").input_value() == "remaining", "reload keeps sort and filter: " + url
+        assert chip("finish", "Matte").get_attribute("aria-pressed") == "true" and chip("material", "PLA").get_attribute("aria-pressed") == "true"
+        assert "Ash Gray" in first(), "300 g comes before the unknown remaining: " + first()
+    page.get_by_role("button", name="Clear filters").click()
+    assert spools.count() == 10 and state() == {"sort": "remaining"}, state()
+    page.get_by_label("Sort by").select_option("location")
+    names = spools.evaluate_all("els => els.map((e) => e.querySelector('.spoolcolour')?.textContent || '')")
+    assert all(names), "every row names its colour: %s" % names
+    for want in ("Charcoal", "Blue", "Orange", "Teal"):
+        assert any(want in n for n in names), f"{want} in {names}"
+    assert chip("finish", "Translucent").text_content().endswith("2") and chip("finish", "Basic").count() == 1, "counts and options come from the data"
+    assert page.locator("#filters .chip[data-filter=material]").count() == 3, "PLA, PETG, TPU"
+    page.evaluate("localStorage.clear()")
+    fresh(page, f"{base}/?as={ident}#/filament/5002")
+    page.wait_for_selector(".detail")
+    assert "Red" in page.locator(".detail").text_content(), "the detail page names the colour"
+    go("#/filament", ".spool")
+
+
+def check_queue_filament(page, base, ident, go):
+    """A queue row shows the filament the job will use: swatch, colour name, material; a library spool that is not loaded is marked."""
+    go("#/queue", ".job")
+    row = lambda name: page.locator(".job", has_text=name)
+    clips = row("Cable clips for the desk").locator(".jobfil")
+    assert clips.count() == 1 and "White" in clips.text_content() and "PLA" in clips.text_content(), "tray job: " + clips.text_content()
+    assert clips.locator(".swatch").count() == 1 and "not loaded" not in clips.text_content()
+    phone = row("phone_stand_v3").locator(".jobfil")
+    assert phone.count() == 1 and "Charcoal · PLA Matte" in phone.text_content() and "not loaded" in phone.text_content(), "spool job: " + phone.text_content()
+    assert phone.locator(".swatch").count() == 1
+    assert row("drawer_divider_s").locator(".jobfil").count() == 0 or row("drawer_divider_s").locator(".jobfil").text_content().strip() != "", "no empty placeholder"
+
+
 def check_cloud_down(page, go, shot):
     """The mock's cloud library stops answering: the tab says so instead of showing old spools."""
     ALLOW_502.append("api/spools")
@@ -363,7 +419,7 @@ def check_cache(page, base, ident):
         assert time.time() - t0 < 2.5 and page.locator("#view .loading").count() == 0, f"{tab}: cached data without a spinner ({time.time() - t0:.1f} s, {page.locator('#view .loading').count()} spinners)"
         assert text in page.locator("#view").text_content()
     page.wait_for_timeout(3500)  # the fresh answer arrives and replaces it without trouble
-    assert page.locator(".spool").count() == 5, f"{page.locator('.spool').count()} spools, page {page.url}"
+    assert page.locator(".spool").count() == 10, f"{page.locator('.spool').count()} spools, page {page.url}"
     page.evaluate("fetch('api/_mock/slow')")
     # the cloud library fails: the cached spools still show at once
     ALLOW_502.append("api/spools")
@@ -578,7 +634,7 @@ def walk(page, ident, base, shot, inject):
         check_library_pick(page, go, shot)
     go("#/filament", ".spool")
     shot("filament")
-    assert page.locator(".spool").count() == 5, "the cloud library lists five spools: %d" % page.locator(".spool").count()
+    assert page.locator(".spool").count() == 10, "the cloud library lists ten spools: %d" % page.locator(".spool").count()
     assert page.locator("h3", has_text="Not loaded").count() == 1 and page.get_by_text("Bambu Cloud filament library").count() == 1, "not-loaded group and the subtitle"
     if MOCKED:
         assert "unknown" in page.locator(".spool", has_text="Matte Charcoal").text_content(), "a spool without grams says unknown"
@@ -595,6 +651,9 @@ def walk(page, ident, base, shot, inject):
         page.wait_for_selector("dialog[open]", state="detached")
         page.wait_for_selector(".spool:has-text('700 g')")
         assert "no price" in page.locator(".spool", has_text="PLA").first.text_content()
+    if MOCKED:
+        check_queue_filament(page, base, ident, go)
+        check_filament_list(page, base, ident, go, shot)
     if MOCKED and ident == "user":
         check_load_request(page, base, go, shot)
     # the cloud library does not answer: the tab says so instead of showing old spools

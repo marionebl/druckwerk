@@ -294,3 +294,12 @@ details.adv .form { margin-top: 12px; }
 .tl-card { color: inherit; text-decoration: none; } a.tl-card:hover, .job .title a:hover { border-color: var(--accent); }
 .job .title a { color: inherit; text-decoration: none; } .job { cursor: pointer; }
 .spoolprint { display: flex; justify-content: space-between; gap: 12px; padding: 8px 0; border-top: 1px solid var(--line); color: inherit; text-decoration: none; }
+
+.filters { display: grid; gap: 10px; grid-column: 1 / -1; }
+.filters .fgroup { display: flex; flex-wrap: wrap; gap: 6px; align-items: center; }
+.filters .fgroup > b { min-width: 64px; font-size: 13px; color: var(--muted); }
+.filters .chip { min-height: 34px; padding: 3px 10px; font-size: 14px; gap: 6px; }
+.filters .chip small { color: var(--muted); }
+.filters select { width: auto; }
+.spoolcolour { color: var(--muted); font-size: 13px; }
+.jobfil { display: flex; align-items: center; gap: 8px; font-size: 14px; margin-top: 4px; }

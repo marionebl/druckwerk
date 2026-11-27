@@ -114,6 +114,8 @@ def slice_of(quality, seconds, grams, model):
 SLICE_JOB = "d00000000001"  # a slice the slicer still keeps; the other jobs' slices are gone
 JOBS[1].update(slice_job=SLICE_JOB, slice=slice_of("better", 2520, 12.5, "cable_clip_set.stl"), print_seconds=2520,
                options=dict(JOBS[1]["options"], timelapse=True, flow_cali="auto"))
+JOBS[1]["slice_tray"] = [0, 0]  # AMS 1, slot 1 of the H2S: white PLA
+JOBS[2]["slice_spool"] = {"spool_id": "5004", "brand": "Bambu Lab", "type": "PLA", "name": "PLA Matte Charcoal", "colour": "2E2E2E"}  # a library spool, not loaded
 JOBS[0].update(slice=slice_of("good", 6200, 38.2, "gridfinity_bin_4x2.stl"), print_seconds=6200)
 
 
@@ -224,6 +226,12 @@ SPOOLS = [
     cloud_spool("5002", "Sunlu", "PLA", "PLA Red", "E4572E", 140, 1000, (H2S, 0, 2)),
     cloud_spool("5003", "Generic", "TPU", "TPU 95A Black", "222222", 730, 1000, (H2S, 1, 0)),
     cloud_spool("5004", "Bambu Lab", "PLA", "PLA Matte Charcoal", "2E2E2E", None, None),
+    # Loaded in the H2S only: the New print check expects exactly one library spool in no printer, and the Edit check the first card.
+    cloud_spool("5005", "Bambu Lab", "PLA", "PLA Translucent Orange", "F28A2E", 420, 1000, (H2S, 1, 1)),
+    cloud_spool("5006", "Bambu Lab", "PETG", "PETG Translucent Teal", "2AA6A6", 960, 1000, (H2S, 2, 0)),
+    cloud_spool("5007", "Polymaker", "PLA", "PLA Matte Ash Gray", "BBBBBB", 300, 1000, (H2S, 1, 2)),
+    cloud_spool("5008", "Prusament", "PETG", "PETG Matte Navy", "1B2A6B", 810, 1000, (H2S, 1, 3)),
+    cloud_spool("5009", "Bambu Lab", "PLA", "PLA Basic", "2B6CC4", 50, 1000, (H2S, 0, 3)),
 ]
 PRICES = {"5000": 19.99, "5001": 27.5, "5002": 14.0, "5003": 32.0}
 LOAD_REQUESTS = []  # open "ask to load" requests

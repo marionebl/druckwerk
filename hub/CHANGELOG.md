@@ -1,5 +1,13 @@
 # Changelog
 
+## 3.3.1 (unreleased)
+
+- Filament list: sort by location (the default, as before), remaining grams, remaining percent, name, material or vendor, in both directions; an unknown remaining is always last. Filter by material and by finish (Basic, Matte, Translucent, Silk, ...), several values at once, with the count of each option. The options come from your spools. The finish is read from the spool name; a name without a finish word counts as Basic.
+- Each spool row and the spool page say the colour in words. The name wins when it has the colour ("PLA Matte Charcoal" is Charcoal); else the hex colour is matched to a known name, else to the nearest basic colour.
+- Sort and filter are kept per user in the browser and are in the address, for example `#/filament?sort=remaining&material=PLA&finish=Matte`, so the view can be shared.
+- Queue: each job row shows the filament it will use (swatch, colour name, material and finish) and marks a library spool that is not loaded in the target printer.
+- The UI only: no API change.
+
 ## 3.2.0 (unreleased)
 
 - One History. The History tab lists the Bambu Cloud tasks with the Druckwerk job merged in (name, owner, cost, options, slice). A finished job that no cloud task explains (never sent, cancelled before the start) is listed too and marked "Druckwerk only". The Queue no longer has a History segment. `GET /api/history` items gain `job`, `when` and `printer_owner`; `source` can be `job`.

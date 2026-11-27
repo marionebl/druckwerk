@@ -1,5 +1,5 @@
 name: Druckwerk
-version: "3.2.0"
+version: "3.3.1"
 slug: druckwerk
 # Built and pushed by .github/workflows/hub.yml on main; HA pulls <image>:<version>.
 image: ghcr.io/marionebl/druckwerk-{arch}

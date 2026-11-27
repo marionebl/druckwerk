@@ -1,8 +1,9 @@
 // Queue: jobs grouped by printer, approvals separate, drag or buttons to reorder. #/queue/<job id> is one job.
 // Finished jobs live in History (one list for cloud tasks and jobs).
 import { api } from '../api.js';
-import { h, clear, icon, btn, pill, empty, modal, field, attempt, dateTime, money, loading, thumb, durSec, toast } from '../util.js';
+import { h, clear, icon, btn, pill, empty, modal, field, attempt, dateTime, money, loading, thumb, durSec, toast, swatch } from '../util.js';
 import * as D from './detail.js';
+import { jobFilament } from './spoolname.js';
 
 const WAITING = ['queued', 'pending_approval'];
 const STATE = { pending_approval: ['Needs approval', 'warn'], queued: ['Queued', ''], starting: ['Starting', 'ok'], printing: ['Printing', 'ok'], drying: ['Drying', 'ok'], done: ['Done', 'ok'], failed: ['Failed', 'err'], cancelled: ['Cancelled', ''] };
@@ -11,7 +12,7 @@ export async function mount(ctx, root, parts = []) {
   if (parts[0]) return detailView(ctx, root, decodeURIComponent(parts[0]));
   const state = { dragging: null };
   const list = h('div', { class: 'stack' }, loading());
-  let data = null, names = {}, models = {}, last = '';
+  let data = null, names = {}, models = {}, ams = [], last = '';
 
   root.append(h('div', { class: 'page-head' }, h('div', null, h('h1', null, 'Queue'),
     h('div', { class: 'sub' }, ctx.isAdmin() ? 'All jobs' : 'Jobs on your printers', ' · finished prints are under ', h('a', { href: '#/history' }, 'History'))),
@@ -91,6 +92,7 @@ export async function mount(ctx, root, parts = []) {
       j.kind !== 'dry' && btn('Move…', () => moveDialog(j), 'sm'));
     if (j.state === 'drying' && admin) acts.push(btn('Stop drying', () => act(j, 'stop', undefined, 'Drying stopped'), 'sm danger'));
     if (['queued', 'pending_approval', 'starting', 'printing'].includes(j.state) && (admin || own)) acts.push(btn('Cancel', () => act(j, 'cancel', undefined, 'Cancelled'), 'sm danger'));
+    const fil = jobFilament(j, ams);
     const el = h('div', { class: 'job' + (pending ? ' pending' : ''), draggable: canOrder && waiting ? 'true' : null, 'data-id': j.id },
       canOrder && waiting ? h('div', { class: 'grip', title: 'Drag to reorder', 'aria-hidden': 'true' }, icon('grip')) : h('div', { class: 'pos' }, waiting ? idx + 1 : ''),
       j.kind === 'dry' ? h('div', { class: 'thumb' }, '♨') : thumb(j.plate_png),
@@ -104,6 +106,7 @@ export async function mount(ctx, root, parts = []) {
           j.options?.timelapse && h('span', null, 'timelapse'),
           j.name && j.file && j.name !== j.file.replace(/\.gcode\.3mf$/, '') && h('span', null, j.source || j.file),
           h('span', null, dateTime(j.finished_at || j.created_at))),
+        fil && h('div', { class: 'jobfil' }, swatch(fil.colour, 16), h('span', null, [fil.name, fil.label].filter(Boolean).join(' · ')), fil.loaded === false && pill('not loaded', 'warn')),
         j.error && h('small', { style: 'color:var(--err)' }, j.error)),
       acts.length ? h('div', { class: 'acts' }, acts) : null);
     el.addEventListener('click', (e) => { if (!e.target.closest('button, a, input, select')) ctx.go('#/queue/' + j.id); });
@@ -143,7 +146,8 @@ export async function mount(ctx, root, parts = []) {
       const [q, ps] = await Promise.all([api.queue(), api.printers()]);
       names = Object.fromEntries(ps.map((p) => [p.serial, p.name]));
       models = Object.fromEntries(ps.map((p) => [p.serial, p.model]));
-      const sig = JSON.stringify([q.jobs, names]);
+      ams = ps;
+      const sig = JSON.stringify([q.jobs, names, ps.map((p) => p.ams)]);
       if (sig === last || state.dragging || document.querySelector('dialog[open]')) return;
       last = sig; data = q; draw();
     } catch (e) { if (!data) clear(list, empty('Could not load the queue: ' + e.message)); }

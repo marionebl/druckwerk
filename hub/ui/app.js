@@ -20,6 +20,8 @@ ctx.managesAny = () => ctx.me.is_admin || ctx.me.printers.some((p) => p.role ===
 // Run fn now and every ms until the route changes.
 ctx.every = (ms, fn) => { fn(); ctx.timers.push(setInterval(fn, ms)); };
 ctx.go = (hash) => { location.hash = hash; };
+// Change the hash (a view's sort and filter, "#/filament?sort=name") without a route change or a history entry.
+ctx.replaceHash = (hash) => { try { history.replaceState(history.state, '', hash); mirrorHash(); } catch { /* the URL stays as it is */ } };
 // Reslice hands the next New print screen what to start from ({slice_job, model, name, options, target, quality, tray, bed});
 // New print reads it once on mount and clears it.
 ctx.reslice = null;
@@ -74,7 +76,7 @@ let seq = 0;
 async function route(keep) {
   newRoute();
   ctx.timers.splice(0).forEach(clearInterval);
-  const parts = location.hash.replace(/^#\/?/, '').split('/').filter(Boolean);
+  const parts = location.hash.replace(/^#\/?/, '').replace(/\?.*$/, '').split('/').filter(Boolean);
   let id = parts[0] || 'printers';
   if (!VIEWS[id] || (id === 'access' || id === 'setup') && !ctx.isAdmin()) id = 'printers';
   const mine = ++seq;
