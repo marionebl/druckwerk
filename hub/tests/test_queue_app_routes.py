@@ -68,7 +68,7 @@ def test_start_needs_plate_clear_and_printer_admin(hub):
     hub.seed_share()
     hub.grant(USER, SERIAL)
     add(hub, USER)
-    hub.ha.s["sensor.lab_h2s_print_status"]["state"] = "idle"
+    hub.set_print(gcode_state="IDLE")
     assert hub.req("POST", "/api/printers/%s/start-next" % SERIAL, {"plate_clear": True}, user=USER)[0] == 403
     assert hub.req("POST", "/api/printers/%s/start-next" % SERIAL, {}, user=ADMIN)[0] == 409
     st, job = hub.req("POST", "/api/printers/%s/start-next" % SERIAL, {"plate_clear": True}, user=ADMIN)

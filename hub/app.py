@@ -15,6 +15,7 @@ import secrets
 import sys
 import threading
 import time
+import urllib.request
 import zipfile
 from urllib.parse import parse_qs, quote, unquote, urlsplit
 
@@ -23,6 +24,7 @@ import externals
 import files
 import filament
 import history
+import printer_state
 from ha import HAError, HAUnavailable
 from queue_access import Access, Caller, Forbidden, Grants, Unauthorized, caller_from_headers
 from queue_engine import WAITING, NotFound, Queue, QueueError
@@ -39,13 +41,9 @@ IDENTITY_HEADERS = ("X-Remote-User-Id", "X-Remote-User-Name", "X-Remote-User-Dis
 JOB_ID = r"([0-9a-f]{12})"
 SERIAL = r"([A-Za-z0-9_-]{1,40})"
 OFFLINE_JPEG = os.path.join(os.path.dirname(os.path.abspath(__file__)), "offline.jpg")
-# Sensor names of the vendor HA integration after the printer prefix (verified against its translations/en.json).
-SENSORS = {"status": "print_status", "stage": "current_stage", "progress": "print_progress",
-           "remaining": "remaining_time", "end": "end_time", "layer": "current_layer", "total": "total_layer_count",
-           "nozzle": "nozzle_temperature", "nozzle_t": "nozzle_target_temperature", "bed": "bed_temperature",
-           "bed_t": "bed_target_temperature", "chamber": "chamber_temperature", "tray": "active_tray",
-           "task": "task_name"}
-BRIDGE_STATE = {"RUNNING": "running", "FINISH": "finish", "FAILED": "failed", "IDLE": "idle", "PAUSE": "pause"}
+# Entity ids the queue and the watchdog ask for: <prefix>_<suffix>. State() answers them from the bridge, so they need not
+# exist in Home Assistant (with the vendor integration installed they are its real ids).
+SENSORS = {"status": "print_status", "stage": "current_stage", "progress": "print_progress", "tray": "active_tray"}
 UI_FILES = r"(index\.html|style\.css|app\.js|api\.js|util\.js|feedback\.js|views/[a-z]+\.js|vendor/three\.module\.min\.js)"
 # A feedback post carries screenshots; every other route keeps the slicer's 8 KB JSON limit.
 FEEDBACK_MAX = 1500000
@@ -55,6 +53,7 @@ MEDIA_DIR = "/media/druckwerk"  # snapshots and plate images of the actions
 SLICED = re.compile(r"Metadata/plate_\d+\.gcode")
 TASKS_TTL = 60  # seconds a printer's cloud task list is reused
 SPOOLS_TTL = 30  # seconds an account's cloud filament library is reused
+COVER_MAX = 5 * 1024 * 1024  # bytes of a cloud cover image
 DOMAIN_DEFAULTS = "schedule,input_boolean,binary_sensor,person"
 
 
@@ -76,13 +75,18 @@ def num(v, cast=float):
         return None
 
 
-MINUTES_PER = {"h": 60, "min": 1, "s": 1 / 60}
-
-
-def minutes(state, unit):
-    """A duration sensor's state in minutes; the vendor sensor reports hours, other setups minutes."""
-    n = num(state)
-    return None if n is None else int(round(n * MINUTES_PER.get(unit, 1)))
+def fetch_image(url):
+    """(bytes, content type) of an image at an http(s) URL; a failure is a 502."""
+    if urlsplit(url).scheme not in ("http", "https"):
+        raise HttpError(502, "cover image: not a web address")
+    try:
+        with urllib.request.urlopen(url, timeout=15) as r:
+            data, ctype = r.read(COVER_MAX + 1), r.headers.get_content_type()
+    except (OSError, ValueError) as e:
+        raise HttpError(502, "cover image: %s" % e)
+    if len(data) > COVER_MAX or not ctype.startswith("image/"):
+        raise HttpError(502, "cover image: not an image or too large")
+    return data, ctype
 
 
 class Capture:
@@ -130,7 +134,7 @@ class App:
         self.loads = filament.LoadRequests(data_dir)
         self.grants = Grants(self.registry, data_dir, self._grant_state, clock)
         self.access = Access(self.registry, self.grants, self.get_user)
-        self.queue = Queue(self.registry, data_dir, ha.state, self._call_service, self.get_trays, clock=clock,
+        self.queue = Queue(self.registry, data_dir, self.state, self._call_service, self.get_trays, clock=clock,
                            job_allowed=self.access.job_allowed, dry=Drying(self), send_print=self.send_print)
         self.media_roots = list(MEDIA_ROOTS)
         self.media_dir = MEDIA_DIR
@@ -224,67 +228,30 @@ class App:
             return main["entity_id"].split(".", 1)[1].removesuffix("_print_status")
         return slug(dev.get("name_by_user") or dev.get("name") or "") or None
 
-    def ams(self, serial, states, raw=False):
-        """AMS units of one printer from the entity registry: [{unit, humidity_index, temp, trays: [...]}]."""
-        devices, entities = self.registries()
-        dev_name = {d["id"]: d.get("name") or "" for d in devices}
-        units = {}
-        for e in entities:
-            uid = e.get("unique_id") or ""
-            if e.get("platform") != externals.HA_VENDOR_DOMAIN or "_%s_AMS_" % serial not in uid:
-                continue
-            ams_serial, _, key = uid.split("_%s_AMS_" % serial, 1)[1].partition("_")
-            u = units.setdefault(ams_serial, {"name": dev_name.get(e.get("device_id"), ""), "e": {}})
-            u["e"][key] = e["entity_id"]
-        out = []
-        for u in units.values():
-            m = re.search(r"_AMS_(\d+)$", u["name"])
-            if not m:
-                continue  # rack AMS (HT, 3H) has no slot numbering we can match to spools
-            n = int(m.group(1))
-            unit = n - 1 if n < 128 else n
-            trays = []
-            for key, eid in sorted(u["e"].items()):
-                tm = re.fullmatch(r"tray_(\d+)", key)
-                st = states.get(eid)
-                if not tm or not st:
-                    continue
-                a = st.get("attributes", {})
-                slot = int(tm.group(1)) - 1
-                empty = a.get("empty") or st["state"] in ("unknown", "unavailable", "Empty", "")
-                spool = filament.in_tray(self.library((self.registry.get(serial) or {}).get("account"), fetch=False), serial, unit, slot)
-                remain = a.get("remain")
-                tray_uid = next((x for x in (a.get("tag_uid"), a.get("tray_uuid")) if x and set(str(x)) - {"0"}), "")
-                trays.append({"slot": slot, "type": "" if empty else a.get("type") or "",
-                              "colour": "" if empty else re.sub(r"[^0-9A-Fa-f]", "", a.get("color") or "")[:6].upper(),
-                              "name": "" if empty else st["state"],
-                              "remain_pct": remain if isinstance(remain, (int, float)) and remain >= 0 else None,
-                              "spool_id": spool["id"] if spool else None, **({"uid": str(tray_uid)} if raw else {})})
-            hum = states.get(u["e"].get("humidity_index", ""))
-            temp = states.get(u["e"].get("temperature", ""))
-            out.append({"unit": unit, "humidity_index": num(hum and hum["state"], int),
-                        "temp": num(temp and temp["state"]), "trays": trays})
-        return sorted(out, key=lambda a: a["unit"])
+    def default_prefix(self, serial, name):
+        """The vendor integration's entity prefix when it has the printer, else one made from the name (unique per printer)."""
+        prefix = self.suggested_prefix(serial)
+        if prefix:
+            return prefix
+        base = slug(name) or slug(serial)
+        taken = {p["prefix"] for p in self.registry.all() if p["serial"] != serial}
+        return base if base not in taken else "%s_%s" % (base, slug(serial))
 
-    def external(self, serial, states):
-        _, entities = self.registries()
-        rx = re.compile(r"_%s_ExternalSpool\w*_external_spool$" % re.escape(serial))
-        for e in entities:
-            if e.get("platform") == externals.HA_VENDOR_DOMAIN and rx.search(e.get("unique_id") or ""):
-                st = states.get(e["entity_id"])
-                if st and not st["attributes"].get("empty") and st["state"] not in ("unknown", "unavailable", "Empty"):
-                    a = st["attributes"]
-                    return {"type": a.get("type") or "", "name": st["state"],
-                            "colour": re.sub(r"[^0-9A-Fa-f]", "", a.get("color") or "")[:6].upper()}
-        return None
+    def ams(self, serial, raw=False, status=None):
+        """AMS units of one printer, from the bridge: [{unit, humidity_index, temp, trays: [...]}]."""
+        status = status or self.printer_status(serial) or {}
+        library = self.library((self.registry.get(serial) or {}).get("account"), fetch=False)
+        out = []
+        for u in status.get("ams", []):
+            trays = []
+            for t in u["trays"]:
+                spool = filament.in_tray(library, serial, u["unit"], t["slot"])
+                trays.append({**{k: v for k, v in t.items() if k != "uid" or raw}, "spool_id": spool["id"] if spool else None})
+            out.append(dict(u, trays=trays))
+        return out
 
     def get_trays(self, serial):
-        try:
-            states = self.ha.states(max_age=0)
-        except HAError:
-            return []
-        return [{"type": t["type"], "colour": "#" + t["colour"]} for a in self.ams(serial, states)
-                for t in a["trays"] if t["type"]]
+        return [{"type": t["type"], "colour": "#" + t["colour"]} for a in self.ams(serial) for t in a["trays"] if t["type"]]
 
     # -- calls to the bridge and HA --
     def bridge_json(self, method, path, body=None, timeout=30):
@@ -352,12 +319,6 @@ class App:
         except HttpError:
             return []
 
-    def safe_states(self):
-        try:
-            return self.ha.states()
-        except HAError:
-            return {}
-
     def ha_users(self):
         users = self.ha.command("config/auth/list")
         return [{"id": u["id"], "name": u.get("name") or "",
@@ -375,6 +336,24 @@ class App:
             return {}
         return (data or {}).get("print") or {} if status == 200 and isinstance(data, dict) else {}
 
+    def printer_status(self, serial):
+        """What the printer reports now (hub/printer_state.py), from the bridge; None when the bridge cannot say."""
+        return printer_state.view(self.bridge_print(serial), self.clock())
+
+    def state(self, entity_id):
+        """The queue's state lookup: a registered printer's own sensors come from the bridge, any other entity from HA."""
+        for p in self.registry.all():
+            for key in SENSORS:
+                if entity_id == self.entity(p, key):
+                    v = self.printer_status(p["serial"])
+                    if v is None:
+                        return None
+                    if key == "tray":
+                        return v["active_tray"]["name"] if v["active_tray"] else "none"
+                    value = v[{"status": "status", "stage": "stage", "progress": "progress"}[key]]
+                    return None if value is None else str(value)
+        return self.ha.state(entity_id)
+
     def drying(self, serial, max_age=5):
         """Units with a dryer, from the bridge; None when it cannot say."""
         try:
@@ -382,53 +361,26 @@ class App:
         except HttpError:
             return None
 
-    def printer_view(self, p, role, states):
-        serial, pre = p["serial"], p["prefix"]
-
-        def v(key):
-            s = states.get(self.entity(p, key))
-            return None if not s or s["state"] in ("unknown", "unavailable") else s["state"]
-
-        def unit(key):
-            return states[self.entity(p, key)]["attributes"].get("unit_of_measurement")
-        status = v("status")
-        b = {}
-        if status is None:
-            b = self.bridge_print(serial)  # no HA entities yet: fall back to the bridge's MQTT status
-            status = BRIDGE_STATE.get(b.get("gcode_state"), None)
-        tray = states.get(self.entity(p, "tray"))
-        ta = tray["attributes"] if tray and tray["state"] not in ("none", "unknown", "unavailable") else None
-        hms = states.get("binary_sensor.%s_hms_errors" % pre)
-        hms_out = []
-        if hms:
-            a = hms["attributes"]
-            for i in range(1, int(a.get("Count") or 0) + 1):
-                hms_out.append({"code": a.get("%d-Code" % i, ""), "severity": a.get("%d-Severity" % i, "info"),
-                                "text": a.get("%d-Error" % i, ""), "url": a.get("%d-Wiki" % i, "")})
-        online = states.get("binary_sensor.%s_online" % pre)
+    def printer_view(self, p, role):
+        serial = p["serial"]
+        v = self.printer_status(serial)
+        b = v or {}
+        tray = b.get("active_tray")
         job = next((j for j in self.queue.jobs if j.get("printer") == serial and j["state"] in ("starting", "printing")), None)
-        has_cover = "image.%s_cover_image" % pre in states
         return {
             "serial": serial, "name": p["name"], "model": p["model"], "role": role,
-            "online": online["state"] == "on" if online else status not in (None, "offline"),
-            "status": status, "stage": v("stage"),
-            "progress": num(v("progress")) if v("progress") is not None else num(b.get("mc_percent")),
-            "remaining_min": minutes(v("remaining"), unit("remaining")) if v("remaining") is not None else num(b.get("mc_remaining_time"), int),
-            "end_time": v("end"),
-            "layer": num(v("layer"), int) if v("layer") is not None else num(b.get("layer_num"), int),
-            "total_layers": num(v("total"), int) if v("total") is not None else num(b.get("total_layer_num"), int),
-            "nozzle_temp": num(v("nozzle")) if v("nozzle") is not None else num(b.get("nozzle_temper")),
-            "nozzle_target": num(v("nozzle_t")) if v("nozzle_t") is not None else num(b.get("nozzle_target_temper")),
-            "bed_temp": num(v("bed")) if v("bed") is not None else num(b.get("bed_temper")),
-            "bed_target": num(v("bed_t")) if v("bed_t") is not None else num(b.get("bed_target_temper")),
-            "chamber_temp": num(v("chamber")) if v("chamber") is not None else num(b.get("chamber_temper")),
-            "task_name": v("task") or b.get("subtask_name") or None,
-            "cover_url": "api/printers/%s/cover" % serial if has_cover else None,
+            "online": v is not None and b["status"] != "offline",
+            "status": b.get("status"), "stage": b.get("stage"), "progress": b.get("progress"),
+            "remaining_min": b.get("remaining_min"), "end_time": b.get("end_time"),
+            "layer": b.get("layer"), "total_layers": b.get("total_layers"),
+            "nozzle_temp": b.get("nozzle_temp"), "nozzle_target": b.get("nozzle_target"),
+            "bed_temp": b.get("bed_temp"), "bed_target": b.get("bed_target"), "chamber_temp": b.get("chamber_temp"),
+            "task_name": b.get("task_name"),
+            "cover_url": "api/printers/%s/cover" % serial if b.get("task_name") else None,
             "camera_url": "api/printers/%s/camera" % serial,
-            "active_tray": {"unit": num(ta.get("ams_index"), int), "slot": num(ta.get("tray_index"), int)}
-            if ta and ta.get("ams_index") is not None and ta.get("tray_index") is not None else None,
+            "active_tray": {"unit": tray["unit"], "slot": tray["slot"]} if tray else None,
             "drying": self.drying(serial) or [],
-            "ams": self.ams(serial, states), "external": self.external(serial, states), "hms": hms_out,
+            "ams": self.ams(serial, status=v), "external": b.get("external"), "hms": b.get("hms", []),
             "current_job": dict(job) if job else None,
             "queue_length": sum(1 for j in self.queue.jobs if j["state"] in WAITING and serial in self.access.serials_of(j)),
         }
@@ -503,17 +455,17 @@ class App:
                                                        "hub_port": self.port, "secret": self.secret}}
 
     def auto_register(self, listed=None):
-        """Register printers that the bridge lists and HA already has, so an admin needs no setup step."""
+        """Register every printer that the bridge lists (the accounts' bound printers), so an admin needs no setup step."""
         for d in listed if listed is not None else self.bridge_ok("GET", "/api/printers", timeout=20):
             serial = d["serial"]
             if self.registry.get(serial) or self.registry.is_removed(serial):
                 continue
-            prefix = self.suggested_prefix(serial)
-            if prefix and "sensor.%s_print_status" % prefix in self.ha.states():
-                self.registry.put(serial, name=d.get("name") or serial,
-                                  model=d.get("dev_product_name") or d.get("dev_model_name") or "", account=d.get("account"),
-                                  prefix=prefix, plate_type="", nozzle="", pause_entities=[], electricity_kwh_price=0)
-                log("registered printer %s as %s" % (serial, prefix))
+            name = d.get("name") or serial
+            prefix = self.default_prefix(serial, name)
+            self.registry.put(serial, name=name, model=d.get("dev_product_name") or d.get("dev_model_name") or "",
+                              account=d.get("account"), prefix=prefix, plate_type="", nozzle="", pause_entities=[],
+                              electricity_kwh_price=0)
+            log("registered printer %s as %s" % (serial, prefix))
 
     def try_auto_register(self, every=60, listed=None):
         # Throttled: the bridge or HA may be down, and each try costs two calls.
@@ -641,7 +593,7 @@ class App:
             cfg = self.registry.get(serial)
             printers.append({"serial": serial, "device_name": d.get("name") or serial,
                              "model": d.get("dev_product_name") or d.get("dev_model_name") or "", "account": d.get("account"),
-                             "configured": bool(cfg), "suggested_prefix": self.suggested_prefix(serial),
+                             "configured": bool(cfg), "suggested_prefix": self.default_prefix(serial, d.get("name") or serial),
                              "config": self.config_view(cfg) if cfg else None})
         return {"accounts": [{"id": a["id"], "email": a["email"], "logged_in": a.get("logged_in", True),
                               "daemon_running": bool((a.get("daemon") or {}).get("running"))} for a in health["accounts"]],
@@ -664,11 +616,6 @@ class App:
 
     def put_printer(self, h, m, q, c):
         serial, b = m.group(1), h.json()
-        prefix = str(b.get("ha_prefix") or "").strip()
-        if not prefix:
-            raise ValueError("ha_prefix is required")
-        if "sensor.%s_print_status" % prefix not in self.ha.states(max_age=0):
-            raise ValueError("Home Assistant has no sensor.%s_print_status: check the printer integration's entity prefix" % prefix)
         price = b.get("electricity_kwh_price", 0)
         if isinstance(price, bool) or not isinstance(price, (int, float)) or price < 0:
             raise ValueError("electricity_kwh_price must be a number >= 0")
@@ -676,6 +623,7 @@ class App:
         old = self.registry.get(serial)
         if not known and not old:
             raise NotFound("the logged-in accounts have no printer with that serial")
+        prefix = str(b.get("ha_prefix") or "").strip() or self.default_prefix(serial, b.get("name") or serial)
         model = (known and (known.get("dev_product_name") or known.get("dev_model_name"))) or old["model"]
         p = self.registry.put(serial, name=b.get("name"), model=model, account=known["account"] if known else old["account"],
                               prefix=prefix, plate_type=b.get("plate") or "", nozzle=b.get("nozzle") or "",
@@ -698,12 +646,11 @@ class App:
         return {"url": "http://%s:%s" % (self.hostname_fn(), self.port), "secret": self.secret, "connected": connected}
 
     def get_printers(self, h, m, q, c):
-        states = self.ha.states()
         out = []
         for p in self.registry.all():
             role = self.access.role(c, p["serial"])
             if role:
-                out.append(self.printer_view(p, role, states))
+                out.append(self.printer_view(p, role))
         return out
 
     def printer_access(self, c, serial, admin=False):
@@ -720,10 +667,30 @@ class App:
         query = urlsplit(h.path).query if kind == "live" else ""
         self.proxy(h, "/api/camera/%s/%s" % (serial, kind), query)
 
+    def cover_png(self, serial):
+        """The plate image of the file Druckwerk sent for the current print (or the file named like the printer's task)."""
+        task = (self.printer_status(serial) or {}).get("task_name")
+        return self.integration.preview(serial, self.integration.wanted(serial, self.sender.result(serial)["last_path"], task))[1]
+
+    def task_cover(self, serial, task):
+        """The cloud's cover of the newest task with the printer's task name; None without one."""
+        wanted = history.names(task)
+        try:
+            tasks = self.cloud_tasks(serial)
+        except HttpError:
+            return None
+        hits = [t for t in tasks if t.get("cover_url") and history.names(t.get("title"), t.get("design_title")) & wanted]
+        return max(hits, key=lambda t: t.get("started_at") or 0)["cover_url"] if hits and wanted else None
+
     def get_cover(self, h, m, q, c):
-        p = self.printer_access(c, m.group(1))
-        ctype, data = self.ha.image("image.%s_cover_image" % p["prefix"])
-        h.send(200, data, ctype)
+        serial = self.printer_access(c, m.group(1))["serial"]
+        png = self.cover_png(serial)
+        if png:
+            return h.send(200, png, "image/png")
+        url = self.task_cover(serial, (self.printer_status(serial) or {}).get("task_name"))
+        if not url:
+            raise NotFound("no cover image for this print")
+        h.send(200, *fetch_image(url))
 
     def cloud_tasks(self, serial):
         return self._cached("tasks:" + serial, TASKS_TTL, lambda: self.bridge_ok("GET", "/api/tasks?serial=%s&limit=100" % serial, timeout=30))
@@ -1107,7 +1074,7 @@ class App:
         spool = next((s for s in self.visible_spools(c) if s["id"] == m.group(1)), None)
         if not spool:
             raise NotFound("no such spool")
-        if not self.ams(serial, self.ha.states()):
+        if not self.ams(serial):
             raise ValueError("this printer has no AMS")
         if spool.get("printer") == serial and spool.get("in_printer"):
             raise HttpError(409, "this spool is already in that printer")
@@ -1226,8 +1193,7 @@ class App:
     def get_image(self, h, m, q):
         self.internal_caller(h)
         serial = m.group(1)
-        path = self.integration.wanted(serial, self.sender.result(serial)["last_path"], self.safe_states())
-        png = self.integration.preview(serial, path)[1]
+        png = self.cover_png(serial)
         if not png:
             raise NotFound("no preview")
         h.send(200, png, "image/png")

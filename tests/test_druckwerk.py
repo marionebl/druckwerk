@@ -63,11 +63,15 @@ async def test_entities_come_from_the_descriptors_and_attach_to_the_vendor_devic
     assert er.async_get(hass).async_get("button.my_h2s_re_read_slot_2").original_icon == "mdi:nfc-search-variant"
 
 
-async def test_without_a_vendor_device_the_integration_registers_one_from_the_state(hass, app):
-    await setup_entry(hass)
-    dev = next(iter(dr.async_get(hass).async_get_devices(identifiers={(VENDOR_DOMAIN, SERIAL)})), None)
+async def test_without_a_vendor_device_the_integration_registers_its_own_from_the_state(hass, app):
+    entry = await setup_entry(hass)
+    assert not dr.async_get(hass).async_get_devices(identifiers={(VENDOR_DOMAIN, SERIAL)})  # nothing under the vendor's domain
+    dev = next(iter(dr.async_get(hass).async_get_devices(identifiers={("druckwerk", SERIAL)})), None)
     assert dev and dev.manufacturer == VENDOR_MANUFACTURER and dev.model == "H2S" and dev.name == "Lab"
-    assert dev.serial_number == SERIAL
+    assert dev.serial_number == SERIAL and dev.config_entry_id == entry.entry_id
+    ents = registered(hass, entry)
+    assert {e.device_id for e in ents.values()} == {dev.id} and len(dr.async_get(hass).devices) == 1  # one device for all entities
+    assert hass.states.get("button.lab_start_cloud_print") is not None  # named after the printer, as with a vendor device
 
 
 async def test_a_new_descriptor_appears_without_a_reload_and_an_unknown_platform_is_skipped(hass, app, vendor_device):

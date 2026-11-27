@@ -5,7 +5,6 @@ import os
 import actions
 import files
 import preview
-from externals import HA_VENDOR_DOMAIN as VENDOR
 from queue_engine import WAITING
 
 JPEG_PRODUCTS = ("P1", "A1")  # P1P, P1S, A1, A1 mini send JPEG frames, which WebRTC cannot carry
@@ -30,22 +29,8 @@ class Integration:
     def file_list(self):
         return self.app._cached("files", 5, lambda: files.scan(self.app.media_dir))
 
-    def vendor_entity(self, serial, domain, key, suffix=False):
-        """Entity id of the vendor integration for this printer: unique_id <serial>_<key>, or (suffix) any of its device ending in key."""
-        devices, entities = self.app.registries()
-        device = next((d["id"] for d in devices if [VENDOR, serial] in [list(i) for i in d.get("identifiers", [])]), None)
-        for e in entities:
-            if e.get("platform") != VENDOR or not e["entity_id"].startswith(domain + "."):
-                continue
-            uid = e.get("unique_id") or ""
-            if uid == "%s_%s" % (serial, key) or (suffix and device and e.get("device_id") == device and uid.endswith(key)):
-                return e["entity_id"]
-        return None
-
-    def wanted(self, serial, last_path, states):
-        """The file for the job the printer reports; the last sent file if it reports none."""
-        entity = self.vendor_entity(serial, "sensor", "subtask_name")
-        task = (states.get(entity) or {}).get("state") if entity else None
+    def wanted(self, serial, last_path, task):
+        """The file for the job the printer reports (its task name); the last sent file if it reports none."""
         if task in UNKNOWN:
             return last_path
         if last_path and os.path.basename(last_path).removesuffix(files.SUFFIX) == task:
@@ -67,10 +52,10 @@ class Integration:
         token = hashlib.sha256(key.encode()).hexdigest()[:12] if key and have[1] else None
         return token, have[1]
 
-    def light(self, serial, states):
-        entity = self.vendor_entity(serial, "light", "chamber_light", suffix=True)
-        state = (states.get(entity) or {}).get("state") if entity else None
-        return state == "on" if state in ("on", "off") else None
+    @staticmethod
+    def light(status):
+        mode = ((status or {}).get("lights") or {}).get("chamber_light")
+        return mode == "on" if mode in ("on", "off") else None
 
     def queue_items(self, serial):
         with self.app.queue.lock:
@@ -89,14 +74,14 @@ class Integration:
                 "snapshot": PRINTER + serial + "/snapshot"}
 
     def state(self):
-        states = self.app.safe_states()
         out = {}
         for p in self.app.bridge_printers():
             serial = p.get("serial")
             if not serial:
                 continue
             r = self.app.sender.result(serial)
-            path = self.wanted(serial, r["last_path"], states)
+            status = self.app.printer_status(serial)
+            path = self.wanted(serial, r["last_path"], (status or {}).get("task_name"))
             token, _png = self.preview(serial, path)
             out[serial] = {
                 "name": p.get("name") or serial,
@@ -108,7 +93,7 @@ class Integration:
                                                     "last_time": r["last_time"], "last_error": r["last_error"]}},
                     "cloud_camera": self.camera(serial, p),
                     "current_print": {"token": token, "file_path": path, "has_preview": token is not None},
-                    "chamber_light": {"on": self.light(serial, states)},
+                    "chamber_light": {"on": self.light(status)},
                     "queue": {"items": self.queue_items(serial)},
                 },
             }
