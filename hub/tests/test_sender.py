@@ -135,3 +135,15 @@ def test_a_guard_refusal_keeps_the_queued_job_with_the_text(hub):
     status, body = hub.req("POST", "/api/printers/%s/start-next" % SERIAL, {"plate_clear": True}, user="u-admin")
     assert status == 409 and body["error"].startswith("Refusing to send a.gcode.3mf") and prints() == []
     assert hub.app.queue.jobs[0]["state"] == "queued" and "Refusing" in hub.app.queue.jobs[0]["error"]
+
+
+def test_the_browser_slice_prints_through_the_app_too(hub):
+    jid = hub.sliced(owner="u-admin")
+    status, body = hub.req("POST", "/api/jobs/%s/print" % jid, {"confirm": True, "timelapse": True}, user="u-admin")
+    assert status == 200 and body["answer"] == {"result": "sent"}
+    (sent,) = prints()
+    assert sent["serial"] == SERIAL and sent["timelapse"] is True and sent["filename"].endswith(".gcode.3mf")
+    assert [c for c in hub.ha.calls if c[0] == "druckwerk"] == []
+    FakeBridge.printer_extra = {SERIAL: {"print_status": "RUNNING"}}
+    status, body = hub.req("POST", "/api/jobs/%s/print" % jid, {"confirm": True}, user="u-admin")
+    assert status == 409 and "refusing to send a new print" in body["error"]

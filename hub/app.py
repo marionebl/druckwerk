@@ -16,7 +16,7 @@ import sys
 import threading
 import time
 import zipfile
-from urllib.parse import parse_qs, urlsplit
+from urllib.parse import parse_qs, unquote, urlsplit
 
 import actions
 import externals
@@ -1109,7 +1109,7 @@ class App:
     def put_upload(self, h, m, q):
         self.internal_caller(h)
         try:
-            h.send(200, files.store(self.media_dir, m.group(1), h.rfile, int(h.headers.get("Content-Length") or 0),
+            h.send(200, files.store(self.media_dir, unquote(m.group(1)), h.rfile, int(h.headers.get("Content-Length") or 0),
                                     q.get("overwrite") == ["1"]))
         except files.UploadError as e:
             raise HttpError(e.status, str(e))
@@ -1135,16 +1135,18 @@ class App:
                 return h.send(200, f.read(), "image/jpeg")
         self.proxy(h, "/api/camera/%s/snapshot" % serial)
 
-    def post_light(self, h, m, q, c):
+    def post_light(self, h, m, q):
+        self.internal_caller(h)
         on = h.json().get("on")
         if not isinstance(on, bool):
             raise ValueError('Body must be {"on": true|false}.')
-        return self.bridge_ok("POST", "/api/light/" + m.group(1), {"on": on}, timeout=60)
+        h.send(200, self.bridge_ok("POST", "/api/light/" + m.group(1), {"on": on}, timeout=60))
 
-    def post_rfid(self, h, m, q, c):
+    def post_rfid(self, h, m, q):
+        self.internal_caller(h)
         b = h.json()
-        return self.bridge_ok("POST", "/api/rfid/" + m.group(1),
-                              {"ams_id": b.get("ams_id", 0), "slot_id": b.get("slot_id")}, timeout=60)
+        h.send(200, self.bridge_ok("POST", "/api/rfid/" + m.group(1),
+                                   {"ams_id": b.get("ams_id", 0), "slot_id": b.get("slot_id")}, timeout=60))
 
     def post_operation(self, run):
         def route(h, m, q):
@@ -1232,8 +1234,8 @@ class App:
             ("PUT", r"/api/integration/options", self.put_integration_options),
             ("GET", r"/api/integration/printers/" + SERIAL + r"/image", self.get_image),
             ("GET", r"/api/integration/printers/" + SERIAL + r"/snapshot", self.get_snapshot),
-            ("POST", r"/api/integration/printers/" + SERIAL + r"/light", w(self.post_light, "internal")),
-            ("POST", r"/api/integration/printers/" + SERIAL + r"/rfid", w(self.post_rfid, "internal")),
+            ("POST", r"/api/integration/printers/" + SERIAL + r"/light", self.post_light),
+            ("POST", r"/api/integration/printers/" + SERIAL + r"/rfid", self.post_rfid),
             ("GET", r"/api/files", self.get_files),
             ("PUT", r"/api/upload/([^/]+)", self.put_upload),
             ("POST", r"/api/actions/([a-z_]+)", self.post_operation(actions.run_action)),
@@ -1254,6 +1256,7 @@ class App:
         s, mine = self.s, self.routes()
         taken = {(meth, rx) for meth, rx, _ in mine}
         s.ROUTES[:] = mine + [r for r in s.ROUTES if (r[0], r[1]) not in taken and r[:2] != ("GET", "/api/printers")]
+        s.PRINT = self.sender.print_file
         s.Handler.dispatch = lambda h, method: self.dispatch(h, method, s.ROUTES)
         s.Handler.do_PUT = lambda h: h.dispatch("PUT")
         s.Handler.do_DELETE = lambda h: h.dispatch("DELETE")

@@ -1,8 +1,8 @@
 #!/usr/bin/env python3
 """Slicer server: upload a model, slice it on this machine, preview it, send it to a printer.
 
-Printers and AMS trays come from the bridge. A print goes through Home Assistant's
-druckwerk.print_file service, so its busy check and G-code guard apply.
+Printers and AMS trays come from the bridge. A print goes through the app's own send (PRINT), so its busy check
+and G-code guard apply. Run alone, it calls Home Assistant's druckwerk.print_file service instead.
 """
 import json
 import os
@@ -31,6 +31,7 @@ JOBS = env("SLICER_JOBS", "/data/jobs")
 SHARE = env("SLICER_SHARE", "/share/druckwerk")
 SENDER = env("SLICER_SENDER_URL", "http://127.0.0.1:8098")
 CORE = env("SLICER_CORE_URL", "http://supervisor/core/api")
+PRINT = None  # the app sets a function that sends a print; without it the print goes through the HA service
 SLICE = env("SLICER_SLICE_CMD", os.path.join(HERE, "slice.sh")).split()
 PROFILES = env("SLICER_PROFILES", "/opt/bs/resources/profiles")
 ENGINE = env("SLICER_ENGINE", "/srv/engine")  # OrcaSlicer WASM runtime and presets/<model>.json (see engine/build.sh)
@@ -373,14 +374,22 @@ def post_print(h, m, q):
     shutil.copyfile(job["result"], dest)
     call = {"serial": job["printer"]["serial"], "file": dest, "use_ams": True, "bed_leveling": True,
             "timelapse": bool(body.get("timelapse")), "force": bool(body.get("force"))}
-    token = env("SUPERVISOR_TOKEN", "")
-    status, answer = http_json("POST", CORE + "/services/druckwerk/print_file?return_response", call,
-                               {"Authorization": "Bearer " + token}, timeout=360)
+    if PRINT:  # the app sends the file itself
+        try:
+            status, answer = 200, PRINT(call)
+        except Exception as e:  # noqa: BLE001 - the refusal text is what the person needs
+            status, answer = getattr(e, "status", 400 if isinstance(e, ValueError) else 502), {"error": str(e)}
+    else:
+        token = env("SUPERVISOR_TOKEN", "")
+        status, answer = http_json("POST", CORE + "/services/druckwerk/print_file?return_response", call,
+                                   {"Authorization": "Bearer " + token}, timeout=360)
     job["sent"] = {"at": time.time(), "file": dest, "status": status, "answer": answer}
     save_job(job)
     log("print %s -> %s: %s" % (os.path.basename(dest), job["printer"]["serial"], status))
     if status != 200:
         msg = answer.get("message") or answer.get("error") if isinstance(answer, dict) else answer
+        if PRINT:
+            return h.send(status, {"error": msg})
         return h.send(502, {"error": "Home Assistant refused the print (%s): %s" % (status, msg)})
     h.send(200, {"answer": answer, "file": os.path.basename(dest)})
 
