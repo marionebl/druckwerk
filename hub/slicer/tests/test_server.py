@@ -156,5 +156,5 @@ def test_the_server_does_not_slice(app):
     base = app[0]
     jid = json.loads(call(base, "POST", "/api/jobs?name=a.stl", raw=b"x")[1])["id"]
     assert json.loads(call(base, "GET", "/api/jobs/" + jid)[1])["state"] == "uploaded"
-    assert call(base, "POST", "/api/jobs/%s/slice" % jid, {"serial": "H2S0001", "quality": "better", "tray": "0:0"})[0] == 404
+    assert call(base, "POST", "/api/jobs/%s/slice" % jid)[0] == 404  # no body: the server answers 404 without reading one
     assert call(base, "POST", "/api/jobs?name=a.exe", raw=b"x")[0] == 400

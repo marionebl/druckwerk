@@ -70,7 +70,7 @@ J=$(curl -fsS "${ID[@]}" -X POST --data-binary @"$REPO/hub/tests/fixtures/test_p
 FIL=$(curl -fsS "${ID[@]}" "$B/api/engine/filament?serial=H2S0001&tray=0:0" | python3 -c 'import json,sys;print(json.load(sys.stdin)["filament"])')
 echo "filament preset from the image's engine presets: $FIL"
 curl -fsS "${ID[@]}" -o /dev/null -w 'engine version.json %{http_code}\n' $B/engine/version.json
-code=$(curl -s -o /dev/null -w '%{http_code}' "${ID[@]}" -X POST -d '{"serial":"H2S0001","quality":"better","tray":"0:0"}' $B/api/jobs/$J/slice)
+code=$(curl -s -o /dev/null -w '%{http_code}' "${ID[@]}" -X POST $B/api/jobs/$J/slice)
 [ "$code" = 404 ] || { echo "FAIL: POST /api/jobs/<id>/slice gave $code, expected 404 (no server-side slicing)" >&2; exit 1; }
 echo "POST /api/jobs/<id>/slice: $code (no server-side slicing)"
 Q=$(python3 -c 'import sys,urllib.parse as u;print(u.urlencode({"serial":"H2S0001","quality":"better","tray":"0:0","filament":sys.argv[1],"seconds":7440,"grams":75.22,"metres":24.5,"engine":"mt","slice_s":9}))' "$FIL")
