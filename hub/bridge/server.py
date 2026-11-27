@@ -346,7 +346,9 @@ def proxy(h, prefix, serial):
 # Task status words we can justify from this repo (the printer's gcode_state names). The cloud's numeric codes are not
 # documented here, so they pass through unmapped: add a number to this table once it is confirmed against a real answer.
 TASK_STATUS = {"finish": "finished", "finished": "finished", "success": "finished", "failed": "failed", "fail": "failed",
-               "cancel": "cancelled", "cancelled": "cancelled", "canceled": "cancelled", "running": "running", "printing": "running"}
+               "cancel": "cancelled", "cancelled": "cancelled", "canceled": "cancelled", "running": "running", "printing": "running",
+               # Live H2S history 2026-11-27 had only 2 (ran to the end) and 3 (ended early, failed or cancelled).
+               "2": "finished", "3": "stopped"}
 
 
 def epoch(value):
