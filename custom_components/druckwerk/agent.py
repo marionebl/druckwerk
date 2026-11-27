@@ -65,8 +65,13 @@ def serial_from_device(hass: HomeAssistant, device_id: str) -> str | None:
     return None
 
 
+# The hub copies the file into the share before it answers; a large plate on the Pi took longer than the 10 s default
+# and the caller saw a failure for a job that was created.
+QUEUE_TIMEOUT = 120
+
+
 def job_summary(job: dict[str, Any]) -> dict[str, Any]:
-    keys = ("id", "file", "state", "target", "printer", "model", "owner_name", "grams", "print_seconds", "cost",
+    keys = ("id", "kind", "name", "file", "state", "target", "printer", "model", "owner_name", "grams", "print_seconds", "cost",
             "error", "options", "created_at", "started_at", "finished_at")
     out = {k: job[k] for k in keys if k in job}
     if job.get("print_seconds"):
@@ -158,12 +163,12 @@ class Ops:
         if slice_job_id:
             if model:
                 body["model"] = model
-            job = await self.call(user_id, "POST", f"/api/jobs/{slice_job_id}/queue", body)
+            job = await self.call(user_id, "POST", f"/api/jobs/{slice_job_id}/queue", body, timeout=QUEUE_TIMEOUT)
         else:
             body["file"] = file
             if target == "any":
                 body["model"] = model or await self._only_model(user_id)
-            job = await self.call(user_id, "POST", "/api/queue", body)
+            job = await self.call(user_id, "POST", "/api/queue", body, timeout=QUEUE_TIMEOUT)
         await self.refresh()
         return {"job": job}
 
