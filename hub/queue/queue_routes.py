@@ -59,6 +59,10 @@ def make_routes(q, access=None, is_internal=lambda h: False, caller_of=None):
         b = h.json()
         return api.move(m.group(1), b.get("target"), b.get("model", ""))
 
+    def edit(h, m, api):
+        b = h.json()
+        return api.edit(m.group(1), name=b.get("name"), options=b.get("options"))
+
     def start_next(h, m, api):
         b = h.json()
         return api.start(m.group(1), plate_clear=b.get("plate_clear"), confirmed=b.get("confirmed"))
@@ -81,6 +85,7 @@ def make_routes(q, access=None, is_internal=lambda h: False, caller_of=None):
         ("POST", r"/api/queue", guarded(post_queue)),
         ("POST", r"/api/queue/" + ID + r"/reorder", guarded(reorder)),
         ("POST", r"/api/queue/" + ID + r"/move", guarded(move)),
+        ("POST", r"/api/queue/" + ID + r"/edit", guarded(edit)),
         ("POST", r"/api/queue/" + ID + r"/cancel", guarded(one("cancel"))),
         ("POST", r"/api/queue/" + ID + r"/retry", guarded(one("retry"))),
         ("POST", r"/api/queue/" + ID + r"/approve", guarded(one("approve"))),

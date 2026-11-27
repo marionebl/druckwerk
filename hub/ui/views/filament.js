@@ -1,9 +1,12 @@
 // The Bambu Cloud filament library: list, edit; the AMS location is read-only and the price is kept by the hub.
+// #/filament/<spool id> shows one spool and the prints done with it.
 import { api } from '../api.js';
-import { h, clear, icon, btn, field, swatch, empty, modal, attempt, money, pill, hex } from '../util.js';
+import { h, clear, icon, btn, field, swatch, empty, modal, attempt, money, pill, hex, loading, dateTime } from '../util.js';
+import * as D from './detail.js';
 
-export async function mount(ctx, root) {
-  const list = h('div', { class: 'grid' });
+export async function mount(ctx, root, parts = []) {
+  if (parts[0]) return spoolView(ctx, root, decodeURIComponent(parts[0]));
+  const list = h('div', { class: 'grid' }, loading());
   let printers = [], spools = [], requests = [];
   const canEdit = (s) => ctx.me.is_admin || (s?.printer && ctx.canManage(s.printer));
   const canCancel = (r) => ctx.me.is_admin || r.user_id === ctx.me.user_id || ctx.canManage(r.printer);
@@ -27,7 +30,7 @@ export async function mount(ctx, root) {
     const frac = known(s.grams_left) && s.grams_total ? s.grams_left / s.grams_total : null, low = frac != null && frac < 0.15;
     return h('section', { class: 'card spool' },
       swatch(s.colour, 44),
-      h('div', null, h('div', { class: 'row between' }, h('b', null, `${s.brand} ${s.type}`.trim()), s.printer ? pill(where(s), 'ok') : pill('not loaded')),
+      h('div', null, h('div', { class: 'row between' }, h('b', null, h('a', { href: '#/filament/' + s.id, style: 'color:inherit;text-decoration:none' }, `${s.brand} ${s.type}`.trim() || s.name)), s.printer ? pill(where(s), 'ok') : pill('not loaded')),
         h('small', null, s.name),
         mine.map((r) => h('div', null, pill(`Requested for ${pname(r.printer)} by ${r.user_name}`, 'warn')))),
       h('div', { class: 'bar' + (low ? ' low' : '') }, h('i', { style: `width:${Math.round((frac ?? 0) * 100)}%` })),
@@ -96,4 +99,32 @@ export async function mount(ctx, root) {
     });
   }
   load();
+}
+
+async function spoolView(ctx, root, id) {
+  const box = h('div');
+  root.append(D.back('#/filament', 'Filament'), box);
+  box.append(loading());
+  let spool, prints, printers = [];
+  try {
+    const [all, ps, pr] = await Promise.all([api.spools(), api.printers().catch(() => []), api.spoolPrints(id)]);
+    spool = all.find((s) => String(s.id) === id); printers = ps; prints = pr.items;
+  } catch (e) { return clear(box, empty('Could not load this spool: ' + e.message)); }
+  if (!spool) return clear(box, empty('This spool is not in the Bambu Cloud filament library (any more).'));
+  const pname = (serial) => printers.find((p) => p.serial === serial)?.name || serial;
+  const frac = spool.grams_left != null && spool.grams_total ? spool.grams_left / spool.grams_total : null;
+  const total = prints.reduce((n, p) => n + (p.spool_grams || 0), 0);
+  const rows = prints.map((p) => h('a', { class: 'spoolprint', href: '#/history/' + encodeURIComponent(p.id) },
+    h('span', null, h('b', null, p.job?.name || p.title || 'Untitled print'), h('br'), h('small', { class: 'muted' }, [p.printer_name, dateTime(p.when)].filter(Boolean).join(' · '))),
+    h('span', { class: 'muted' }, Math.round(p.spool_grams * 10) / 10 + ' g')));
+  clear(box, D.page({
+    title: `${spool.brand} ${spool.type}`.trim() || spool.name, sub: spool.name,
+    pills: [spool.printer ? pill(`${pname(spool.printer)}${spool.unit != null && spool.slot != null ? ` · AMS ${spool.unit + 1}·${spool.slot + 1}` : ''}`, 'ok') : pill('not loaded')],
+    image: h('div', { class: 'detail-img', style: 'display:grid;place-items:center' }, swatch(spool.colour, 120)),
+    facts: D.facts([['Remaining', spool.grams_left != null ? Math.round(spool.grams_left) + ' g' + (frac != null ? ` (${Math.round(frac * 100)}%)` : '') : 'unknown'],
+      ['Spool size', spool.grams_total != null ? spool.grams_total + ' g' : null], ['Price', spool.price_per_kg != null ? money(spool.price_per_kg) + ' / kg' : 'no price'],
+      ['Prints', prints.length ? `${prints.length} · ${Math.round(total)} g` : null]]),
+    blocks: [h('section', { class: 'card stack', style: 'gap:6px', id: 'spool-prints' }, h('h2', { style: 'margin:0' }, 'Prints with this spool'),
+      rows.length ? rows : h('p', { class: 'muted', style: 'margin:0' }, 'No finished print used this spool yet.'))],
+  }));
 }

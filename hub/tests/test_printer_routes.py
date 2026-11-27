@@ -70,7 +70,11 @@ def test_printer_light_is_for_admins_of_the_printer(hub):
     assert hub.req("POST", url, {"on": "no"}, user=ADMIN)[0] == 400
     assert hub.req("POST", url, {"on": False}, user=ADMIN) == (200, {"on": False})
     assert ("/api/light/" + SERIAL, {"on": False}) in FakeBridge.log
-    hub.grant(OTHER, SERIAL, role="owner")
+    hub.owner(USER, "FAKE0002")  # owner of the other printer: no rights here
+    assert hub.req("POST", url, {"on": True}, user=USER)[0] == 403
+    hub.grant(OTHER, SERIAL)
+    assert hub.req("POST", url, {"on": True}, user=OTHER)[0] == 403
+    hub.owner(OTHER)  # the printer's owner is its admin
     assert hub.req("POST", url, {"on": True}, user=OTHER)[0] == 200
     hub.set_print(lights_report=[])
     assert hub.req("GET", "/api/printers", user=ADMIN)[1][0]["light"] is None

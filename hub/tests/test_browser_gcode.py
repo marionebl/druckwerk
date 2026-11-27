@@ -1,4 +1,4 @@
-"""POST /api/jobs/{id}/gcode (G-code sliced in the browser) goes through identity, the grant check and the owner rule like /slice."""
+"""POST /api/jobs/{id}/gcode (G-code sliced in the browser) goes through identity, the grant check and the owner rule."""
 import json
 import os
 import zipfile

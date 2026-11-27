@@ -1,6 +1,6 @@
 // Shell: identity, hash router, tabs, polling.
-import { api, RESTARTING } from './api.js';
-import { h, clear, icon, fail, empty } from './util.js';
+import { api, RESTARTING, setUser, newRoute } from './api.js';
+import { h, clear, icon, fail, empty, loading } from './util.js';
 
 const VIEWS = {
   printers: () => import('./views/printers.js'),
@@ -20,6 +20,15 @@ ctx.managesAny = () => ctx.me.is_admin || ctx.me.printers.some((p) => p.role ===
 // Run fn now and every ms until the route changes.
 ctx.every = (ms, fn) => { fn(); ctx.timers.push(setInterval(fn, ms)); };
 ctx.go = (hash) => { location.hash = hash; };
+// Reslice hands the next New print screen what to start from ({slice_job, model, name, options, target, quality, tray, bed});
+// New print reads it once on mount and clears it.
+ctx.reslice = null;
+
+// The app runs in an iframe of the HA panel, whose own URL never shows our hash. The frame is same-origin with HA,
+// so mirror the route into the parent's hash and read it back on load: <HA panel URL>#/history/123 is a deep link.
+const outer = () => { try { return window.parent !== window && window.parent.location.origin === location.origin ? window.parent : null; } catch { return null; } };
+const readOuterHash = () => { const w = outer(); return w && /^#\//.test(w.location.hash) ? w.location.hash : ''; };
+const mirrorHash = () => { try { const w = outer(); if (w && w.location.hash !== location.hash) w.history.replaceState(w.history.state, '', location.hash || '#/'); } catch { /* the panel keeps its own URL */ } };
 
 const app = document.getElementById('app');
 let main, tabs, menuPop;
@@ -61,15 +70,17 @@ addEventListener('druckwerk:restarting', () => {
 });
 
 let seq = 0;
-async function route() {
+// keep: redraw in place after a fresh answer replaced a cached one (no spinner, same scroll position).
+async function route(keep) {
+  newRoute();
   ctx.timers.splice(0).forEach(clearInterval);
   const parts = location.hash.replace(/^#\/?/, '').split('/').filter(Boolean);
   let id = parts[0] || 'printers';
   if (!VIEWS[id] || (id === 'access' || id === 'setup') && !ctx.isAdmin()) id = 'printers';
   const mine = ++seq;
   tabs.querySelectorAll('a').forEach((a) => (a.getAttribute('data-id') === id ? a.setAttribute('aria-current', 'page') : a.removeAttribute('aria-current')));
-  clear(main, h('p', { class: 'muted' }, h('span', { class: 'spin' }), ' Loading…'));
-  scrollTo(0, 0);
+  if (!keep) { clear(main, loading()); scrollTo(0, 0); }
+  mirrorHash();
   try {
     const mod = await VIEWS[id]();
     if (mine !== seq) return;
@@ -84,13 +95,19 @@ async function route() {
 
 let started = false;
 async function start() {
-  try { ctx.me = await api.me(); } catch (e) {
+  try { ctx.me = await api.me(); setUser(ctx.me.user_id); } catch (e) {
     clear(app, h('main', null, e.retry ? h('p', { class: 'muted' }, h('span', { class: 'spin' }), ' ', RESTARTING) : empty('Cannot reach the hub: ' + e.message)));
     return;
   }
   shell();
+  if (!location.hash) { const o = readOuterHash(); if (o) location.hash = o; }
   if (!location.hash && ctx.isAdmin() && !ctx.me.setup_done) location.hash = '#/setup';
-  if (!started) { started = true; addEventListener('hashchange', route); }
+  if (!started) {
+    started = true;
+    addEventListener('hashchange', () => route());
+    // A cached list was shown and the network answered differently: draw the view again, unless the person is in a dialog.
+    addEventListener('druckwerk:fresh', () => { if (!document.querySelector('dialog[open]')) route(true); });
+  }
   route();
 }
 start();

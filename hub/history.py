@@ -46,7 +46,32 @@ def jobs_of(queue):
         return [dict(j) for j in queue.jobs + queue.history if j.get("printer") and j.get("started_at") and j["state"] in JOB_STATES]
 
 
+JOB_FIELDS = ("id", "name", "state", "error", "file", "source", "target", "model", "filaments", "options", "spools_used",
+              "grams", "filament_grams", "print_seconds", "cost", "plate_png", "slice_job", "slice", "owner_user_id", "owner_name",
+              "created_at", "started_at", "finished_at")
+FINAL = ("done", "failed", "cancelled")
+STATUS = {"done": "finished", "failed": "failed", "cancelled": "cancelled"}
+
+
+def job_view(job):
+    """What the detail view may show of a job; absent fields stay absent."""
+    return {k: job[k] for k in JOB_FIELDS if job.get(k) is not None}
+
+
 def item(task, job, printer):
     return dict(task, printer_name=printer.get("name") or task["serial"], job_id=job and job["id"],
                 user_id=job and job.get("owner_user_id"), user_name=job and (job.get("owner_name") or None),
-                cost=job and job.get("cost"), source="druckwerk" if job else "cloud")
+                cost=job and job.get("cost"), source="druckwerk" if job else "cloud", job=job and job_view(job),
+                when=task.get("started_at") or task.get("ended_at"))
+
+
+def job_item(job, printer):
+    """A finished Druckwerk job that no cloud task explains (never sent, cancelled, or the cloud has no record)."""
+    serial = job.get("printer") or (job["target"] if job.get("target") != "any" else "")
+    name = (printer or {}).get("name") or ("Any " + job["model"] if job.get("target") == "any" and job.get("model") else serial)
+    return {"id": "job-" + job["id"], "serial": serial, "title": job.get("name") or job.get("file"), "status": STATUS[job["state"]],
+            "started_at": job.get("started_at"), "ended_at": job.get("finished_at"), "seconds": job.get("print_seconds"),
+            "grams": job.get("grams"), "cover_url": None, "printer_name": name or None, "job_id": job["id"],
+            "user_id": job.get("owner_user_id"), "user_name": job.get("owner_name") or None, "cost": job.get("cost"),
+            "source": "job", "error": job.get("error"), "job": job_view(job),
+            "when": job.get("started_at") or job.get("finished_at") or job.get("created_at")}

@@ -76,7 +76,7 @@ def test_printers_register_themselves(hub):
     st, printers = hub.req("GET", "/api/printers", user=ADMIN)
     assert [p["serial"] for p in printers] == [SERIAL, SERIAL2]
     assert hub.app.registry.get(SERIAL) == {"serial": SERIAL, "name": "Lab", "model": "H2S", "account": "a_x", "prefix": "lab_h2s",
-                                            "plate_type": "", "nozzle": "", "pause_entities": [], "electricity_kwh_price": ""}
+                                            "plate_type": "", "nozzle": "", "pause_entities": [], "electricity_kwh_price": "", "owner": ""}
     assert hub.app.registry.get(SERIAL2)["prefix"] == "other"
     assert hub.app.config_view(hub.app.registry.get(SERIAL))["electricity_kwh_price"] == 0  # the registry stores 0 as ""
     assert hub.req("GET", "/api/me", user=ADMIN)[1]["setup_done"] is True

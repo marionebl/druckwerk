@@ -95,17 +95,13 @@ class Notifier:
         return None
 
     def admin_ids(self, serial):
-        """HA admins plus active owners of the printer (or of all printers)."""
-        grants = self.app.grants
-        ids = {g["user_id"] for g in list(grants.items)
-               if grants.is_active(g) and g.get("role") == "owner" and g.get("printer") in (serial, "*")}
-        return ids | {u["id"] for u in self.app.ha_users() if u["is_admin"]}
+        """HA admins plus the printer's owner."""
+        return self.owner_ids(serial) | {u["id"] for u in self.app.ha_users() if u["is_admin"]}
 
     def owner_ids(self, serial):
-        """Active owners of the printer (or of all printers); HA admins only when they hold such a grant."""
-        grants = self.app.grants
-        return {g["user_id"] for g in list(grants.items)
-                if grants.is_active(g) and g.get("role") == "owner" and g.get("printer") in (serial, "*")}
+        """The printer's owner; HA admins only when they own it."""
+        owner = (self.app.registry.get(serial) or {}).get("owner")
+        return {owner} if owner else set()
 
     def notify_admins(self, serial, message, actions=None):
         """Notify the printer's admins who are mapped and at home (person state "home")."""

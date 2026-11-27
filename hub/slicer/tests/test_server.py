@@ -152,9 +152,11 @@ def test_engine_files_and_isolation_headers(app):
         assert r.headers["Cross-Origin-Embedder-Policy"] == "require-corp"
 
 
-def test_the_server_does_not_slice(app):
+def test_upload_keeps_the_model_and_the_server_does_not_slice(app):
     base = app[0]
-    jid = json.loads(call(base, "POST", "/api/jobs?name=a.stl", raw=b"x")[1])["id"]
+    jid = json.loads(call(base, "POST", "/api/jobs?name=a.stl", raw=b"solid x\nendsolid x\n")[1])["id"]
     assert json.loads(call(base, "GET", "/api/jobs/" + jid)[1])["state"] == "uploaded"
+    assert call(base, "GET", "/api/jobs/%s/model" % jid) == (200, b"solid x\nendsolid x\n")  # Reslice downloads it again
+    assert call(base, "GET", "/api/jobs/000000000000/model")[0] == 404
     assert call(base, "POST", "/api/jobs/%s/slice" % jid)[0] == 404  # no body: the server answers 404 without reading one
     assert call(base, "POST", "/api/jobs?name=a.exe", raw=b"x")[0] == 400

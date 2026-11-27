@@ -14,7 +14,7 @@ from datetime import datetime, timezone
 from queue_engine import QueueError, NotFound
 from queue_registry import write_json
 
-ROLES = ("owner", "user")
+ROLES = ("user",)  # ownership is a printer property (Registry.set_owner)
 
 
 class Unauthorized(Exception):
@@ -56,6 +56,7 @@ class Grants:
         if os.path.exists(self.path):
             with open(self.path) as f:
                 self.items = json.load(f)
+        self.migrate_owners()
 
     def add(self, user_id, printer, role="user", until=None, condition_entity=None, needs_approval=False):
         if not str(user_id or "").strip():
@@ -63,7 +64,7 @@ class Grants:
         if printer != "*" and not self.registry.get(printer):
             raise ValueError("printer must be a known serial or *")
         if role not in ROLES:
-            raise ValueError("role must be owner or user")
+            raise ValueError("role must be user")
         if until:
             _parse_until(until)
         if condition_entity and "." not in condition_entity:
@@ -80,6 +81,28 @@ class Grants:
             self.items.append(g)
             write_json(self.path, self.items)
         return g
+
+    def migrate_owners(self):
+        """Owner grants of older versions become the printer's `owner`. A grant is dropped once every printer it covered
+        is owned by its user; otherwise (another owner, or no printer yet for "*") it stays as a user grant or waits."""
+        changed = False
+        for g in list(self.items):
+            if g.get("role") != "owner":
+                continue
+            serials = [p["serial"] for p in self.registry.all()] if g["printer"] == "*" else [g["printer"]]
+            if not serials:
+                continue  # "*" before any printer is registered: applied when they are
+            for s in serials:
+                p = self.registry.get(s)
+                if p and not p.get("owner"):
+                    self.registry.set_owner(s, g["user_id"])
+            if all((self.registry.get(s) or {}).get("owner") == g["user_id"] for s in serials):
+                self.items.remove(g)
+            else:
+                g["role"] = "user"
+            changed = True
+        if changed:
+            write_json(self.path, self.items)
 
     def remove(self, grant_id):
         with self.lock:
@@ -113,10 +136,10 @@ class Access:
         """'admin', 'user' or None for this caller on one printer."""
         if self.is_global_admin(c):
             return "admin"
-        active = self.grants.active(c.user_id, serial)
-        if any(g["role"] == "owner" for g in active):
-            return "admin"  # owners administer their own printer
-        return "user" if active else None
+        owner = (self.registry.get(serial) or {}).get("owner")
+        if owner and owner == c.user_id:
+            return "admin"  # the owner administers their own printer
+        return "user" if self.grants.active(c.user_id, serial) else None
 
     def serials_of(self, job):
         """Printers a job can run on (or ran on)."""
@@ -190,6 +213,13 @@ class Bound:
         dest = self.a.serials_of({"target": target, "model": model or job["model"]})
         self._need_admin(dest, "moving a job needs admin on the destination printer too")
         return self.q.move(job_id, target, model)
+
+    def edit(self, job_id, name=None, options=None):
+        job = self._job(job_id)
+        role = self.a.best(self.c, self.a.serials_of(job))
+        if role == "admin" or (role == "user" and job.get("owner_user_id") == self.c.user_id):
+            return self.q.edit(job_id, name, options)
+        raise Forbidden("rule: users may only edit their own jobs; admins edit any job")
 
     def cancel(self, job_id):
         job = self._job(job_id)

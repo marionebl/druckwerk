@@ -1,15 +1,25 @@
 # Changelog
 
-## 3.2.0 (unreleased)
+## 3.3.0 (unreleased)
 
 - Remove all server-side slicing. The app slices only in the browser, with the OrcaSlicer WebAssembly engine. Reason: the native slicer was 733 MB of the 967 MB aarch64 image, and the browser engine is as fast (CI test plate on an arm runner: native 7.0, 7.0 and 9.0 s per variant, WebAssembly with threads 8.8, 8.2 and 10.1 s).
-- The image is much smaller: about 234 MB instead of 967 MB on aarch64. The slicer, its flatpak runtime and the scripts that ran it are gone. The WebAssembly engine, ffmpeg, qemu and the bridge stay.
-- `POST /api/jobs/{id}/slice` is gone and answers 404. The browser routes stay: `POST /api/jobs`, `GET /api/jobs/{id}`, `POST /api/jobs/{id}/gcode`, the plate and G-code files, `POST /api/jobs/{id}/queue` and `POST /api/jobs/{id}/print`.
+- The image is much smaller: 248 MB instead of 967 MB on aarch64, 185 MB instead of 938 MB on amd64 (CI, `docker image ls`). The slicer, its flatpak runtime and the scripts that ran it are gone. The WebAssembly engine, ffmpeg, qemu and the bridge stay.
+- `POST /api/jobs/{id}/slice` is gone and answers 404. The browser routes stay: `POST /api/jobs`, `GET /api/jobs/{id}`, `GET /api/jobs/{id}/model`, `POST /api/jobs/{id}/gcode`, the plate and G-code files, `POST /api/jobs/{id}/queue` and `POST /api/jobs/{id}/print`.
 - The actions `druckwerk.slice` and `druckwerk.get_slice` and the LLM tools `druckwerk_slice` and `druckwerk_get_slice_results` are gone. An agent can no longer slice. It can only queue a sliced `.gcode.3mf` that is already in the share.
 - `druckwerk.add_to_queue` and `druckwerk_add_to_queue` lose the field `slice_job_id`. No tool hands out a job id any more. `file` is now required. The LLM prompt says that the app has no slice tool.
 - A job that an older version left in state `queued` or `slicing` is marked `failed` at start ("Slice again in the browser").
 - Models that are not STL (3MF, STEP, OBJ) can no longer be sliced in the app. Slice them elsewhere and add the `.gcode.3mf` to the share.
 - The CI image test checks that the image is at most 450 MB and that `/slice` answers 404. It stores a real Bambu Studio G-code through `/gcode` instead of slicing on the server.
+
+## 3.2.0 (unreleased)
+
+- One History. The History tab lists the Bambu Cloud tasks with the Druckwerk job merged in (name, owner, cost, options, slice). A finished job that no cloud task explains (never sent, cancelled before the start) is listed too and marked "Druckwerk only". The Queue no longer has a History segment. `GET /api/history` items gain `job`, `when` and `printer_owner`; `source` can be `job`.
+- Every screen has a URL: `#/queue`, `#/history`, `#/history/<id>`, `#/queue/<job id>`, `#/filament`, `#/filament/<spool id>`, `#/printers/<serial>`, `#/new`, `#/access`. Reload opens the same view. Inside Home Assistant the app mirrors its route into the panel's URL hash and reads it back on load, so `<panel URL>#/history/123` is a link you can share.
+- History detail: status, times, printer, grams, cost, the plate image (a placeholder box when it does not load), the print options and the slice, the 3D preview while the slicer still has the file, and Print again, Reslice and Retry where the source exists. Queue detail: the same, plus change name, options and target printer, approve, reject and cancel. `POST /api/queue/{id}/edit` is new. Jobs made from a slice keep `slice_job` and `slice`.
+- Reslice opens New print with the same model and settings (`ctx.reslice`). New print prefills the model (from `GET /api/jobs/{id}/model`), name, options, printer, filament (library spool or AMS tray), build plate and the quality pick. A new slice is queued as a new job; the old job stays until you cancel it.
+- Filament detail (`#/filament/<id>`): the spool and the prints done with it, linked to History. `GET /api/spools/{id}/prints` is new.
+- Lists show "Loading…" until the first answer and "No x yet" only after an empty answer; a failure shows the error. Printers, filament, queue and history show the last answer from a per-user localStorage cache at once and replace it when the network answers; a change drops the cached list. Storage that is empty or blocked changes nothing.
+- Ownership is a property of the printer: `PUT /api/setup/printers/{serial}` takes `owner` (an HA user), the Setup wizard has an Owner field. The `owner` role is gone from grants; at start owner grants move into the printer's `owner` and are dropped (see API.md). The owner is an admin of the printer, gets load requests and approval notifications, and is named in the History for prints nobody started here ("Not started here" stays when there is no owner).
 
 ## 3.1.1 (unreleased)
 

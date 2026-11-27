@@ -13,6 +13,7 @@ async function call(method, path, body, raw) {
   let r;
   try { r = await fetch(path, init); } catch (e) { throw restarting(new ApiError(0, 'Network error: ' + e.message)); }
   const data = await r.json().catch(() => null);
+  if (r.ok && method !== 'GET') forget(path);
   if (!r.ok) {
     // Home Assistant answers 502 to 504 while it restarts: the hub marks its own answer retry, the gateway sends a page.
     const gateway = [502, 503, 504].includes(r.status) && (data === null || data.retry === true);
@@ -29,7 +30,51 @@ function restarting(err) {
   dispatchEvent(new CustomEvent('druckwerk:restarting'));
   return err;
 }
-const get = (p) => call('GET', p);
+// Stale-while-revalidate for the lists people open first. The first read of a list in a page load is answered from the
+// cache (per HA user, localStorage) while the network answers behind it; when the answer differs the shell redraws the view
+// ('druckwerk:fresh'). Every storage call may throw (private window, blocked data): then there is no cache and nothing changes.
+const SWR = /^api\/(printers|spools|queue|history|load-requests)(\?.*)?$/;
+const RELATED = { queue: ['queue', 'history', 'printers'], jobs: ['queue', 'history'], spools: ['spools', 'load-requests'], 'load-requests': ['load-requests', 'spools'],
+  printers: ['printers', 'queue'], setup: ['printers'], grants: ['printers'] };
+let user = '';
+const seen = new Set(), pending = new Set(), served = new Set(), hot = new Map();  // network answered / fetching / read stale this route / fresh answer waiting
+const key = (p) => `dw1:${user}:${p}`;
+const peek = (k) => { try { const v = localStorage.getItem(k); return v == null ? undefined : JSON.parse(v); } catch { return undefined; } };
+const keep = (k, v) => { try { localStorage.setItem(k, JSON.stringify(v)); } catch { /* full or blocked: no cache */ } };
+export const setUser = (id) => { user = String(id || ''); };
+export const newRoute = () => served.clear();
+// A change makes the cached lists of that resource wrong: drop them (the next read goes to the network).
+function forget(path) {
+  const bases = RELATED[path.split('/')[1]] || [];
+  hot.clear();
+  try {
+    for (let i = localStorage.length - 1; i >= 0; i--) {
+      const k = localStorage.key(i);
+      if (k && bases.some((b) => k.startsWith(key('api/' + b)))) localStorage.removeItem(k);
+    }
+  } catch { /* nothing cached */ }
+}
+async function get(p) {
+  if (!SWR.test(p) || !user) return call('GET', p);
+  const k = key(p), fresh = hot.get(p);
+  if (fresh && Date.now() - fresh.at < 5000) { hot.delete(p); return fresh.v; }
+  const old = peek(k);
+  if (old !== undefined && !seen.has(p)) {
+    served.add(p);
+    if (!pending.has(p)) {
+      pending.add(p);
+      call('GET', p).then((v) => {
+        seen.add(p); keep(k, v);
+        hot.set(p, { v, at: Date.now() });  // the next read (a redraw caused by another list) takes it without a second request
+        if (served.has(p) && JSON.stringify(v) !== JSON.stringify(old)) dispatchEvent(new CustomEvent('druckwerk:fresh'));
+      }, () => { /* offline or failing: the cached list stays */ }).finally(() => pending.delete(p));
+    }
+    return old;
+  }
+  const v = await call('GET', p);
+  seen.add(p); keep(k, v);
+  return v;
+}
 const post = (p, b) => call('POST', p, b ?? {});
 const put = (p, b) => call('PUT', p, b);
 const del = (p) => call('DELETE', p);
@@ -62,6 +107,11 @@ export const api = {
   upload: (file) => call('POST', 'api/jobs?name=' + q(file.name), file, true),
   slice: (id, body) => post(`api/jobs/${q(id)}/slice`, body),
   job: (id) => get(`api/jobs/${q(id)}`),
+  jobModel: async (id) => {
+    const r = await fetch(`api/jobs/${q(id)}/model`);
+    if (!r.ok) throw new ApiError(r.status, 'The model is no longer stored');
+    return r.blob();
+  },
   plateUrl: (id) => `api/jobs/${q(id)}/plate.png`,
   gcode: async (id) => {
     const r = await fetch(`api/jobs/${q(id)}/plate.gcode`);
@@ -77,6 +127,7 @@ export const api = {
   spools: () => get('api/spools'),
   addSpool: (s) => post('api/spools', s),
   saveSpool: (id, s) => put('api/spools/' + q(id), s),
+  spoolPrints: (id) => get(`api/spools/${q(id)}/prints`),
   deleteSpool: (id) => del('api/spools/' + q(id)),
   loadRequests: () => get('api/load-requests'),
   askLoad: (id, printer, note) => post(`api/spools/${q(id)}/load-request`, { printer, note }),

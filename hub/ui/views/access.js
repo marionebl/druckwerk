@@ -1,9 +1,9 @@
 // Access grants (HA admins).
 import { api } from '../api.js';
-import { h, clear, icon, btn, field, pill, empty, attempt, dateTime } from '../util.js';
+import { h, clear, icon, btn, field, pill, empty, attempt, dateTime, loading } from '../util.js';
 
 export async function mount(ctx, root) {
-  const tableBox = h('div'), formBox = h('div');
+  const tableBox = h('div', null, loading()), formBox = h('div');
   let users = [], printers = [], entities = [], grants = [];
   root.append(h('div', { class: 'page-head' }, h('div', null, h('h1', null, 'Access'), h('div', { class: 'sub' }, 'Who may use which printer, and when'))),
     h('div', { class: 'stack' }, tableBox, formBox));
@@ -40,7 +40,7 @@ export async function mount(ctx, root) {
   function form() {
     const user = h('select', null, users.map((u) => h('option', { value: u.id }, u.name + (u.is_admin ? ' (admin)' : ''))));
     const printer = h('select', null, h('option', { value: '*' }, 'All printers'), printers.map((p) => h('option', { value: p.serial }, p.name)));
-    const role = h('select', null, h('option', { value: 'user' }, 'User (own jobs)'), h('option', { value: 'owner' }, 'Owner (manages the printer)'));
+    const role = h('select', null, h('option', { value: 'user' }, 'User (own jobs)'));
     const until = h('input', { type: 'datetime-local' });
     const cond = h('input', { type: 'text', list: 'cond-ents', placeholder: 'Search schedule, helper, sensor or person', autocomplete: 'off' });
     const dl = h('datalist', { id: 'cond-ents' }, entities.map((e) => h('option', { value: e.entity_id }, `${e.name} (${e.state})`)));

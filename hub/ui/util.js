@@ -109,6 +109,15 @@ export const field = (label, input, hint) => h('label', { class: 'field' }, h('s
 export const btn = (label, onclick, cls = '', extra = {}) => h('button', { type: 'button', class: 'btn ' + cls, onclick, ...extra }, label);
 export const pill = (text, cls = '') => h('span', { class: 'pill ' + cls }, text);
 export const empty = (text) => h('div', { class: 'empty' }, text);
+// A list says "Loading…" until its first answer; "No x yet" is only for an empty answer.
+export const loading = (text = 'Loading…') => h('p', { class: 'muted loading', role: 'status' }, h('span', { class: 'spin' }), ' ', text);
+// A fixed-size box with an image. The box never changes size: without a source or when the image fails it shows a placeholder.
+export function thumb(src, cls = 'thumb', props) {
+  const box = h('div', { class: cls + (src ? '' : ' ph') });
+  if (src) box.append(h('img', { alt: '', loading: 'lazy', referrerpolicy: 'no-referrer', ...props, src,
+    onerror: (e) => { e.target.remove(); box.classList.add('ph'); } }));
+  return box;
+}
 
 export function swatch(colour, size = 28) {
   return h('span', { class: 'swatch', style: `--c:${hex(colour)};--s:${size}px` });
