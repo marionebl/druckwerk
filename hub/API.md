@@ -24,7 +24,8 @@ The secret reaches the integration through Supervisor discovery: on start the ap
 - `PUT /api/setup/printers/{serial}` `{name, ha_prefix, plate, nozzle, pause_entities: [entity_id], electricity_kwh_price?: number}` → `{serial, name, model, account, ha_prefix, plate, nozzle, pause_entities, electricity_kwh_price}`.
   `model` and `account` come from the bridge; 400 if HA has no `sensor.<ha_prefix>_print_status`, 404 if no bridge account has the serial.
 - `DELETE /api/setup/printers/{serial}`
-- `GET /api/integration` → `{url, secret}` (HA admins; fallback for the config flow, same data as the discovery message)
+- `GET /api/integration` → `{url, secret, connected}` (HA admins; fallback for the config flow, same data as the discovery message). `connected` is true when HA has a `druckwerk` config entry (read over the HA websocket, false on error).
+- Printers register themselves: for each printer the bridge lists, with a `suggested_prefix` whose `sensor.<prefix>_print_status` exists in HA, the app saves default settings. It runs at start, on `GET /api/setup` and every 60 s. A printer removed with `DELETE /api/setup/printers/{serial}` is not registered again until a later `PUT` for it.
 - `/api/bridge/*` proxies the bridge's own page and API (HA admins only).
 
 ## Printers (filtered to printers the caller has an active grant on; HA admins see all)

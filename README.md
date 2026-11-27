@@ -72,9 +72,10 @@ Before anything is sent, `druckwerk.print_file` and the Start button check the f
 
 `force` only overrides the "printer is busy" check, not this guard.
 
-## Druckwerk integration (v0.10)
+## Druckwerk integration (v0.12)
 
-- Setup finds the app through the Supervisor (a slug ending in `_druckwerk`); the URL can be set by hand in the options.
+- The integration sets itself up: the app announces host, ports and secret through Supervisor discovery, and Home Assistant creates the entry without a question. Install it from the Marketplace (HACS) and restart Home Assistant. The app's setup page shows whether the integration is connected; the URL and secret are there only as a manual fallback.
+- Printers need no setup step either: the app registers every printer that the printer integration in Home Assistant already has. Remove one on the setup page and it stays removed.
 - Options: hub secret (normally delivered by the app through Supervisor discovery, which also keeps URLs and secret current; paste it by hand otherwise), notification recipients as a map `person.<name>: notify.<service>`.
 - Todo list `Queue` per printer: queued and pending jobs (owner in the description). Deleting an item cancels the job, moving it reorders; adding is not supported (a job needs a sliced file).
 - Events: the hub is polled every 5 s and fires `druckwerk_job_done`, `_job_failed`, `_job_started`, `_approval_needed`, `_queue_changed` with the hub's payload.

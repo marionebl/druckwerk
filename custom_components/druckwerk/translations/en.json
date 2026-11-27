@@ -7,10 +7,6 @@
         "data": {
           "url": "Add-on URL"
         }
-      },
-      "hassio_confirm": {
-        "title": "Druckwerk app",
-        "description": "Set up Druckwerk with the Druckwerk app that Home Assistant found?"
       }
     },
     "error": {

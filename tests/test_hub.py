@@ -230,9 +230,7 @@ def hassio_info(host=HUBHOST, secret=HUB_SECRET):
 
 async def test_discovery_creates_entry(hass, addon):
     r = await hass.config_entries.flow.async_init("druckwerk", context={"source": "hassio"}, data=hassio_info())
-    assert r["type"] == "form" and r["step_id"] == "hassio_confirm"
-    r = await hass.config_entries.flow.async_configure(r["flow_id"], {})
-    assert r["type"] == "create_entry"
+    assert r["type"] == "create_entry" and r["title"] == "Druckwerk"
     assert r["data"] == {"url": f"http://{HUBHOST}:8098", "hub_url": f"http://{HUBHOST}:8099", "hub_secret": HUB_SECRET}
 
 

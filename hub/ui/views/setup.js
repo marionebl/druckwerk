@@ -76,12 +76,17 @@ export async function mount(ctx, root) {
     try {
       const i = await api.integration(); const shown = h('span', { class: 'secret' }, '•'.repeat(16));
       let open = false;
-      sec.append(h('div', { class: 'stack', style: 'gap:8px' }, h('b', null, 'Connect the Home Assistant integration'),
-        h('p', { class: 'muted', style: 'margin:0' }, 'Add the “Druckwerk” integration in Settings → Devices & services and enter these two values. It uses them for notifications and the queue.'),
-        field('Hub URL', h('span', { class: 'secret' }, i.url)),
-        field('Secret', h('div', { class: 'row' }, shown, btn(open ? 'Hide' : 'Show', (e) => {
-          open = !open; shown.textContent = open ? i.secret : '•'.repeat(16); e.target.textContent = open ? 'Hide' : 'Show';
-        }, 'sm'), btn('Copy', () => navigator.clipboard?.writeText(i.secret).then(() => toast('Copied', 'ok'), () => toast('Copy failed', 'error')), 'sm')))));
+      sec.append(h('div', { class: 'stack', style: 'gap:8px' }, h('b', null, 'Home Assistant integration'),
+        h('p', { class: 'muted', style: 'margin:0' }, i.connected
+          ? 'The Home Assistant integration is connected.'
+          : 'Install the Druckwerk integration from the Marketplace (HACS) and restart Home Assistant. It then sets itself up from this app.'),
+        h('details', null, h('summary', null, 'Manual setup'),
+          h('div', { class: 'stack', style: 'gap:8px;margin-top:8px' },
+            h('p', { class: 'muted', style: 'margin:0' }, 'Only if the integration does not find this app. Add the “Druckwerk” integration in Settings → Devices & services and enter these two values.'),
+            field('Hub URL', h('span', { class: 'secret' }, i.url)),
+            field('Secret', h('div', { class: 'row' }, shown, btn(open ? 'Hide' : 'Show', (e) => {
+              open = !open; shown.textContent = open ? i.secret : '•'.repeat(16); e.target.textContent = open ? 'Hide' : 'Show';
+            }, 'sm'), btn('Copy', () => navigator.clipboard?.writeText(i.secret).then(() => toast('Copied', 'ok'), () => toast('Copy failed', 'error')), 'sm')))))));
     } catch (e) { sec.append(h('small', null, 'Integration secret unavailable: ' + e.message)); }
     sec.append(h('div', null, btn('Go to printers', () => ctx.go('#/printers'), 'primary')));
     return sec;

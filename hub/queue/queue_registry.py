@@ -24,6 +24,12 @@ class Registry:
         if os.path.exists(self.path):
             with open(self.path) as f:
                 self.printers = json.load(f)
+        # Serials an admin removed: auto-registration skips them. Own file, so printers.json keeps its format.
+        self.removed_path = os.path.join(data_dir, "removed_printers.json")
+        self.removed = []
+        if os.path.exists(self.removed_path):
+            with open(self.removed_path) as f:
+                self.removed = json.load(f)
 
     def put(self, serial, **fields):
         serial = str(serial or "").strip()
@@ -43,12 +49,24 @@ class Registry:
         with self.lock:
             self.printers[serial] = entry
             write_json(self.path, self.printers)
+            if serial in self.removed:
+                self.removed.remove(serial)
+                write_json(self.removed_path, self.removed)
         return dict(entry, serial=serial)
 
     def remove(self, serial):
         with self.lock:
             self.printers.pop(serial, None)
             write_json(self.path, self.printers)
+
+    def mark_removed(self, serial):
+        with self.lock:
+            if serial not in self.removed:
+                self.removed.append(serial)
+                write_json(self.removed_path, self.removed)
+
+    def is_removed(self, serial):
+        return serial in self.removed
 
     def get(self, serial):
         entry = self.printers.get(serial)

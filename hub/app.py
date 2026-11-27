@@ -90,6 +90,7 @@ class App:
         self.queue = Queue(self.registry, data_dir, ha.state, self._call_service, self.get_trays, clock=clock,
                            job_allowed=self.access.job_allowed)
         self.secret = self._load_secret()
+        self._auto_at = None
         self._cache = {}
         self._cache_lock = threading.Lock()
         # Events: seq starts at the boot time so it keeps growing across restarts (pollers hold the last seq they saw).
@@ -414,7 +415,32 @@ class App:
         return {"service": "druckwerk", "config": {"host": self.hostname_fn(), "bridge_port": self.bridge[1],
                                                        "hub_port": self.port, "secret": self.secret}}
 
+    def auto_register(self, listed=None):
+        """Register printers that the bridge lists and HA already has, so an admin needs no setup step."""
+        for d in listed if listed is not None else self.bridge_ok("GET", "/api/printers", timeout=20):
+            serial = d["serial"]
+            if self.registry.get(serial) or self.registry.is_removed(serial):
+                continue
+            prefix = self.suggested_prefix(serial)
+            if prefix and "sensor.%s_print_status" % prefix in self.ha.states():
+                self.registry.put(serial, name=d.get("name") or serial,
+                                  model=d.get("dev_product_name") or d.get("dev_model_name") or "", account=d.get("account"),
+                                  prefix=prefix, plate_type="", nozzle="", pause_entities=[], electricity_kwh_price=0)
+                log("registered printer %s as %s" % (serial, prefix))
+
+    def try_auto_register(self, every=60, listed=None):
+        # Throttled: the bridge or HA may be down, and each try costs two calls.
+        now = self.clock()
+        if self._auto_at is not None and now - self._auto_at < every:
+            return
+        self._auto_at = now
+        try:
+            self.auto_register(listed)
+        except Exception as e:  # noqa: BLE001 - bridge and HA errors must not stop the ticker
+            log("auto register: %s" % e)
+
     def tick_all(self):
+        self.try_auto_register()
         for p in self.registry.all():
             try:
                 self.queue.tick(p["serial"])
@@ -426,6 +452,7 @@ class App:
             log("sync: %s" % e)
 
     def run_ticker(self, stop, every=10):
+        self.try_auto_register()  # at startup, before the first wait
         while not stop.wait(every):
             self.tick_all()
 
@@ -513,6 +540,7 @@ class App:
     def get_setup(self, h, m, q, c):
         health = self.bridge_ok("GET", "/api/health", timeout=10)
         listed = self.bridge_ok("GET", "/api/printers", timeout=20)
+        self.try_auto_register(every=0, listed=listed)
         printers = []
         for d in listed:
             serial = d["serial"]
@@ -564,10 +592,16 @@ class App:
         if not self.registry.get(m.group(1)):
             raise NotFound("unknown printer")
         self.registry.remove(m.group(1))
+        self.registry.mark_removed(m.group(1))
         return {"removed": m.group(1)}
 
     def get_integration(self, h, m, q, c):
-        return {"url": "http://%s:%s" % (self.hostname_fn(), self.port), "secret": self.secret}
+        try:
+            connected = bool(self.ha.command("config_entries/get", domain="druckwerk"))
+        except Exception as e:  # noqa: BLE001 - the page must still show the manual values
+            log("config entries: %s" % e)
+            connected = False
+        return {"url": "http://%s:%s" % (self.hostname_fn(), self.port), "secret": self.secret, "connected": connected}
 
     def get_printers(self, h, m, q, c):
         states = self.ha.states()

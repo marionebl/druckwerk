@@ -440,7 +440,7 @@ class H(BaseHTTPRequestHandler):
             doms = (q.get("domains") or [""])[0].split(",")
             return ok([e for e in ENTITIES if e["entity_id"].split(".")[0] in doms])
         if path == "api/integration":
-            return ok({"url": "http://local-druckwerk:8099", "secret": "mock-secret-" + "0" * 20})
+            return ok({"url": "http://local-druckwerk:8099", "secret": "mock-secret-" + "0" * 20, "connected": False})
         if path == "api/setup" and m == "GET":
             return ok({"accounts": SETUP["accounts"], "printers": list(SETUP["printers"].values())})
         if path == "api/setup/login/start":
