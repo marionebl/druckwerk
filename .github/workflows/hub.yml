@@ -1,7 +1,7 @@
 name: Hub app
 on:
   push:
-    branches: [main, wasm-only]
+    branches: [main]
     paths: [hub/**, .github/workflows/hub.yml]
   pull_request:
     paths: [hub/**, .github/workflows/hub.yml]
