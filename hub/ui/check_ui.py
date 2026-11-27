@@ -277,6 +277,9 @@ def check_reslice_lands(page):
     assert page.locator(".chip[aria-pressed=true]", has_text="Workshop H2S").count() == 1, "the old printer is preselected"
     assert page.locator("select option:checked", has_text="Textured PEI Plate").count() >= 1
     page.get_by_role("button", name="Slice good, better and best").click()
+    if MOCKED:  # the mock's slice takes 3 s and reports a percent
+        must(page, ".variant .slice-progress:not([data-percent=''])", "a slice in progress shows its percent", 4000)
+        assert re.search(r"Slicing… \d+% · Generating infill", page.locator(".variant .slice-progress").first.text_content())
     page.wait_for_selector(".variant[aria-pressed=true]", timeout=SLICE_TIMEOUT)
     assert page.locator(".variant[aria-pressed=true]", has_text="Best").count() == 1, "the old quality is the pick"
     assert page.locator("input[type=text][maxlength='80']").input_value() == "Cable clip set (desk)", "the old name is filled in"
@@ -430,6 +433,34 @@ def hook(page, what, serial, on):
     page.evaluate("([w, s, o]) => fetch(`api/_mock/hook?set=${w}&serial=${s}&on=${o}`).then((r) => r.text())", [what, serial, on])
 
 
+def start_hook(page, serial, mode, percent=0, stage=""):
+    page.evaluate("([s, m, p, g]) => fetch(`api/_mock/start?serial=${s}&mode=${m}&percent=${p}&stage=${g}`).then((r) => r.text())", [serial, mode, percent, stage])
+
+
+def check_start_steps(page, base, ident, go, shot):
+    """From Start to the first layer the app shows the steps with their percent: upload to the cloud, the printer's
+    download of the plate, its preparation; on the printer card, the printer page and the queue row."""
+    step = lambda st: f".pcard:has-text('Office P1S') .start-steps li[data-step={st}]"
+    start_hook(page, P1S, "sending", 45)
+    go("#/printers", ".pcard")
+    must(page, step("upload") + "[data-state=active]:has-text('45%')", "the upload step is active and shows its percent")
+    assert page.locator(step("download")).get_attribute("data-state") == "pending"
+    start_hook(page, P1S, "download", 37)
+    must(page, step("download") + "[data-state=active]:has-text('37%')", "the printer's download shows its percent", 9000)
+    assert page.locator(step("upload")).get_attribute("data-state") == "done"
+    assert page.evaluate("document.querySelector('.pcard .start-steps .bar i').getBoundingClientRect().width") > 20, "the bar shows the percent"
+    assert "Preparing" in page.locator(".pcard", has_text="Office P1S").text_content(), "the card says the printer prepares"
+    shot("start-steps-download")
+    go("#/queue", ".job")
+    must(page, ".job[data-id=a00000000004] .start-steps li[data-step=download][data-state=active]:has-text('37%')", "the queue row shows the steps of its start")
+    shot("start-steps-queue")
+    start_hook(page, P1S, "prepare", 100, "heatbed_preheating")
+    go("#/printers/" + P1S, ".cam.big")
+    must(page, "section.card:has-text('Starting the print') li[data-step=prepare][data-state=active]:has-text('Heating the bed')", "the printer page names the stage")
+    start_hook(page, P1S, "off")
+    page.goto(f"{base}/?as={ident}")
+
+
 def must(page, selector, msg, timeout=6000):
     try:
         page.wait_for_selector(selector, timeout=timeout)
@@ -581,6 +612,7 @@ def walk(page, ident, base, shot, inject):
     if MOCKED:
         check_printer_card(page, base, ident, go, shot)
         check_back_online(page, base, ident)
+        check_start_steps(page, base, ident, go, shot)
     go("#/queue", ".job")
     shot("queue")
     if MOCKED:

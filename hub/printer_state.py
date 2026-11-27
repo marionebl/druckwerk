@@ -195,6 +195,7 @@ def view(p, now):
     return {
         "status": state if state in GCODE_STATES else None, "stage": stage(p),
         "progress": num(p.get("mc_percent")), "remaining_min": num(p.get("mc_remaining_time"), int), "end_time": end_time(p, now),
+        "prepare_percent": num(p.get("gcode_file_prepare_percent"), int),  # the printer's download of the plate
         "layer": num(p.get("layer_num"), int), "total_layers": num(p.get("total_layer_num"), int),
         "nozzle_temp": nozzle[0], "nozzle_target": nozzle[1], "bed_temp": bed[0], "bed_target": bed[1], "chamber_temp": _chamber(p),
         "task_name": str(p.get("subtask_name") or "") or None,

@@ -3,6 +3,7 @@
 import { api } from '../api.js';
 import { h, clear, icon, btn, pill, empty, modal, field, attempt, dateTime, money, loading, thumb, durSec, toast } from '../util.js';
 import * as D from './detail.js';
+import { stepsView, watchStart } from './progress.js';
 
 const WAITING = ['queued', 'pending_approval'];
 const STATE = { pending_approval: ['Needs approval', 'warn'], queued: ['Queued', ''], starting: ['Starting', 'ok'], printing: ['Printing', 'ok'], drying: ['Drying', 'ok'], done: ['Done', 'ok'], failed: ['Failed', 'err'], cancelled: ['Cancelled', ''] };
@@ -11,7 +12,7 @@ export async function mount(ctx, root, parts = []) {
   if (parts[0]) return detailView(ctx, root, decodeURIComponent(parts[0]));
   const state = { dragging: null };
   const list = h('div', { class: 'stack' }, loading());
-  let data = null, names = {}, models = {}, last = '';
+  let data = null, names = {}, models = {}, starts = {}, last = '';
 
   root.append(h('div', { class: 'page-head' }, h('div', null, h('h1', null, 'Queue'),
     h('div', { class: 'sub' }, ctx.isAdmin() ? 'All jobs' : 'Jobs on your printers', ' · finished prints are under ', h('a', { href: '#/history' }, 'History'))),
@@ -55,14 +56,19 @@ export async function mount(ctx, root, parts = []) {
     return modal('Start this job now', (close) => {
       const sure = h('input', { type: 'checkbox' });
       const sel = h('select', null, candidates.map(([s, n]) => h('option', { value: s }, n)));
+      const steps = h('div');  // the steps of the start while the request runs
       const go = btn('Start print', async () => {
-        if (await attempt(() => api.startJob(sel.value, j.id), 'Starting')) { close(true); refresh(); }
+        go.disabled = true;
+        const stop = watchStart(sel.value, steps);
+        const done = await attempt(() => api.startJob(sel.value, j.id), 'Starting');
+        stop();
+        if (done) { close(true); refresh(); } else go.disabled = !sure.checked;
       }, 'primary', { disabled: true });
       sure.addEventListener('change', () => (go.disabled = !sure.checked));
       return h('div', { class: 'body' }, h('p', { class: 'muted', style: 'margin:0' }, j.name || j.source),
         j.target === 'any' && field('Printer', sel),
         j.target !== 'any' && h('p', { style: 'margin:0' }, 'Printer: ', h('b', null, label(j.target)), h('span', { hidden: true }, sel)),
-        h('label', { class: 'check' }, sure, h('span', null, h('b', null, 'Plate is clear'), h('br'), h('small', null, 'The last print is removed and the right filament is loaded.'))), go);
+        h('label', { class: 'check' }, sure, h('span', null, h('b', null, 'Plate is clear'), h('br'), h('small', null, 'The last print is removed and the right filament is loaded.'))), go, steps);
     });
   }
   function moveDialog(j) {
@@ -104,6 +110,7 @@ export async function mount(ctx, root, parts = []) {
           j.options?.timelapse && h('span', null, 'timelapse'),
           j.name && j.file && j.name !== j.file.replace(/\.gcode\.3mf$/, '') && h('span', null, j.source || j.file),
           h('span', null, dateTime(j.finished_at || j.created_at))),
+        starts[j.id] && stepsView(starts[j.id]),
         j.error && h('small', { style: 'color:var(--err)' }, j.error)),
       acts.length ? h('div', { class: 'acts' }, acts) : null);
     el.addEventListener('click', (e) => { if (!e.target.closest('button, a, input, select')) ctx.go('#/queue/' + j.id); });
@@ -143,7 +150,8 @@ export async function mount(ctx, root, parts = []) {
       const [q, ps] = await Promise.all([api.queue(), api.printers()]);
       names = Object.fromEntries(ps.map((p) => [p.serial, p.name]));
       models = Object.fromEntries(ps.map((p) => [p.serial, p.model]));
-      const sig = JSON.stringify([q.jobs, names]);
+      starts = Object.fromEntries(ps.filter((p) => p.start && p.start_job).map((p) => [p.start_job, p.start]));
+      const sig = JSON.stringify([q.jobs, names, starts]);
       if (sig === last || state.dragging || document.querySelector('dialog[open]')) return;
       last = sig; data = q; draw();
     } catch (e) { if (!data) clear(list, empty('Could not load the queue: ' + e.message)); }
@@ -156,7 +164,7 @@ async function detailView(ctx, root, id) {
   const box = h('div');
   root.append(D.back('#/queue', 'Queue'), box);
   box.append(loading());
-  let job = null, names = {}, models = {}, sig = '', dirty = false, source = null, sourceFor = null;
+  let job = null, start = null, names = {}, models = {}, sig = '', dirty = false, source = null, sourceFor = null;
   const label = (target) => (target === 'any' ? 'Any compatible printer' : names[target] || target);
   const isAdminFor = (j) => ctx.me.is_admin || (j.target === 'any' ? ctx.managesAny() : ctx.canManage(j.printer || j.target));
 
@@ -194,6 +202,7 @@ async function detailView(ctx, root, id) {
         ['Error', j.error && h('span', { style: 'color:var(--err)' }, j.error)]]),
       blocks: [
         editable ? D.card('Change this job', h('div', { class: 'form' }, field('Name', name), admin && field('Target printer', target)), opts.node, h('div', null, save)) : optCard,
+        start && D.card('Starting the print', stepsView(start)),
         sliceCard, D.previewCard(source && j.slice_job)],
       actions: [
         source && btn('Reslice', () => D.reslice(ctx, j, source), 'primary'),
@@ -212,7 +221,8 @@ async function detailView(ctx, root, id) {
       models = Object.fromEntries(ps.map((p) => [p.serial, p.model]));
       const found = [...q.jobs, ...q.history].find((j) => j.id === id);
       if (!found) return clear(box, empty('This job is not in the queue (any more). Finished prints are under History.'));
-      const s = JSON.stringify([found, names]);
+      start = ps.find((p) => p.start && p.start_job === id)?.start || null;
+      const s = JSON.stringify([found, names, start]);
       if (!force && (s === sig || dirty || document.querySelector('dialog[open]'))) return;
       sig = s; job = found;
       if (sourceFor !== job.slice_job) { sourceFor = job.slice_job; source = await D.sliceSource(job); }
