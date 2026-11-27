@@ -58,3 +58,15 @@ def test_queue_from_slice_refused_leaves_no_file(hub):
     assert not os.path.exists(hub.s.SHARE) or os.listdir(hub.s.SHARE) == []
     hub.grant(USER, SERIAL)
     assert hub.req("POST", "/api/jobs/%s/queue" % jid, {}, user=USER)[0] == 400
+
+
+def test_queue_from_slice_keeps_the_slice_for_the_detail_view(hub):
+    hub.setup_printers()
+    hub.grant(USER, SERIAL)
+    jid = hub.sliced(owner=USER)
+    hub.s.jobs[jid]["settings"] = {"process": "0.20mm Standard", "filament": "Generic PETG", "bed": "Cool Plate", "tray": {"ams": "0", "id": "0"}}
+    job = hub.req("POST", "/api/jobs/%s/queue" % jid, {"target": SERIAL}, user=USER)[1]
+    assert job["slice_job"] == jid
+    assert job["slice"]["quality"] == "better" and job["slice"]["process"] == "0.20mm Standard" and job["slice"]["bed"] == "Cool Plate"
+    assert job["slice"]["seconds"] == 7440 and job["slice"]["grams"] == 75.22 and job["slice"]["model"] == "cube.stl"
+    assert job["slice"]["filaments"] == [{"type": "PETG", "colour": "ADB1B2", "grams": 75.22}]

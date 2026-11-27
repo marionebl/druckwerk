@@ -20,7 +20,7 @@ def hub(hub):
         "person.cy": st("home", user_id=OTHER),  # owner of the printer, set below
         "person.far": st("not_home", user_id=ADMIN),  # an admin who is away
     })
-    hub.grant(OTHER, SERIAL, role="owner")
+    hub.owner(OTHER)
     hub.set_print(gcode_state="IDLE")
     return hub
 

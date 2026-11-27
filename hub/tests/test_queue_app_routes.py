@@ -76,3 +76,29 @@ def test_start_needs_plate_clear_and_printer_admin(hub):
     # The queue holds a bare name: the app sends the file from the share to the bridge itself, no HA service call.
     assert [s["filename"] for s in hub.sent()] == ["a.gcode.3mf"]
     assert not [c for c in hub.ha.calls if c[0] == "druckwerk"]
+
+
+def test_edit_name_and_options_of_a_waiting_job(hub):
+    hub.setup_printers()
+    hub.grant(USER, SERIAL)
+    hub.grant(OTHER, SERIAL)
+    jid = add(hub, USER)[1]["id"]
+    st, job = hub.req("POST", "/api/queue/%s/edit" % jid, {"name": " Bracket ", "options": {"timelapse": True, "flow_cali": "auto"}}, user=USER)
+    assert st == 200 and job["name"] == "Bracket" and job["options"]["timelapse"] is True and job["options"]["flow_cali"] == "auto"
+    assert job["options"]["use_ams"] is True  # untouched options keep their value
+    assert hub.req("GET", "/api/queue", user=USER)[1]["jobs"][0]["name"] == "Bracket"
+    assert hub.req("POST", "/api/queue/%s/edit" % jid, {"name": "x"}, user=OTHER)[0] == 403  # not the owner
+    assert hub.req("POST", "/api/queue/%s/edit" % jid, {"name": "Admin"}, user=ADMIN)[1]["name"] == "Admin"
+    assert hub.req("POST", "/api/queue/%s/edit" % jid, {"options": {"bogus": True}}, user=USER)[0] == 400
+    assert hub.req("POST", "/api/queue/%s/edit" % jid, {}, user=USER)[0] == 400
+    assert hub.req("POST", "/api/queue/%s/edit" % jid, {"name": "y" * 81}, user=USER)[0] == 400
+    assert hub.req("POST", "/api/queue/%s/edit" % jid, {"name": "z"})[0] == 401
+
+
+def test_edit_refuses_a_job_that_left_the_queue(hub):
+    hub.setup_printers()
+    hub.grant(USER, SERIAL)
+    jid = add(hub, USER)[1]["id"]
+    hub.req("POST", "/api/queue/%s/cancel" % jid, {}, user=USER)
+    st, body = hub.req("POST", "/api/queue/%s/edit" % jid, {"name": "late"}, user=USER)
+    assert st == 404 and "no such queued job" in body["error"]

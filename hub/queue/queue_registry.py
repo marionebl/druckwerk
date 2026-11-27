@@ -4,7 +4,7 @@ import os
 import tempfile
 import threading
 
-FIELDS = ("name", "model", "account", "prefix", "plate_type", "nozzle", "pause_entities", "electricity_kwh_price")
+FIELDS = ("name", "model", "account", "prefix", "plate_type", "nozzle", "pause_entities", "electricity_kwh_price", "owner")  # owner: HA user id or ""
 
 
 def write_json(path, data):
@@ -53,6 +53,14 @@ class Registry:
                 self.removed.remove(serial)
                 write_json(self.removed_path, self.removed)
         return dict(entry, serial=serial)
+
+    def set_owner(self, serial, user_id):
+        """The owner (an HA user id, "" for none) administers this printer. Ownership belongs to the printer, not to a grant."""
+        with self.lock:
+            if serial not in self.printers:
+                raise ValueError("unknown printer")
+            self.printers[serial]["owner"] = str(user_id or "")
+            write_json(self.path, self.printers)
 
     def remove(self, serial):
         with self.lock:

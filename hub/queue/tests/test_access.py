@@ -192,7 +192,7 @@ def test_ha_admin_can_do_everything(make, acc, fake):
 
 
 def test_owner_is_admin_on_own_printer_only(make, acc):
-    grant(acc, "own", "S1", role="owner")
+    make.registry.set_owner("S1", "own")
     o = acc.as_("own")
     job = o.add(F("a"), target="S1")
     o.skip(job["id"])

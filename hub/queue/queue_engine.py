@@ -200,6 +200,24 @@ class Queue:
             self._save()
             return job
 
+    def edit(self, job_id, name=None, options=None):
+        """Change the name or print options of a job that has not started."""
+        with self.lock:
+            job = self._find(job_id)
+            if job["state"] not in WAITING:
+                raise QueueError("only waiting jobs can be edited")
+            if job.get("kind") == "dry":
+                raise ValueError("a drying job has no name or options to edit")
+            if name is None and options is None:
+                raise ValueError("send a name or options")
+            new_name = _name(name, job["name"]) if name is not None else job["name"]
+            if options is not None and not isinstance(options, dict):
+                raise ValueError("options must be an object")
+            new_opts = dict(job["options"], **{k: _option(k, v) for k, v in (options or {}).items()})
+            job.update(name=new_name, options=new_opts)
+            self._save()
+            return job
+
     def cancel(self, job_id):
         with self.lock:
             job = self._find(job_id)

@@ -103,6 +103,18 @@ JOBS = [
 JOBS[1]["name"] = "Cable clips for the desk"
 
 
+def slice_of(quality, seconds, grams, model):
+    return {"quality": quality, "process": "0.20mm Standard @BBL H2S", "filament": "Bambu PLA Basic @BBL H2S", "bed": "Textured PEI Plate",
+            "tray": {"ams": "0", "id": "0", "colour": "F2F2F2", "type": "PLA"}, "seconds": seconds, "grams": grams, "model": model,
+            "filaments": [{"type": "PLA", "colour": "F2F2F2", "grams": grams}]}
+
+
+SLICE_JOB = "d00000000001"  # a slice the slicer still keeps; the other jobs' slices are gone
+JOBS[1].update(slice_job=SLICE_JOB, slice=slice_of("better", 2520, 12.5, "cable_clip_set.stl"), print_seconds=2520,
+               options=dict(JOBS[1]["options"], timelapse=True, flow_cali="auto"))
+JOBS[0].update(slice=slice_of("good", 6200, 38.2, "gridfinity_bin_4x2.stl"), print_seconds=6200)
+
+
 def dry_job(id_, target, owner, ams_id, temp, hours, filament, state="queued", **kw):
     unit = "AMS %d" % (ams_id + 1) if ams_id < 128 else "AMS HT"
     label = "Dry %s (%s)" % (unit, filament)
@@ -120,7 +132,18 @@ HISTORY = [
     job("b00000000002", "hook_wall_large.gcode.3mf", P1S, "u-jonas", "failed", printer=P1S, grams=3.1, cost=0.08, age=50,
         error="printer reported a failed print", finished_at=NOW() - 3600 * 47),
     job("b00000000003", "lens_cap.gcode.3mf", P1S, "u-alex", "cancelled", age=70, finished_at=NOW() - 3600 * 70),
+    # never reached a printer: no cloud task explains it
+    job("b00000000004", "wall_hook_test.gcode.3mf", H2S, "u-lena", "failed", age=5, finished_at=NOW() - 3600 * 4.5,
+        error="The printer is busy; the job was not sent."),
+    job("b00000000005", "cable_clip_set.gcode.3mf", H2S, "u-lena", "done", printer=H2S, grams=12.5, cost=0.31, age=4, finished_at=NOW() - 3600 * 2.8,
+        started_at=NOW() - 3.5 * 3600, print_seconds=2520, spools_used=[{"spool_id": "5000", "grams": 12.5}]),
 ]
+HISTORY[0].update(name="Benchy for the shelf", started_at=NOW() - 28 * 3600, print_seconds=3660, spools_used=[{"spool_id": "5000", "grams": 14.0}, {"spool_id": "5001", "grams": 0.4}],
+                  slice=slice_of("better", 3660, 14.0, "benchy.stl"), options=dict(HISTORY[0]["options"], timelapse=True))
+HISTORY[4].update(name="Cable clip set (desk)", slice_job=SLICE_JOB, slice=slice_of("better", 2520, 12.5, "cable_clip_set.stl"))
+HISTORY[3].pop("printer", None)
+TASK_JOB = {5: "b00000000001", 4: "b00000000002", 3: "b00000000003", 8: "b00000000005"}
+SLOW = {}  # test hook: path fragment -> seconds to wait before answering
 # Cloud tasks: (id, title, printer, hours ago, status, minutes, grams, user id or None for "not started here", cost)
 TASKS = [
     (9, "gridfinity_bin_4x2", H2S, 0.9, "running", 0, 0, "u-alex", None),
@@ -132,7 +155,10 @@ TASKS = [
     (3, "lens_cap", P1S, 70, "cancelled", 4, 0.6, "u-alex", None),
     (2, "calibration cube", P1S, 75, "finished", 28, 6.2, None, None),
     (1, "drawer_divider_s", H2S, 150, "finished", 20, 8.9, "u-alex", 0.22),
+    (10, "Slicer plate 3", H2S, 9, "finished", 33, 17.0, None, None),
 ]
+OWNERS = {H2S: "u-jonas"}  # printer owner (HA user id); the P1S has none
+BROKEN_COVERS = (7,)  # cloud covers whose image does not load
 
 
 def history_out(ident, q):
@@ -148,12 +174,39 @@ def history_out(ident, q):
         elif user != uid:
             continue
         started = NOW() - ago * 3600
+        jb = next((j for j in HISTORY if j["id"] == TASK_JOB.get(id_)), None)
         out.append({"id": id_, "serial": serial, "title": title, "status": status, "status_code": status, "started_at": int(started),
                     "ended_at": None if status == "running" else int(started + minutes * 60), "seconds": minutes * 60 or None,
                     "grams": grams or None, "cover_url": f"api/history-cover/{id_}.svg" if id_ % 2 else "", "plate": 1, "design_title": "",
                     "printer_name": PRINTERS[serial]["name"], "job_id": None, "user_id": user, "user_name": USERS.get(user),
-                    "cost": cost, "source": "druckwerk" if user else "cloud"})
+                    "cost": cost, "source": "druckwerk" if user else "cloud", "job": jb and job_view(jb), "when": int(started)})
+        if not user:
+            out[-1]["printer_owner"] = USERS.get(OWNERS.get(serial))
+        if jb:
+            out[-1].update(job_id=jb["id"], user_id=jb["owner_user_id"], user_name=jb["owner_name"], cost=jb.get("cost"))
+    matched = set(TASK_JOB.values())
+    for j in HISTORY:
+        if j["id"] in matched or not sees(ident, j) or (not admin and j["owner_user_id"] != uid):
+            continue
+        if q.get("printer") and q["printer"][0] != (j.get("printer") or j["target"]):
+            continue
+        if admin and q.get("user") and q["user"][0] != j["owner_user_id"]:
+            continue
+        out.append({"id": "job-" + j["id"], "serial": j["target"], "title": j["name"], "status": {"done": "finished"}.get(j["state"], j["state"]),
+                    "started_at": j.get("started_at"), "ended_at": int(j["finished_at"]), "seconds": j.get("print_seconds"), "grams": j.get("grams"),
+                    "cover_url": None, "printer_name": PRINTERS[j["target"]]["name"], "job_id": j["id"], "user_id": j["owner_user_id"],
+                    "user_name": j["owner_name"], "cost": j.get("cost"), "source": "job", "error": j["error"], "job": job_view(j),
+                    "when": int(j.get("started_at") or j["finished_at"])})
+    out.sort(key=lambda i: i["when"], reverse=True)
     return {"items": out, "unavailable": []}
+
+
+JOB_FIELDS = ("id", "name", "state", "error", "file", "source", "target", "model", "filaments", "options", "spools_used", "grams", "print_seconds",
+              "cost", "plate_png", "slice_job", "slice", "owner_user_id", "owner_name", "created_at", "started_at", "finished_at")
+
+
+def job_view(j):
+    return {k: j[k] for k in JOB_FIELDS if j.get(k) is not None}
 
 
 # The Bambu Cloud filament library as the hub lists it; prices live in the hub (PRICES), the cloud has none.
@@ -191,7 +244,7 @@ SETUP = {"accounts": [{"id": "acc1", "email": "owner@example.invalid", "logged_i
          "printers": {s: {"serial": s, "device_name": PRINTERS[s]["name"], "model": PRINTERS[s]["model"], "account": "acc1",
                           "configured": s != X1C, "config": None, "suggested_prefix": {H2S: "h2s_fake0001", P1S: "p1s_fake0002"}.get(s)} for s in PRINTERS}}
 FEEDBACK = []  # what the feedback button posted, for the UI proof
-SLICES = {}
+SLICES = {SLICE_JOB: {"id": SLICE_JOB, "filename": "cable_clip_set.stl", "state": "done", "sliced_at": 1.0, "quality": "better", "tray": "0:0", "bed": "Textured PEI Plate"}}
 LOCK = threading.Lock()
 QUALITY = {"good": (7800, 41.0, "0.24mm Draft"), "better": (10500, 42.5, "0.20mm Standard"), "best": (14700, 44.1, "0.16mm High Quality")}
 WAITING = ("queued", "pending_approval")
@@ -357,6 +410,14 @@ def job_action(ident, jid, action, body):
             JOBS.remove(j); JOBS.append(j)
         else:
             j["target"], j["model"] = body.get("target", "any"), body.get("model", "")
+    elif action == "edit":
+        if not (own or admin):
+            raise Err(403, "rule: users may only edit their own jobs; admins edit any job")
+        if j["state"] not in WAITING:
+            raise Err(409, "only waiting jobs can be edited")
+        if body.get("name") is not None:
+            j["name"] = body["name"].strip()[:80] or j["name"]
+        j["options"] = dict(j["options"], **(body.get("options") or {}))
     elif action == "retry":
         if not (own or admin):
             raise Err(403, "rule: users may only retry their own jobs")
@@ -427,6 +488,9 @@ class H(BaseHTTPRequestHandler):
         if path.startswith("api/") and NOW() < RESTART["until"]:
             return self.send(502, b"<html><body>502: Bad Gateway</body></html>", "text/html")
         try:
+            for frag, secs in list(SLOW.items()):  # outside the lock: a slow answer must not block the others
+                if frag in u.path:
+                    time.sleep(secs)
             with LOCK:
                 if path.startswith("api/"):
                     code, out, ct = self.api(method, path, q, raw, ident)
@@ -449,6 +513,11 @@ class H(BaseHTTPRequestHandler):
         ok = lambda o: (200, o, "application/json")
         svg = lambda s: (200, s.encode(), "image/svg+xml")
         need_admin = lambda: None if admin else (_ for _ in ()).throw(Err(403, "rule: only Home Assistant admins can do this"))
+        if path == "api/_mock/slow":
+            SLOW.clear()
+            for frag in q.get("path") or []:
+                SLOW[frag] = float((q.get("s") or ["2"])[0])
+            return ok(SLOW)
         if path == "api/me":
             return ok(me(ident))
         if path == "api/printers" and m == "GET":
@@ -597,6 +666,14 @@ class H(BaseHTTPRequestHandler):
             sp = dict(cloud_spool("5" + secrets.token_hex(2), "", "", "", "", None, None), **b)
             SPOOLS.append(sp); PRICES[sp["id"]] = price
             return ok(dict(sp, price_per_kg=price))
+        r = re.fullmatch(r"api/spools/(\d+)/prints", path)
+        if r:
+            its = []
+            for it in history_out(ident, {})["items"]:
+                used = [u for u in (it["job"] or {}).get("spools_used", []) if u["spool_id"] == r.group(1)]
+                if used:
+                    its.append(dict(it, spool_grams=sum(u["grams"] for u in used)))
+            return ok({"items": its})
         r = re.fullmatch(r"api/spools/(\d+)", path)
         if r:
             sp = next((s for s in SPOOLS if s["id"] == r.group(1)), None)
@@ -645,6 +722,8 @@ class H(BaseHTTPRequestHandler):
             return ok(history_out(ident, q))
         r = re.fullmatch(r"api/history-cover/(\d+)\.svg", path)
         if r:
+            if int(r.group(1)) in BROKEN_COVERS:
+                return (200, b"this is not an image", "image/png")
             return svg(plate_svg(r.group(1)))
         if path == "api/ha/users":
             need_admin()
@@ -678,7 +757,7 @@ class H(BaseHTTPRequestHandler):
         if r and r.group(1) in SETUP["printers"]:
             p = SETUP["printers"][r.group(1)]
             if m == "PUT":
-                p["configured"] = True; p["config"] = J()
+                p["configured"] = True; p["config"] = J(); OWNERS[r.group(1)] = p["config"].get("owner") or None
             else:
                 p["configured"] = False
             return ok(p)

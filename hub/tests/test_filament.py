@@ -75,7 +75,7 @@ def test_a_cloud_failure_is_an_error_not_old_data(hub):
 
 def test_create_edit_delete_go_to_the_cloud_and_the_price_stays_local(hub):
     hub.setup_printers()
-    hub.grant(USER, SERIAL, role="owner")  # owner = admin of that printer
+    hub.owner(USER)  # owner = admin of that printer
     st, sp = hub.req("POST", "/api/spools", {"brand": "B", "type": "PLA", "name": "PLA Basic", "colour": "#ff0000", "grams_left": 800,
                                              "grams_total": 1000, "price_per_kg": 20}, user=USER)
     assert st == 200 and sp["id"] == "7000" and sp["price_per_kg"] == 20

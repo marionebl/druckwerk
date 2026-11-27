@@ -14,6 +14,7 @@ import re
 import subprocess
 import sys
 import time
+import traceback
 from urllib.parse import urlparse
 
 from playwright.sync_api import sync_playwright
@@ -26,6 +27,7 @@ MODEL = {"name": "demo_part.stl", "mimeType": "model/stl", "buffer": b"solid x\n
 SLICE_TIMEOUT = 15000
 SLICE_ON = None
 MOCKED = True  # False against a real hub (--base-url): no mock hooks, other spool names
+ONLY = None
 ALLOW_502 = []  # path fragments whose 502 answer is the point of the step
 SIZES = {"390x844": (390, 844), "1440x900": (1440, 900)}
 H2S = "FAKE-H2S-0001"
@@ -182,6 +184,209 @@ def check_load_request(page, base, go, shot):
     assert card().get_by_role("button", name="Ask to load").count() == 1, "the spool can be requested again"
 
 
+JOB_CLIPS, TASK_BENCHY, TASK_CLIPS, TASK_CLOUD, TASK_OWNED_CLOUD, JOB_ONLY = "a00000000002", "5", "8", "7", "10", "job-b00000000004"
+HOLDS = {"printers": ".pcard", "queue": ".job", "history": ".tl-card", "new": ".drop", "filament": ".spool", "access": "table"}
+
+
+def fresh(page, url):
+    """A full reload of this URL, hash included (a same-URL goto would only change the hash)."""
+    page.goto("about:blank")
+    page.goto(url)
+
+
+def hash_is(page, want):
+    page.wait_for_function("w => location.hash === w", arg=want, timeout=5000)
+
+
+def check_deep_links(page, base, ident, go):
+    """Every tab and every detail view opens straight from its URL after a full reload; a tab click changes the hash."""
+    for tab, sel in HOLDS.items():
+        if tab == "access" and ident != "admin":
+            continue
+        fresh(page, f"{base}/?as={ident}#/{tab}")
+        page.wait_for_selector(sel, timeout=8000)
+        assert page.locator(f"nav.tabs a[data-id={tab}][aria-current=page]").count() == 1, f"deep link #/{tab} marks its tab"
+    for h, tab, text in [(f"#/history/{TASK_BENCHY}", "history", "Benchy for the shelf"), (f"#/queue/{JOB_CLIPS}", "queue", "Cable clips for the desk"),
+                         ("#/filament/5000", "filament", "Acme PLA")]:
+        fresh(page, f"{base}/?as={ident}{h}")
+        page.wait_for_selector(".detail", timeout=8000)
+        assert text in page.locator("h1").text_content(), f"{h} opens {text}: " + page.locator("h1").text_content()
+        assert page.locator(f"nav.tabs a[data-id={tab}][aria-current=page]").count() == 1
+        assert page.url.endswith(h), "the hash stays " + h
+    page.locator("nav.tabs a[data-id=history]").click()
+    hash_is(page, "#/history")
+    page.locator("nav.tabs a[data-id=filament]").click()
+    hash_is(page, "#/filament")
+    fresh(page, f"{base}/?as={ident}#/history/nothing-here")
+    page.get_by_text("not in the history").wait_for()
+
+
+def check_inside_ha_panel(page, base, ident):
+    """HA shows the app in an iframe whose own URL never carries our hash: the frame reads the panel URL's hash and writes its route back."""
+    page.route(f"{base}/?host=1", lambda r: r.fulfill(content_type="text/html", body=f'<iframe id="f" src="{base}/?as={ident}" style="width:100%;height:700px"></iframe>'))
+    page.goto(f"{base}/?host=1#/history/{TASK_BENCHY}")
+    fr = page.frame_locator("#f")
+    fr.locator(".detail h1").wait_for(timeout=8000)
+    assert "Benchy for the shelf" in fr.locator("h1").text_content(), "the iframe opens the panel URL's hash"
+    fr.locator("nav.tabs a[data-id=queue]").click()
+    page.wait_for_function("() => location.hash === '#/queue'", timeout=5000)
+    page.unroute(f"{base}/?host=1")
+
+
+def check_history_list(page, base, ident, go, shot):
+    go("#/history", ".tl-card")
+    assert page.locator(".seg").count() == 0
+    merged = page.locator(".tl-card", has_text="Benchy for the shelf")
+    assert merged.count() == 1 and "benchy_test" not in merged.text_content(), "a merged item shows the Druckwerk name"
+    only = page.locator(".tl-card", has_text="wall_hook_test")
+    assert only.count() == 1 and "Druckwerk only" in only.text_content(), "a job without a cloud task is listed and marked"
+    if ident == "admin":
+        cloud = page.locator(".tl-card", has_text="Slicer plate 1")
+        assert cloud.count() == 1 and "Not started here" in cloud.text_content(), "a cloud-only item with no owner grant keeps the old text"
+        assert "Printer owner: Jonas Example" in page.locator(".tl-card", has_text="Slicer plate 3").text_content(), "no record: the printer owner is named"
+        # a thumbnail that fails keeps its box: same size, placeholder inside
+        box = cloud.locator(".thumb")
+        page.wait_for_function("() => document.querySelectorAll('.tl-card .thumb.ph').length > 1")
+        ref = page.locator(".tl-card", has_text="Benchy for the shelf").locator(".thumb")
+        b1, b2 = box.bounding_box(), ref.bounding_box()
+        assert (b1["width"], b1["height"]) == (b2["width"], b2["height"]) == (56, 56), f"placeholder box keeps its size: {b1} {b2}"
+        assert cloud.locator(".thumb img").count() == 0 and "ph" in box.get_attribute("class")
+    page.locator("nav.tabs a[data-id=queue]").click()
+    page.wait_for_selector(".page-head h1:has-text('Queue')")
+    assert page.get_by_role("button", name="History").count() == 0 and page.locator(".seg").count() == 0, "the queue has no History segment"
+
+
+def check_history_details(page, base, ident, go, shot):
+    go("#/history", ".tl-card")
+    page.locator(".tl-card", has_text="Cable clip set (desk)").click()
+    hash_is(page, f"#/history/{TASK_CLIPS}")
+    page.wait_for_selector(".detail")
+    body = page.locator(".detail").text_content()
+    for want in ("Print options", "Timelapse", "Slice", "Better", "0.20mm Standard", "Bambu PLA Basic", "Spools used", "Cloud title: cable_clip_set"):
+        assert want in body, f"history detail shows {want!r}"
+    assert page.locator("a.spoolprint[href='#/filament/5000']").count() == 1, "the spool links to the filament detail"
+    page.wait_for_selector(".preview3d", timeout=8000)  # the slice is still stored: the 3D preview
+    shot("history-detail")
+    page.get_by_role("button", name="Reslice").click()
+    hash_is(page, "#/new")
+    fresh(page, f"{base}/?as={ident}#/history/{JOB_ONLY}")
+    page.wait_for_selector(".detail")
+    body = page.locator(".detail").text_content()
+    assert "Druckwerk only" in body and "The printer is busy" in body and "Print options" in body, "a job-only item shows its error and settings"
+    assert page.get_by_role("button", name="Print again").count() == 0, "no stored slice: no Print again"
+    if ident == "admin":
+        fresh(page, f"{base}/?as={ident}#/history/{TASK_CLOUD}")
+        page.wait_for_selector(".detail")
+        body = page.locator(".detail").text_content()
+        assert "Not started here" in body and "Print options" not in body, "a cloud-only print shows what the cloud knows"
+        assert page.locator(".detail-img.ph").count() == 1 and page.locator(".detail-img img").count() == 0, "a broken cover leaves the placeholder box"
+
+
+def check_queue_details(page, base, ident, go, shot):
+    fresh(page, f"{base}/?as={ident}#/queue/{JOB_CLIPS}")
+    page.wait_for_selector(".detail")
+    body = page.locator(".detail").text_content()
+    for want in ("Change this job", "Flow dynamics calibration", "Slice", "Better", "0.20mm Standard"):
+        assert want in body, f"queue detail shows {want!r}"
+    page.wait_for_selector(".preview3d", timeout=8000)
+    shot("queue-detail")
+    # a fresh job to change and cancel: print the finished clip set again
+    go(f"#/history/{TASK_CLIPS}", ".detail")
+    page.get_by_role("button", name="Print again").click()
+    page.wait_for_function("() => /^#\\/queue\\/[0-9a-f]{12}$/.test(location.hash)", timeout=5000)
+    url = page.url
+    page.wait_for_selector(".detail")
+    page.get_by_label("Name", exact=True).fill("Clips, second run")
+    page.locator("select[data-opt=flow_cali]").select_option("false")
+    page.locator("input[data-opt=timelapse]").uncheck()
+    page.get_by_role("button", name="Save changes").click()
+    page.wait_for_selector("h1:has-text('Clips, second run')")
+    fresh(page, url)  # reload keeps the view and the saved values
+    page.wait_for_selector("h1:has-text('Clips, second run')")
+    assert page.locator("select[data-opt=flow_cali]").input_value() == "false" and not page.locator("input[data-opt=timelapse]").is_checked()
+    page.get_by_role("button", name="Cancel job").click()
+    page.wait_for_selector("h2:has-text('Change this job')", state="detached")  # a cancelled job can no longer be changed
+    assert page.locator(".detail .pill", has_text="Cancelled").count() == 1
+
+
+def check_spool_detail(page, base, ident, go, shot):
+    fresh(page, f"{base}/?as={ident}#/filament/5000")
+    page.wait_for_selector("#spool-prints a.spoolprint")
+    links = page.locator("#spool-prints a.spoolprint")
+    assert links.count() >= 2 and page.locator("#spool-prints a[href='#/history/%s']" % TASK_BENCHY).count() == 1, "prints with the spool link to history"
+    assert "Cable clip set (desk)" in page.locator("#spool-prints").text_content()
+    shot("filament-detail")
+    page.locator("#spool-prints a[href='#/history/%s']" % TASK_BENCHY).click()
+    hash_is(page, f"#/history/{TASK_BENCHY}")
+    go("#/filament", ".spool")
+    page.locator(".spool a", has_text="Acme PLA").first.click()
+    page.wait_for_selector(".detail")
+    assert page.url.endswith("#/filament/5000")
+
+
+def check_cache(page, base, ident):
+    """Stale-while-revalidate: after one visit the printer and filament lists show at once from the cache while the API is slow or
+    failing; the loading text is only for a first visit; a change drops the cached list; a throwing localStorage changes nothing."""
+    user = "u-alex" if ident == "admin" else "u-lena"
+    for tab, sel in (("printers", ".pcard"), ("filament", ".spool")):
+        fresh(page, f"{base}/?as={ident}#/{tab}")
+        page.wait_for_selector(sel, timeout=8000)
+    page.evaluate("fetch('api/_mock/slow')")  # a failed earlier run may have left the delay on
+    slow = lambda s: page.evaluate("s => fetch('api/_mock/slow?path=api/printers&path=api/spools&path=api/load-requests&s=' + s)", s)
+    slow(3)
+    for tab, sel, text in (("printers", ".pcard", "Workshop H2S"), ("filament", ".spool", "PLA Basic White")):
+        t0 = time.time()
+        fresh(page, f"{base}/?as={ident}#/{tab}")
+        page.wait_for_selector(sel, timeout=1500)  # the API needs 3 s: this can only be the cache
+        assert time.time() - t0 < 2.5 and page.locator("#view .loading").count() == 0, f"{tab}: cached data without a spinner ({time.time() - t0:.1f} s, {page.locator('#view .loading').count()} spinners)"
+        assert text in page.locator("#view").text_content()
+    page.wait_for_timeout(3500)  # the fresh answer arrives and replaces it without trouble
+    assert page.locator(".spool").count() == 5, f"{page.locator('.spool').count()} spools, page {page.url}"
+    page.evaluate("fetch('api/_mock/slow')")
+    # the cloud library fails: the cached spools still show at once
+    ALLOW_502.append("api/spools")
+    page.evaluate("fetch('api/_mock/spools-down?on=1')")
+    fresh(page, f"{base}/?as={ident}#/filament")
+    page.wait_for_selector(".spool", timeout=3000)
+    assert page.locator(".empty").count() == 0 and page.locator("#view .loading").count() == 0, "failing API: the cached list stays"
+    page.evaluate("fetch('api/_mock/spools-down?on=0')")
+    ALLOW_502.clear()
+    if ident == "admin":  # a change drops the cached list of that resource
+        gone = page.evaluate("""async (u) => {
+          const { api } = await import(new URL('api.js', location.href));
+          const key = 'dw1:' + u + ':api/spools';
+          await api.spools();
+          const had = localStorage.getItem(key) !== null;
+          await api.saveSpool('5003', { grams_left: 730 });
+          return [had, localStorage.getItem(key)];
+        }""", user)
+        assert gone == [True, None], f"a spool change drops the cached list: {gone}"
+    # no usable storage at all
+    p2 = page.context.new_page()
+    errs = []
+    p2.on("pageerror", lambda e: errs.append(str(e)))
+    p2.add_init_script("Object.defineProperty(window, 'localStorage', { get() { throw new Error('denied'); } })")
+    p2.goto(f"{base}/?as={ident}#/filament")
+    p2.wait_for_selector(".spool", timeout=8000)
+    p2.goto(f"{base}/?as={ident}#/printers")
+    p2.wait_for_selector(".pcard", timeout=8000)
+    assert not errs, f"no storage: {errs}"
+    p2.close()
+
+
+def check_loading(page, go):
+    """While the first answer is on its way a list says Loading, never "No ... yet"."""
+    for tab, path, sel in [("history", "api/history", ".tl-card"), ("queue", "api/queue", ".job"), ("filament", "api/spools", ".spool")]:
+        go("#/printers", ".pcard")
+        page.evaluate("p => fetch('api/_mock/slow?path=' + p + '&s=1.5')", path)
+        page.evaluate("t => { location.hash = '#/' + t }", tab)
+        page.wait_for_selector("#view .loading", timeout=2000)
+        txt = page.locator("#view").text_content()
+        assert "Loading" in txt and "No " not in txt and "empty" not in txt and page.locator(".empty").count() == 0, f"{tab} while loading: {txt!r}"
+        page.wait_for_selector(sel, timeout=8000)
+        page.evaluate("fetch('api/_mock/slow')")
+
+
 def walk(page, ident, base, shot, inject):
     def go(h, wait):
         page.evaluate("h => { location.hash = h }", h)
@@ -202,9 +407,14 @@ def walk(page, ident, base, shot, inject):
             if i == 2:  # saving a printer must come back as saved: the form shows the stored values again
                 card = page.locator("section.card", has_text="Workshop H2S").first
                 card.get_by_label("Name", exact=True).fill("Workshop H2S (renamed)")
+                card.locator("select[data-field=owner]").select_option(label="Lena Tester")
                 card.get_by_role("button", name="Save printer").click()
                 page.wait_for_selector("text=Printer saved")
                 page.wait_for_function("[...document.querySelectorAll('input')].some(i => i.value === 'Workshop H2S (renamed)')", timeout=5000)
+                page.wait_for_function("[...document.querySelectorAll('select[data-field=owner]')].some(s => s.value === 'u-lena')", timeout=5000)  # the owner is stored
+        return
+    if ONLY == "cache":
+        check_cache(page, base, ident)
         return
     page.wait_for_selector(".pcard")
     if inject:
@@ -227,9 +437,17 @@ def walk(page, ident, base, shot, inject):
         shot("printer-offline-hms")
     go("#/queue", ".job")
     shot("queue")
-    page.get_by_role("button", name="History").click()
-    page.wait_for_selector(".job")
-    shot("queue-history")
+    if MOCKED:
+        check_deep_links(page, base, ident, go)
+        check_history_list(page, base, ident, go, shot)
+        shot("history-list")
+        check_history_details(page, base, ident, go, shot)
+        check_queue_details(page, base, ident, go, shot)
+        check_spool_detail(page, base, ident, go, shot)
+        check_loading(page, go)
+        if ident == "admin":
+            check_inside_ha_panel(page, base, ident)
+        go("#/queue", ".job")
     # new print: upload, pick printer + tray, slice 3 variants, pick
     go("#/new", ".drop")
     page.set_input_files("input[type=file]", files=[MODEL])
@@ -286,6 +504,8 @@ def walk(page, ident, base, shot, inject):
 def main():
     ap = argparse.ArgumentParser()
     ap.add_argument("--shots")
+    ap.add_argument("--only", choices=["cache"], help="run one check only")
+    ap.add_argument("--port", type=int, default=18099, help="port of the mock server")
     ap.add_argument("--inject-absolute", action="store_true")
     ap.add_argument("--base-url")
     ap.add_argument("--idents", default="admin,user,admin-new")
@@ -294,7 +514,8 @@ def main():
     ap.add_argument("--expect-403", default="")
     ap.add_argument("--slice-on", help="chip to press under Slice on, e.g. \"Pi (Bambu Studio)\"")
     a = ap.parse_args()
-    global PREFIX, MODEL, SLICE_TIMEOUT, SLICE_ON, MOCKED
+    global PREFIX, MODEL, SLICE_TIMEOUT, SLICE_ON, MOCKED, ONLY
+    ONLY = a.only
     MOCKED = not a.base_url
     SLICE_ON = a.slice_on
     SLICE_TIMEOUT = a.slice_timeout * 1000
@@ -306,7 +527,7 @@ def main():
         PREFIX = ingress_proxy.PREFIX
         port = srv.server_address[1]
     else:
-        port = 18099
+        port = a.port
         srv = subprocess.Popen([sys.executable, os.path.join(HERE, "mock_server.py"), str(port)], stdout=subprocess.DEVNULL)
         time.sleep(0.8)
     expected_403 = [x for x in a.expect_403.split(",") if x]
@@ -323,7 +544,7 @@ def main():
                     where = f"{ident}@{sz}"
                     page.on("console", lambda m, wh=where: m.type == "error" and not (ALLOW_502 and "status of 502" in m.text) and problems.append(f"console error [{wh}]: {m.text}"))
                     page.on("pageerror", lambda e, wh=where: problems.append(f"page error [{wh}]: {e}"))
-                    page.on("requestfailed", lambda r, wh=where: problems.append(f"request failed [{wh}]: {r.url}"))
+                    page.on("requestfailed", lambda r, wh=where: r.failure != "net::ERR_ABORTED" and problems.append(f"request failed [{wh}]: {r.url} ({r.failure})"))  # a reload aborts what is in flight
 
                     def on_req(r, wh=where):
                         nonlocal count
@@ -344,7 +565,7 @@ def main():
                     try:
                         walk(page, ident, base, shot, a.inject_absolute and ident == "admin" and sz == "390x844")
                     except Exception as e:
-                        problems.append(f"walk failed [{where}]: {type(e).__name__}: {(str(e).splitlines() or [''])[0]}")
+                        problems.append(f"walk failed [{where}] at check_ui.py line {traceback.extract_tb(e.__traceback__)[-1].lineno}: {type(e).__name__}: {(str(e).splitlines() or [''])[0]}")
                     ctx.close()
             br.close()
     finally:

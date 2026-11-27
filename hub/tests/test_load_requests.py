@@ -85,7 +85,7 @@ def test_delete_permissions(hub):
     again = ask(hub)[1]
     assert hub.req("DELETE", "/api/load-requests/" + again["id"], user=ADMIN)[0] == 200  # HA admin
     third = ask(hub)[1]
-    hub.grant(OTHER, SERIAL, role="owner")
+    hub.owner(OTHER)
     assert hub.req("DELETE", "/api/load-requests/" + third["id"], user=OTHER)[0] == 200  # printer owner
 
 
@@ -98,7 +98,7 @@ def notes(hub):
 
 def test_only_owners_at_home_are_notified_and_the_event_is_fired(hub):
     hub.ha.s.update({"person.ada": st("home", user_id=ADMIN), "person.ben": st("home", user_id=USER), "person.cy": st("home", user_id=OTHER)})
-    hub.grant(OTHER, SERIAL, role="owner")
+    hub.owner(OTHER)
     hub.req("PUT", "/api/integration/options", {"recipients": RECIPIENTS}, secret=True)
     ask(hub, note="please")
     ask(hub)  # a duplicate raises nothing
@@ -110,13 +110,14 @@ def test_only_owners_at_home_are_notified_and_the_event_is_fired(hub):
     assert etype == "druckwerk_load_requested" and data["request"]["printer"] == SERIAL
 
 
-def test_a_wildcard_owner_is_notified(hub):
-    hub.ha.s["person.cy"] = st("home", user_id=OTHER)
-    hub.grant(OTHER, "*", role="owner")
-    hub.req("PUT", "/api/integration/options", {"recipients": {"person.cy": "mobile_app_cy"}}, secret=True)
+def test_the_owner_is_notified_without_a_note_and_the_owner_of_another_printer_is_not(hub):
+    hub.ha.s.update({"person.cy": st("home", user_id=OTHER), "person.ada": st("home", user_id=ADMIN)})
+    hub.owner(OTHER)
+    hub.owner(ADMIN, SERIAL2)  # owns the other printer: no business with this request
+    hub.req("PUT", "/api/integration/options", {"recipients": {"person.cy": "mobile_app_cy", "person.ada": "mobile_app_ada"}}, secret=True)
     ask(hub)
     hub.app.notifier.flush()
-    assert notes(hub)[0][1]["message"] == "U-USER asks to load Acme PLA PLA Basic into Lab"  # no note, no colon
+    assert [(s, d["message"]) for s, d in notes(hub)] == [("mobile_app_cy", "U-USER asks to load Acme PLA PLA Basic into Lab")]  # no note, no colon
 
 
 def test_a_printer_without_owner_still_stores_the_request(hub):

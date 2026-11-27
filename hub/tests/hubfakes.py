@@ -297,6 +297,10 @@ class Hub:
         spools.append(spool)
         return spool
 
+    def owner(self, user, printer=SERIAL):
+        """Make a user the owner of a printer (a property of the printer, not a grant)."""
+        self.app.registry.set_owner(printer, user)
+
     def grant(self, user, printer=SERIAL, **kw):
         return self.app.grants.add(user, printer, **kw)
 
