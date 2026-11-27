@@ -39,7 +39,7 @@ COPY hub/externals.py /w/hub/externals.py
 RUN /w/hub/slicer/engine/build.sh /out
 
 FROM debian:trixie-slim AS base
-RUN apt-get update && apt-get install -y --no-install-recommends python3 ca-certificates ffmpeg && rm -rf /var/lib/apt/lists/*
+RUN apt-get update && apt-get install -y --no-install-recommends python3 ca-certificates ffmpeg python3-pil && rm -rf /var/lib/apt/lists/*
 
 # aarch64: run the x86_64 bridge and plugin under qemu in an x86_64 rootfs (COPY only, the Pi has no amd64 binfmt).
 # The plugin libs land in /amd64/usr/lib at app start (hub/plugin.py).

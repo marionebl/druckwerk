@@ -47,3 +47,6 @@ PRINTERS = {  # dev_product_name -> machine preset, bed type and process presets
 # -- the vendor's Home Assistant integration (ha-bambulab): registry domain of its devices and entities
 # (the integration in custom_components/ has its own copy, see custom_components/druckwerk/externals.py)
 HA_VENDOR_DOMAIN = "bambu_lab"
+
+# -- G-code written by the vendor's slicers: `; printer_model = Bambu Lab H2S`, lower-cased with spaces removed
+GCODE_MODEL_PREFIX = "bambulab"
