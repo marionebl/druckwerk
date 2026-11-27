@@ -3,7 +3,7 @@
 
 One boocloud-bridge daemon per cloud account (the plugin holds one login per process).
 Routes: GET /, GET /api/health, POST /api/login/start, POST /api/login/code, DELETE /api/accounts/<id>,
-GET /api/printers, GET /api/status/<serial>, GET /api/ams/<serial>, GET /api/camera/<serial>/live, GET /api/tasks?serial=<serial>&limit=<n>, POST /api/print,
+GET /api/printers, GET /api/status/<serial>, GET /api/ams/<serial>, GET /api/camera/<serial>/live, GET /api/tasks?serial=<serial>&limit=<n>, POST /api/print, GET /api/print-progress/<serial>,
 GET|POST /api/filament?account=<id>, PUT|DELETE /api/filament/<id>?account=<id> (the account's cloud filament library),
 GET /api/drying/<serial>, POST /api/ams/<serial>/drying, POST /api/ams/<serial>/drying/stop.
 """
@@ -113,6 +113,19 @@ def install_cert(home):
         shutil.copyfile(CERT_SRC, dest)
 
 
+ANSI = re.compile(r"\x1b\[[0-9;]*m")
+PROGRESS = re.compile(r'print progress\s+stage="(\w+)"\s+code=(-?\d+)')
+
+
+def parse_progress(line):
+    """{stage, percent} from the daemon's "print progress" log line (tracing may colour it); percent is only set for Upload."""
+    m = PROGRESS.search(ANSI.sub("", line))
+    if not m:
+        return None
+    stage, code = m.group(1).lower(), int(m.group(2))
+    return {"stage": stage, "percent": code if stage == "upload" and 0 <= code <= 100 else None}
+
+
 class Account:
     def __init__(self, id, email):
         self.id, self.email = id, email
@@ -129,9 +142,16 @@ class Account:
             self.port = pick_port()
             write_private(portfile, str(self.port))  # kept so the port stays stable across restarts
         self.daemon = None
+        self.upload = None  # {serial, stage, percent} of the print being sent, from the daemon's log
 
     def url(self, path):
         return "http://%s:%d%s" % (env("DW_DAEMON_HOST", "127.0.0.1"), self.port, path)
+
+    def note_progress(self, line):
+        """The daemon only logs the vendor library's send stages; its code is the percent while stage is Upload."""
+        up, found = self.upload, parse_progress(line)
+        if up and found:
+            up.update(found)
 
     def devices(self):
         try:
@@ -177,6 +197,7 @@ class Daemon:
                     self.proc.kill()
                 for line in self.proc.stdout:
                     log(tag + "daemon: " + line.rstrip())
+                    self.acc.note_progress(line)
                     # Under qemu an abort leaves the process hanging instead of exiting.
                     if line.startswith(("error:", "terminate called", "qemu: uncaught")):
                         self.proc.kill()
@@ -957,11 +978,20 @@ def post_print(h, m, body):
     params.update(print_options(body))
     data, ctype = multipart([("file", filename, "application/octet-stream", raw),
                              ("params", None, "application/json", json.dumps(params).encode())])
+    acc.upload = {"serial": serial, "stage": "create", "percent": None}
     try:
         status, answer, actype = call("POST", acc.url("/print"), {"Content-Type": ctype}, data, timeout=300)
     except Upstream:
         return h.send(503, {"error": "daemon not reachable"})
+    finally:
+        acc.upload = None
     h.send(status, answer, actype)
+
+
+def get_print_progress(h, m, body):
+    acc = owner(m.group(1))
+    up = acc.upload if acc else None
+    h.send(200, {"stage": up["stage"], "percent": up["percent"]} if up and up["serial"] == m.group(1) else {})
 
 
 def send_command(h, acc, serial, payloads):
@@ -1221,6 +1251,7 @@ ROUTES = [
     ("POST", r"/api/login/code", post_login_code, MAX_SMALL_BODY),
     ("DELETE", r"/api/accounts/([a-z0-9_]{1,64})", delete_account, 0),
     ("POST", r"/api/print", post_print, MAX_PRINT_BODY),
+    ("GET", r"/api/print-progress/" + SER, get_print_progress, 0),
     ("POST", r"/api/light/" + SER, post_light, MAX_SMALL_BODY),
     ("POST", r"/api/rfid/" + SER, post_rfid, MAX_SMALL_BODY),
     ("POST", r"/api/pause/" + SER, post_pause, MAX_SMALL_BODY),

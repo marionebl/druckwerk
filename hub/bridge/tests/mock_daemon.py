@@ -140,6 +140,11 @@ class Handler(BaseHTTPRequestHandler):
             return self.reply(400, {"error": "missing file or params"})
         params = json.loads(parts["params"])
         self.server.prints.append({"file": parts["file"], "params": params})
+        if params["filename"] == "slow.gcode.3mf":  # log the vendor stages like the real daemon (tracing, with colour codes), then take a while
+            print('2026-01-01T00:00:00Z  INFO boocloud_bridge::agent: print progress stage="Create" code=0 msg=""', flush=True)
+            print('2026-01-01T00:00:01Z \x1b[32m INFO\x1b[0m \x1b[2mboocloud_bridge::agent\x1b[0m\x1b[2m:\x1b[0m print progress '
+                  '\x1b[3mstage\x1b[0m\x1b[2m=\x1b[0m"Upload" \x1b[3mcode\x1b[0m\x1b[2m=\x1b[0m45 \x1b[3mmsg\x1b[0m\x1b[2m=\x1b[0m""', flush=True)
+            time.sleep(2)
         if params["filename"] == "fail.gcode.3mf":
             return self.reply(502, {"result": "error", "return_code": -3140})
         self.reply(200, {"result": "sent", "return_code": -1, "print_result": -999,

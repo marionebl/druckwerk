@@ -25,6 +25,7 @@ import files
 import filament
 import history
 import printer_state
+import progress
 from ha import HAError, HAUnavailable
 from queue_access import Access, Caller, Forbidden, Grants, Unauthorized, caller_from_headers
 from queue_engine import WAITING, NotFound, Queue, QueueError
@@ -361,12 +362,28 @@ class App:
         except HttpError:
             return None
 
+    def start_steps(self, serial, v, job):
+        """(steps, job id) of a print start under way (hub/progress.py); the id is None when nobody started it here."""
+        sending = self.sender.sending.get(serial)
+        upload = None
+        if sending:
+            try:
+                status, data = self.bridge_json("GET", "/api/print-progress/" + serial, timeout=3)
+                upload = data if status == 200 and isinstance(data, dict) else None
+            except HttpError:
+                pass
+            if not job:  # the job is still queued until the bridge answers
+                job = next((j for j in self.queue.jobs if j["state"] == "queued" and os.path.basename(j.get("file") or "") == sending), None)
+        steps = progress.steps(sending, upload, v)
+        return steps, job["id"] if steps and job else None
+
     def printer_view(self, p, role):
         serial = p["serial"]
         v = self.printer_status(serial)
         b = v or {}
         tray = b.get("active_tray")
         job = next((j for j in self.queue.jobs if j.get("printer") == serial and j["state"] in ("starting", "printing")), None)
+        start, start_job = self.start_steps(serial, v, job)
         return {
             "serial": serial, "name": p["name"], "model": p["model"], "role": role,
             "online": v is not None and b["status"] != "offline",
@@ -383,6 +400,7 @@ class App:
             "drying": self.drying(serial) or [],
             "ams": self.ams(serial, status=v), "external": b.get("external"), "hms": b.get("hms", []),
             "current_job": dict(job) if job else None,
+            "start": start, "start_job": start_job,
             "queue_length": sum(1 for j in self.queue.jobs if j["state"] in WAITING and serial in self.access.serials_of(j)),
         }
 
