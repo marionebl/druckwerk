@@ -6,14 +6,12 @@ runs the G-code guard and the slice checks on every browser result. Exits 1 on a
 
 env: HUB (hub base URL), STL, JOBS (the hub's job dir), SECRET (hub secret, for the native slice), MODE (ALL | CASE name)."""
 import http.server
-import importlib.util
 import json
 import os
 import re
 import sys
 import threading
 import time
-import types
 import urllib.request
 
 from playwright.sync_api import sync_playwright
@@ -38,17 +36,10 @@ def fail(msg):
 
 
 def guard():
-    """The integration's G-code guard, loaded without importing the package (which needs Home Assistant)."""
-    d = os.path.join(REPO, "custom_components", "druckwerk")
-    pkg = types.ModuleType("dw")
-    pkg.__path__ = [d]
-    sys.modules["dw"] = pkg
-    for name in ("externals", "gcode_guard"):
-        spec = importlib.util.spec_from_file_location("dw." + name, os.path.join(d, name + ".py"))
-        mod = importlib.util.module_from_spec(spec)
-        sys.modules["dw." + name] = mod
-        spec.loader.exec_module(mod)
-    return sys.modules["dw.gcode_guard"].check_gcode_3mf
+    """The app's G-code guard (hub/gcode_guard.py)."""
+    sys.path.insert(0, os.path.join(REPO, "hub"))
+    import gcode_guard
+    return gcode_guard.check_gcode_3mf
 
 
 def job_dirs():
