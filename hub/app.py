@@ -772,6 +772,18 @@ class App:
         if self.access.role(c, str(body.get("serial"))) is None:
             raise Forbidden("rule: slicing needs an active grant on the printer")
 
+    def check_gcode(self, h, c, job):
+        """Browser-sliced G-code is a slice: same grant rule as POST .../slice, on the printer the query names."""
+        serial = (parse_qs(urlsplit(h.path).query).get("serial") or [""])[0]
+        if self.access.role(c, serial) is None:
+            raise Forbidden("rule: slicing needs an active grant on the printer")
+
+    def get_engine_filament(self, h, m, q):
+        c = self.caller(h)
+        if self.access.role(c, (q.get("serial") or [""])[0]) is None:
+            raise Forbidden("rule: slicing needs an active grant on the printer")
+        self.s.get_filament(h, m, q)
+
     def check_print(self, h, c, job):
         serial = (job.get("printer") or {}).get("serial")
         if self.access.role(c, serial) != "admin":
@@ -1051,6 +1063,8 @@ class App:
             ("POST", r"/api/jobs", self.post_job),
             ("GET", r"/api/jobs/" + JOB_ID, self.get_slice),
             ("POST", r"/api/jobs/" + JOB_ID + r"/slice", self.slicer_job(self.s.post_slice, self.check_slice)),
+            ("POST", r"/api/jobs/" + JOB_ID + r"/gcode", self.slicer_job(self.s.post_gcode, self.check_gcode)),
+            ("GET", r"/api/engine/filament", self.get_engine_filament),
             ("GET", r"/api/jobs/" + JOB_ID + r"/(plate\.png|plate\.gcode)", self.slicer_job(self.s.get_file)),
             ("POST", r"/api/jobs/" + JOB_ID + r"/print", self.slicer_job(self.s.post_print, self.check_print)),
             ("POST", r"/api/jobs/" + JOB_ID + r"/queue", w(self.queue_job)),
