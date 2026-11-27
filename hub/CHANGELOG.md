@@ -1,5 +1,14 @@
 # Changelog
 
+## 3.0.0 (unreleased)
+
+- Druckwerk works on a Home Assistant without the vendor's printer integration (ha-bambulab). The app reads every printer's state from the bridge's MQTT status (`hub/printer_state.py`): status, stage, progress, remaining time, end time, layers, temperatures, task name, active tray, AMS units with trays, humidity and temperature, external spool and HMS errors. It does so on every install, with or without the vendor integration, so both behave the same. `GET /api/printers` keeps its shape.
+- Printers register from the bridge's list (the accounts' bound printers). `sensor.<prefix>_print_status` is no longer required, and `PUT /api/setup/printers/{serial}` no longer checks it. `ha_prefix` is optional: it defaults to the vendor integration's prefix if HA has the printer, else to a name made from the printer's name. Saved printers keep their prefix.
+- Changes you can see on an install with the vendor integration: the printer's online state is "the bridge answers", not the integration's online sensor; the AMS tray name is the tray's sub-brand or type from the printer; temperatures are whole degrees; HMS entries show the code, the severity and a link to the vendor's HMS page, but no error text; a stage the app does not know is `null`; printers that the bridge lists and HA has no entities for are registered too.
+- `GET /api/printers/{serial}/cover` serves the plate image of the file Druckwerk sent for the running print (or the file named like the printer's task), else the cover of the cloud task with that name, else 404. `cover_url` is set while the printer reports a task name. It no longer reads `image.<prefix>_cover_image`.
+- The chamber light state and the task name for the integration's image come from the bridge status, not from vendor entities. The air-print watchdog and the queue read the bridge too; the watchdog is always on.
+- Integration 0.14.0: without the vendor integration it creates its own device per printer (identifiers `druckwerk`, serial); with it, entities attach to the vendor's device as before. Entity ids do not change.
+
 ## 2.9.0 (unreleased)
 
 - Ask the printer owner to load a spool: `POST /api/spools/<id>/load-request`, `GET /api/load-requests`, `DELETE /api/load-requests/<id>`. The Filament tab has an "Ask to load" button per spool and shows open requests as a pill, so owners use it as a to-do list. The owners of the printer (not other HA admins) get a mobile notification when they are home; the `druckwerk_load_requested` bus event is fired. A request closes when the cloud library shows the spool in that printer, or when it is cancelled. Open requests are kept in `load_requests.json`.

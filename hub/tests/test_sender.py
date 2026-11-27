@@ -120,7 +120,7 @@ def test_the_action_needs_the_secret(hub):
 
 
 def test_the_queue_sends_through_the_app_without_a_home_assistant_service_call(hub):
-    hub.ha.s["sensor.lab_h2s_print_status"]["state"] = "idle"
+    hub.set_print(gcode_state="IDLE")
     hub.req("POST", "/api/queue", {"file": "a.gcode.3mf", "target": SERIAL}, user="u-admin")
     status, job = hub.req("POST", "/api/printers/%s/start-next" % SERIAL, {"plate_clear": True}, user="u-admin")
     assert status == 200 and job["state"] == "starting"
@@ -130,7 +130,7 @@ def test_the_queue_sends_through_the_app_without_a_home_assistant_service_call(h
 
 def test_a_guard_refusal_keeps_the_queued_job_with_the_text(hub):
     make_3mf(os.path.join(hub.s.SHARE, "a.gcode.3mf"), gcode="; printer_model = Bambu Lab H2S\n")
-    hub.ha.s["sensor.lab_h2s_print_status"]["state"] = "idle"
+    hub.set_print(gcode_state="IDLE")
     hub.req("POST", "/api/queue", {"file": "a.gcode.3mf", "target": SERIAL}, user="u-admin")
     status, body = hub.req("POST", "/api/printers/%s/start-next" % SERIAL, {"plate_clear": True}, user="u-admin")
     assert status == 409 and body["error"].startswith("Refusing to send a.gcode.3mf") and prints() == []

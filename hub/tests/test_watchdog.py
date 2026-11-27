@@ -2,29 +2,34 @@
 import pytest
 
 import watchdog
-from hubfakes import ENTITIES, SERIAL, VENDOR, FakeBridge, make_3mf, st
+from hubfakes import SERIAL, FakeBridge, make_3mf
 
 FILE = "benchy.gcode.3mf"
-IDS = {"print_status": "sensor.lab_h2s_print_status", "stage": "sensor.lab_h2s_stage", "active_tray": "sensor.lab_h2s_active_tray"}
+STAGES = {"idle": -1, "printing": 0, "changing_filament": 4, "cooling_chamber": 29, "homing_toolhead": 13,
+          "calibrating_extrusion": 8, "auto_bed_leveling": 1}
 BAD = [(0, "prepare", "idle", "none"), (1, "running")]  # what the bad print looked like: stage idle, tray none, for an hour
 
 
 @pytest.fixture
 def hub(hub):
     hub.setup_printers()
-    hub.ha.entities = ENTITIES + [
-        {"entity_id": "sensor.lab_h2s_stage", "device_id": "dev1", "platform": VENDOR, "unique_id": SERIAL + "_stage"},
-        {"entity_id": "sensor.lab_h2s_active_tray", "device_id": "dev1", "platform": VENDOR, "unique_id": SERIAL + "_active_tray"}]
     set_states(hub, "idle", "idle", "none")
     return hub
 
 
 def set_states(hub, status=None, stage=None, tray=None):
-    for key, value in (("print_status", status), ("stage", stage), ("active_tray", tray)):
-        if value is not None:
-            hub.ha.s[IDS[key]] = st(value)
-            if key == "stage":
-                hub.app.on_state(IDS[key], value)  # the websocket watcher
+    """tray "unavailable" is a printer the bridge cannot read."""
+    fields = {}
+    if status:
+        fields["gcode_state"] = status.upper()
+    if stage:
+        fields["stg_cur"] = STAGES[stage]
+    if tray is not None:
+        FakeBridge.status_fail = {SERIAL} if tray == "unavailable" else set()
+        fields["ams"] = {"tray_now": "255" if tray == "none" else "1"}
+    hub.set_print(**fields)
+    if stage:
+        hub.app.on_state(hub.app.entity(hub.app.registry.get(SERIAL), "stage"), stage)  # the websocket watcher
 
 
 def replay(hub, seconds, timeline=()):
@@ -111,10 +116,11 @@ def test_gives_up_after_15_minutes_without_a_running_print(hub):
     assert pauses() == []
 
 
-def test_no_watch_without_the_vendor_sensors(hub):
-    hub.ha.entities = [e for e in ENTITIES if not e["unique_id"].endswith("_stage")]
+def test_the_watch_needs_no_vendor_entities(hub):
+    hub.ha.entities, hub.ha.devices, hub.ha.s = [], [], {}
     hub.app.watchdog.started(SERIAL, FILE)
-    assert hub.app.watchdog.watches == {}
+    replay(hub, 140, BAD)
+    assert len(pauses()) == 1
 
 
 def test_a_print_with_ams_starts_a_watch_and_one_without_does_not(hub):

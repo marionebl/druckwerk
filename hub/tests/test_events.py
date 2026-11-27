@@ -34,13 +34,13 @@ def test_events_sequence_over_a_job_life(hub):
     hub.req("POST", "/api/queue/%s/approve" % job["id"], {}, user=ADMIN)
     assert types(hub, seq) == [("queue_changed", "")]
     seq = hub.req("GET", "/api/events", secret=True)[1]["seq"]
-    hub.ha.s["sensor.lab_h2s_print_status"]["state"] = "idle"
+    hub.set_print(gcode_state="IDLE")
     hub.req("POST", "/api/printers/%s/start-next" % SERIAL, {"plate_clear": True}, user=ADMIN)
     assert types(hub, seq) == [("job_started", SERIAL), ("queue_changed", "")]
     seq = hub.req("GET", "/api/events", secret=True)[1]["seq"]
-    hub.ha.s["sensor.lab_h2s_current_stage"]["state"] = "changing_filament"
+    hub.set_print(stg_cur=4)
     hub.app.tick_all()
-    hub.ha.s["sensor.lab_h2s_print_status"]["state"] = "finish"
+    hub.set_print(gcode_state="FINISH")
     hub.app.tick_all()
     assert types(hub, seq) == [("queue_changed", ""), ("job_done", SERIAL), ("queue_changed", "")]
     done = hub.req("GET", "/api/events?since=%d" % seq, secret=True)[1]["events"][1]["job"]
@@ -51,11 +51,11 @@ def test_failed_job_event_and_seq_grows(hub):
     hub.setup_printers()
     hub.seed_share()
     hub.req("POST", "/api/queue", {"file": "a.gcode.3mf", "target": SERIAL}, user=ADMIN)
-    hub.ha.s["sensor.lab_h2s_print_status"]["state"] = "idle"
+    hub.set_print(gcode_state="IDLE")
     hub.req("POST", "/api/printers/%s/start-next" % SERIAL, {"plate_clear": True}, user=ADMIN)
     seq = hub.req("GET", "/api/events", secret=True)[1]["seq"]
-    hub.ha.s["sensor.lab_h2s_active_tray"]["state"] = "none"  # filament never loaded
-    hub.ha.s["sensor.lab_h2s_current_stage"]["state"] = "idle"
+    hub.set_print(ams={"tray_now": "255"})  # filament never loaded
+    hub.set_print(stg_cur=-1)
     hub.now += 700  # past the start timeout
     hub.app.tick_all()
     assert types(hub, seq) == [("job_failed", SERIAL), ("queue_changed", "")]

@@ -102,12 +102,12 @@ def finish_a_print(hub):
     hub.grant(USER, SERIAL)
     jid = hub.sliced(owner=USER)
     job = hub.req("POST", "/api/jobs/%s/queue" % jid, {"target": SERIAL}, user=USER)[1]
-    hub.ha.s["sensor.lab_h2s_print_status"]["state"] = "idle"
+    hub.set_print(gcode_state="IDLE")
     assert hub.req("POST", "/api/printers/%s/start-next" % SERIAL, {"plate_clear": True}, user=ADMIN)[1]["state"] == "starting"
-    hub.ha.s["sensor.lab_h2s_current_stage"]["state"] = "changing_filament"
+    hub.set_print(stg_cur=4)
     hub.app.tick_all()
     assert hub.req("GET", "/api/queue", user=ADMIN)[1]["jobs"][0]["state"] == "printing"
-    hub.ha.s["sensor.lab_h2s_print_status"]["state"] = "finish"
+    hub.set_print(gcode_state="FINISH")
     hub.app.tick_all()
     return job["id"]
 
@@ -151,11 +151,11 @@ def test_failed_print_keeps_the_spool(hub):
     hub.grant(USER, SERIAL)
     jid = hub.sliced(owner=USER)
     hub.req("POST", "/api/jobs/%s/queue" % jid, {"target": SERIAL}, user=USER)
-    hub.ha.s["sensor.lab_h2s_print_status"]["state"] = "idle"
+    hub.set_print(gcode_state="IDLE")
     hub.req("POST", "/api/printers/%s/start-next" % SERIAL, {"plate_clear": True}, user=ADMIN)
-    hub.ha.s["sensor.lab_h2s_current_stage"]["state"] = "changing_filament"
+    hub.set_print(stg_cur=4)
     hub.app.tick_all()
-    hub.ha.s["sensor.lab_h2s_print_status"]["state"] = "failed"
+    hub.set_print(gcode_state="FAILED")
     hub.app.tick_all()
     assert put_calls(hub) == []
 

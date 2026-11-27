@@ -59,7 +59,7 @@ def test_act_as_ha_admin_can_do_admin_things(hub):
     job = add(hub, USER)
     assert job["state"] == "pending_approval"
     assert act(hub, "POST", "/api/queue/%s/approve" % job["id"], {}, ADMIN)[1]["state"] == "queued"
-    hub.ha.s["sensor.lab_h2s_print_status"]["state"] = "idle"
+    hub.set_print(gcode_state="IDLE")
     st, started = act(hub, "POST", "/api/printers/%s/start-next" % SERIAL, {"plate_clear": True}, ADMIN)
     assert st == 200 and started["id"] == job["id"]
     assert act(hub, "POST", "/api/queue/%s/skip" % add(hub, USER, "b.gcode.3mf")["id"], {}, ADMIN)[0] == 200

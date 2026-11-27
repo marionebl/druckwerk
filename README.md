@@ -1,12 +1,12 @@
 # Druckwerk
 
-Slicing, print queue and cloud control for 3D printers (H2S, P1S and similar) in Home Assistant. Druckwerk is an independent project and is not affiliated with any printer vendor. This repository holds the Druckwerk app (`hub/`) and its Home Assistant integration (`custom_components/druckwerk`). The integration adds cloud controls to printers that the vendor's own Home Assistant integration already shows (its domain is named in `custom_components/druckwerk/externals.py`). These printers have firmware that rejects unsigned commands.
+Slicing, print queue and cloud control for 3D printers (H2S, P1S and similar) in Home Assistant. Druckwerk is an independent project and is not affiliated with any printer vendor. This repository holds the Druckwerk app (`hub/`) and its Home Assistant integration (`custom_components/druckwerk`). The app reads everything about your printers from your printer cloud account, so Druckwerk is all you need to install. The vendor's own Home Assistant integration (ha-bambulab) is optional: if you have it, Druckwerk's entities join its device for each printer and nothing of it changes (its domain is named in `custom_components/druckwerk/externals.py`). These printers have firmware that rejects unsigned commands.
 
 Each printer gets these entities:
 
 - Print file select, timelapse and bed leveling switches, and a start button (`druckwerk.print_file`)
 - Cloud camera: a live stream and still images through the cloud tunnel (see [Camera](#camera))
-- Chamber light (cloud): sends through the app and shows the state the vendor integration reports
+- Chamber light (cloud): sends through the app and shows the state the printer reports
 - Re-read slot 1–4: the AMS reads the spool's RFID tag again, and you do not have to remove the spool
 - Cloud sender status sensor
 
@@ -79,10 +79,11 @@ Before anything is sent, `druckwerk.print_file` and the Start button check the f
 
 `force` only overrides the "printer is busy" check, not this guard.
 
-## Druckwerk integration (v0.13)
+## Druckwerk integration (v0.14)
 
 - The integration sets itself up: the app announces host, ports and secret through Supervisor discovery, and Home Assistant creates the entry without a question. Install it from the Marketplace (HACS) and restart Home Assistant. The app's setup page shows whether the integration is connected; the URL and secret are there only as a manual fallback.
-- Printers need no setup step either: the app registers every printer that the printer integration in Home Assistant already has. Remove one on the setup page and it stays removed.
+- Printers need no setup step either: the app registers every printer of the linked cloud accounts. Remove one on the setup page and it stays removed.
+- Dependencies: only the Druckwerk app. The vendor's integration (ha-bambulab) is optional; without it the integration makes its own device per printer (named after it, manufacturer and model as the printer reports them), with it the entities attach to its device.
 - Options: hub secret (normally delivered by the app through Supervisor discovery, which also keeps URLs and secret current; paste it by hand otherwise), notification recipients as a map `person.<name>: notify.<service>`.
 - Todo list `Queue` per printer: queued and pending jobs (the title is the print's name, the description has the file and the owner). Deleting an item cancels the job, moving it reorders; adding is not supported (a job needs a sliced file).
 - The integration holds no logic. It shows what the app describes and forwards, so an app update changes entities, actions and tools without a Home Assistant restart. It polls the app's state every 5 s.

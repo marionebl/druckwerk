@@ -9,7 +9,7 @@ import pytest
 
 import actions
 import files
-from hubfakes import ADMIN, ENTITIES, REPO, SERIAL, SERIAL2, USER, VENDOR, FakeBridge, make_3mf, st
+from hubfakes import ADMIN, REPO, SERIAL, SERIAL2, USER, FakeBridge, make_3mf
 
 
 @pytest.fixture
@@ -199,18 +199,14 @@ def test_snapshot_is_proxied_while_online_and_a_placeholder_while_offline(hub):
 
 
 # ---- chamber light
-def with_light(hub, value):
-    hub.ha.entities = ENTITIES + [{"entity_id": "light.lab_h2s_chamber_light", "device_id": "dev1", "platform": VENDOR,
-                                   "unique_id": "H2S_%s_chamber_light" % SERIAL}]
-    hub.ha.s["light.lab_h2s_chamber_light"] = st(value)
-
-
-def test_the_light_mirrors_the_vendor_light(hub):
-    assert me(hub)["chamber_light"] == {"on": None}  # no vendor light
-    for value, want in (("on", True), ("off", False), ("unavailable", None)):
-        with_light(hub, value)
-        hub.app._cache.clear()
+def test_the_light_mirrors_the_printers_chamber_light(hub):
+    hub.set_print(lights_report=[])
+    assert me(hub)["chamber_light"] == {"on": None}  # the printer reports no chamber light
+    for mode, want in (("on", True), ("off", False), ("flashing", None)):
+        hub.set_print(lights_report=[{"node": "work_light", "mode": "on"}, {"node": "chamber_light", "mode": mode}])
         assert me(hub)["chamber_light"] == {"on": want}
+    FakeBridge.status_fail = {SERIAL}
+    assert me(hub)["chamber_light"] == {"on": None}  # the bridge cannot say
     assert me(hub, SERIAL2)["chamber_light"] == {"on": None}
 
 
@@ -236,13 +232,12 @@ def test_the_rfid_route_asks_the_bridge_to_read_the_slot_again(hub):
 
 # ---- current print picture
 def with_task(hub, name):
-    hub.ha.entities = hub.ha.entities + [{"entity_id": "sensor.lab_h2s_subtask_name", "device_id": "dev1", "platform": VENDOR,
-                                          "unique_id": SERIAL + "_subtask_name"}]
-    hub.ha.s["sensor.lab_h2s_subtask_name"] = st(name)
+    hub.set_print(subtask_name=name)
 
 
 def test_the_picture_follows_the_last_sent_file_and_then_the_printers_task(hub):
     base = hub.media / "druckwerk"
+    with_task(hub, "")  # the printer reports no job
     assert me(hub)["current_print"] == {"token": None, "file_path": None, "has_preview": False}
     assert get(hub, "/api/integration/printers/%s/image" % SERIAL)[0] == 404
     sent = make_3mf(base / "sent.gcode.3mf")
@@ -259,9 +254,9 @@ def test_the_picture_follows_the_last_sent_file_and_then_the_printers_task(hub):
     cur2 = me(hub)["current_print"]
     assert cur2["file_path"] == str(base / "other.gcode.3mf") and cur2["token"] != cur["token"]
     # an unknown task name has no file; an unknown task state falls back to the last sent file
-    hub.ha.s["sensor.lab_h2s_subtask_name"] = st("nothing here")
+    with_task(hub, "nothing here")
     assert me(hub)["current_print"] == {"token": None, "file_path": None, "has_preview": False}
-    hub.ha.s["sensor.lab_h2s_subtask_name"] = st("unavailable")
+    FakeBridge.status_fail = {SERIAL}  # the bridge cannot say
     assert me(hub)["current_print"]["file_path"] == sent
 
 
