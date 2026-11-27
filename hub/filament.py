@@ -65,6 +65,45 @@ class Prices:
             write_json(self.path, self.items)
 
 
+class LoadRequests:
+    """Open requests to put a library spool into a printer's AMS; one per (spool, printer)."""
+
+    def __init__(self, data_dir):
+        self.path = os.path.join(data_dir, "load_requests.json")
+        self.lock = threading.RLock()
+        self.items = []
+        if os.path.exists(self.path):
+            with open(self.path) as f:
+                self.items = json.load(f)
+
+    def find(self, spool_id, printer):
+        return next((r for r in self.items if r["spool_id"] == spool_id and r["printer"] == printer), None)
+
+    def add(self, req):
+        """(request, created); an open request for the same spool and printer is returned as it is."""
+        with self.lock:
+            old = self.find(req["spool_id"], req["printer"])
+            if old:
+                return old, False
+            self.items.append(req)
+            write_json(self.path, self.items)
+            return req, True
+
+    def remove(self, req_id):
+        with self.lock:
+            self.items = [r for r in self.items if r["id"] != req_id]
+            write_json(self.path, self.items)
+
+    def settle(self, spools):
+        """Close the requests whose spool the cloud library shows in the requested printer."""
+        with self.lock:
+            left = [r for r in self.items if not any(
+                s["id"] == r["spool_id"] and s.get("printer") == r["printer"] and s.get("in_printer") for s in spools)]
+            if len(left) != len(self.items):
+                self.items = left
+                write_json(self.path, self.items)
+
+
 def in_tray(spools, serial, unit, slot):
     return next((s for s in spools if s["printer"] == serial and s["unit"] == unit and s["slot"] == slot), None)
 

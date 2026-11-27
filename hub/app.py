@@ -127,6 +127,7 @@ class App:
         os.makedirs(os.path.join(data_dir, "plates"), exist_ok=True)
         self.registry = Registry(data_dir)
         self.prices = filament.Prices(data_dir)
+        self.loads = filament.LoadRequests(data_dir)
         self.grants = Grants(self.registry, data_dir, self._grant_state, clock)
         self.access = Access(self.registry, self.grants, self.get_user)
         self.queue = Queue(self.registry, data_dir, ha.state, self._call_service, self.get_trays, clock=clock,
@@ -439,10 +440,10 @@ class App:
     def _waiting_ids(self):
         return [j["id"] for j in self.queue.jobs if j["state"] in WAITING]
 
-    def emit(self, type_, serial, job):
+    def emit(self, type_, serial, job, **extra):
         self.seq += 1
         # job always carries id, file, owner_name, target and printer (None until a printer took it).
-        event = {"seq": self.seq, "type": type_, "serial": serial or "", "job": dict({"printer": None}, **job) if job else None}
+        event = {"seq": self.seq, "type": type_, "serial": serial or "", "job": dict({"printer": None}, **job) if job else None, **extra}
         self.events.append(event)
         self.notifier.put(event)
 
@@ -986,6 +987,7 @@ class App:
             raise HttpError(e.status, "Bambu Cloud filament library: %s" % e)
         with self._cache_lock:
             self._cache[key] = (self.clock(), val)
+        self.loads.settle(val)
         return val
 
     def printer_spools(self, serial):
@@ -1080,6 +1082,52 @@ class App:
         self._cache.pop("lib:%s" % old["account"], None)
         self.prices.set(old["id"], None)
         return {"removed": old["id"]}
+
+    # -- load requests: a user asks the printer's owner to put a library spool into the AMS --
+    def load_request_visible(self, c, r):
+        return self.access.role(c, r["printer"]) is not None
+
+    def get_load_requests(self, h, m, q, c):
+        try:
+            for acc in self.library_accounts(c):
+                self.library(acc)
+        except HttpError as e:  # the list itself needs no cloud
+            log("load requests: %s" % e)
+        return [r for r in list(self.loads.items) if self.load_request_visible(c, r)]
+
+    def post_load_request(self, h, m, q, c):
+        b = h.json()
+        serial = str(b.get("printer") or "")
+        if not serial:
+            raise ValueError("printer is required")
+        note = b.get("note") or ""
+        if not isinstance(note, str) or len(note) > 200:
+            raise ValueError("note must be text of at most 200 characters")
+        p = self.printer_access(c, serial)
+        spool = next((s for s in self.visible_spools(c) if s["id"] == m.group(1)), None)
+        if not spool:
+            raise NotFound("no such spool")
+        if not self.ams(serial, self.ha.states()):
+            raise ValueError("this printer has no AMS")
+        if spool.get("printer") == serial and spool.get("in_printer"):
+            raise HttpError(409, "this spool is already in that printer")
+        label = " ".join(x for x in (spool["brand"], spool["type"], spool["name"]) if x)
+        req, created = self.loads.add({
+            "id": secrets.token_hex(6), "spool_id": spool["id"], "spool_label": label, "colour": spool["colour"],
+            "printer": serial, "user_id": c.user_id, "user_name": c.display or c.name, "note": note.strip(),
+            "created_at": int(self.clock())})
+        if created:
+            self.emit("load_requested", serial, None, request=dict(req, printer_name=p["name"]))
+        return req
+
+    def delete_load_request(self, h, m, q, c):
+        r = next((x for x in self.loads.items if x["id"] == m.group(1)), None)
+        if not r or not self.load_request_visible(c, r):
+            raise NotFound("no such load request")
+        if r["user_id"] != c.user_id and self.access.role(c, r["printer"]) != "admin":
+            raise Forbidden("rule: only the requester or an admin of the printer can cancel this request")
+        self.loads.remove(r["id"])
+        return {"removed": r["id"]}
 
     # -- HA lookups, events --
     def get_ha_users(self, h, m, q, c):
@@ -1285,6 +1333,9 @@ class App:
             ("POST", r"/api/spools", w(self.post_spool)),
             ("PUT", r"/api/spools/(\d{1,19})", w(self.put_spool)),
             ("DELETE", r"/api/spools/(\d{1,19})", w(self.delete_spool)),
+            ("POST", r"/api/spools/(\d{1,19})/load-request", w(self.post_load_request)),
+            ("GET", r"/api/load-requests", w(self.get_load_requests)),
+            ("DELETE", r"/api/load-requests/([0-9a-f]{12})", w(self.delete_load_request)),
             ("GET", r"/api/ha/users", w(self.get_ha_users, "ha_admin")),
             ("GET", r"/api/ha/entities", w(self.get_ha_entities, "ha_admin")),
             ("POST", r"/api/ha/switches", w(self.create_switch, "ha_admin")),

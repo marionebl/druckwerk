@@ -73,6 +73,11 @@ class Notifier:
                 if nxt:
                     self.notify_admins(serial, "Plate clear? Start next: %s" % (nxt.get("name") or nxt.get("file")),
                                        [{"action": ACTION_PREFIX + serial, "title": "Plate clear, start"}])
+            elif etype == "load_requested":
+                r = event.get("request") or {}
+                note = (": " + r["note"]) if r.get("note") else ""
+                self.notify_owners(serial, "%s asks to load %s into %s%s" % (
+                    r.get("user_name") or "Someone", r.get("spool_label"), r.get("printer_name") or serial, note))
             elif etype == "approval_needed":
                 self.notify_admins(serial, "%s needs approval to %s %s" % (
                     job.get("owner_name") or "Someone", "dry" if job.get("kind") == "dry" else "print",
@@ -96,12 +101,27 @@ class Notifier:
                if grants.is_active(g) and g.get("role") == "owner" and g.get("printer") in (serial, "*")}
         return ids | {u["id"] for u in self.app.ha_users() if u["is_admin"]}
 
+    def owner_ids(self, serial):
+        """Active owners of the printer (or of all printers); HA admins only when they hold such a grant."""
+        grants = self.app.grants
+        return {g["user_id"] for g in list(grants.items)
+                if grants.is_active(g) and g.get("role") == "owner" and g.get("printer") in (serial, "*")}
+
     def notify_admins(self, serial, message, actions=None):
         """Notify the printer's admins who are mapped and at home (person state "home")."""
+        self.push(self.admin_ids(serial), message, actions)
+
+    def notify_owners(self, serial, message):
+        ids = self.owner_ids(serial)
+        if not ids:
+            log("load request for %s: the printer has no owner to notify" % serial)
+            return
+        self.push(ids, message)
+
+    def push(self, admins, message, actions=None):
         recipients = self.options["recipients"]
         if not recipients:
             return
-        admins = self.admin_ids(serial)
         states = self.app.ha.states()
         for person, service in recipients.items():
             s = states.get(person)
