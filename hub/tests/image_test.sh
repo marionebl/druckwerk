@@ -7,7 +7,7 @@ set -euo pipefail
 HERE=$(cd "$(dirname "$0")" && pwd); REPO=$(cd "$HERE/../.." && pwd)
 IMG=${IMG:-druckwerk-test}
 PLUGIN_ZIP=${PLUGIN_ZIP:-/tmp/druckwerk-plugin/plugin.zip}  # the real vendor zip; fetched once from the URL pinned in externals.py
-[ -n "${SKIP_BUILD:-}" ] || docker build -q -f "${DOCKERFILE:-$REPO/hub/Dockerfile}" ${BUILD_ARGS:-} -t $IMG "$REPO" >/dev/null
+[ -n "${SKIP_BUILD:-}" ] || "$HERE/build_image.sh"
 docker image ls $IMG --format 'image size {{.Size}}'
 "$HERE/no_vendor_libs.sh" $IMG
 if [ ! -s "$PLUGIN_ZIP" ]; then

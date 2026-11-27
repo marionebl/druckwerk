@@ -14,6 +14,7 @@
 - Install Pillow in the image to draw a plate picture when the file has none.
 - Make the app image about 70 % smaller, so updates download faster.
 - Remove unused slicer files, the full qemu package and the full ffmpeg package.
+- Split the image into a base image and the app code. The base has the slicer, qemu and ffmpeg and stays the same between versions, so later updates download only the app layers.
 
 ## 2.7.0 (2026-11-27)
 
