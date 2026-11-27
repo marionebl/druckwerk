@@ -4,29 +4,33 @@ on:
     branches: [size-probe]
 permissions:
   contents: read
-  packages: read
 jobs:
   probe:
     strategy:
+      fail-fast: false
       matrix:
         include:
           - {arch: aarch64, runner: ubuntu-24.04-arm}
           - {arch: amd64, runner: ubuntu-24.04}
     runs-on: ${{ matrix.runner }}
     steps:
-      - uses: actions/checkout@v4
-      - name: Measure
-        env:
-          GH_TOKEN: ${{ github.token }}
+      - name: Orca vs Bambu Studio flatpaks
         run: |
-          echo "$GH_TOKEN" | docker login ghcr.io -u "${{ github.actor }}" --password-stdin
-          BASE=ghcr.io/${{ github.repository_owner }}/druckwerk-base-${{ matrix.arch }}:$(hub/tests/base_tag.sh)
-          docker pull -q "$BASE" >/dev/null
-          docker image ls "$BASE" --format 'base {{.Size}}'
-          id=$(docker create "$BASE" true); mkdir /tmp/rootfs; docker export "$id" | tar -x -C /tmp/rootfs 2>/dev/null || true
-          cd /tmp/rootfs
-          echo "== top dirs (MB)"; du -xm -d1 . | sort -rn | head -12
-          echo "== depth 2 under usr, opt, srv, amd64 (MB, >=10)"; du -xm -d2 usr opt srv amd64 2>/dev/null | sort -rn | awk '$1>=10' | head -40
-          echo "== opt/bs depth 3 (>=8 MB)"; du -xm -d3 opt/bs 2>/dev/null | sort -rn | awk '$1>=8' | head -30
-          echo "== 40 biggest files (MB)"; find . -xdev -type f -size +4M -printf '%s %p\n' | sort -rn | head -40 | awk '{printf "%.1f %s\n",$1/1048576,$2}'
-          echo "== ffmpeg, qemu"; ls -l usr/local/bin/ffmpeg usr/bin/qemu-x86_64 2>&1
+          sudo apt-get update -qq && sudo apt-get install -y -qq flatpak >/dev/null
+          sudo flatpak remote-add --system --if-not-exists flathub https://dl.flathub.org/repo/flathub.flatpakrepo
+          for id in io.github.softfever.OrcaSlicer com.bambulab.BambuStudio; do
+            echo "=== remote-info $id"; sudo flatpak remote-info --system flathub $id | head -14
+          done
+          for id in io.github.softfever.OrcaSlicer com.bambulab.BambuStudio; do
+            sudo flatpak install --system -y --noninteractive flathub $id >/dev/null 2>&1 || echo "install failed $id"
+          done
+          for id in io.github.softfever.OrcaSlicer com.bambulab.BambuStudio; do
+            echo "=== $id"; A=$(sudo flatpak info --system --show-location $id)/files
+            RT=$(sudo flatpak info --system --show-runtime $id); R=$(sudo flatpak info --system --show-location $RT)/files
+            echo "runtime=$RT"; sudo du -sm "$A" "$R" | sed 's|^|MB |'
+            echo "-- app depth1 (MB)"; sudo du -m -d1 "$A" | sort -rn | head -6
+            echo "-- app/bin"; sudo ls -l "$A/bin" | head
+            echo "-- BBL.json"; F=$(sudo find "$A" -name BBL.json -path "*profiles*" | head -1); echo "$F"; sudo grep -m3 -E '"(name|version)"' "$F"
+            echo "-- machine files H2S / P1S"; sudo find "$A" -path "*profiles/BBL/machine/*" \( -name "*H2S*" -o -name "*P1S*" \) | sed 's|.*/BBL/||' | head -12
+            echo "-- BBL dir size (MB)"; sudo du -sm "$(dirname "$F")/BBL"
+          done
