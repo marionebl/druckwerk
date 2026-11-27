@@ -65,8 +65,10 @@ def walk(page, ident, base, shot, inject):
         page.locator("#plate-clear").check()
         assert not btn.is_disabled()
         shot("printer-idle-start-armed")
+        assert page.locator("section.card h2", has_text="Start next").count() == 1, "queued job: start card is shown"
     if ident == "admin":
         go("#/printers/FAKE-X1C-0003", ".hms")
+        assert page.locator("section.card h2", has_text="Start next").count() == 0, "empty queue: no start card"
         shot("printer-offline-hms")
     go("#/queue", ".job")
     shot("queue")

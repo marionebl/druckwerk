@@ -502,8 +502,7 @@ class MultiAccountTest(unittest.TestCase):
         used = {q: e for q, e in self.cloud.task_calls}
         self.assertEqual(used["/v1/user-service/my/tasks?deviceId=SERIAL001&limit=2"], "a@example.com")
         self.assertEqual(used["/v1/user-service/my/tasks?deviceId=SERIALB01&limit=50"], "b@example.com")
-        # A numeric code is passed on as it is: this repo does not say what the numbers mean.
-        self.assertEqual((b[2]["status"], b[2]["status_code"]), ("2", 2))
+        self.assertEqual((b[2]["status"], b[2]["status_code"]), ("finished", 2))
 
     def test_02c_tasks_errors(self):
         s = self.s
