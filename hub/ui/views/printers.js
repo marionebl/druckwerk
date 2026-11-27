@@ -1,6 +1,6 @@
 // Printer grid and printer detail.
 import { api } from '../api.js';
-import { h, clear, icon, ring, btn, empty, dur, clock, attempt, pill, swatch, modal, field } from '../util.js';
+import { h, clear, icon, ring, btn, empty, dur, clock, attempt, pill, swatch, modal, field, toast } from '../util.js';
 import { statusPill, isPrinting, hmsBanners, amsBlock, temps, timeLeft, finishAt } from './common.js';
 
 export async function mount(ctx, root, [serial]) {
@@ -15,37 +15,67 @@ export async function mount(ctx, root, [serial]) {
 // is requested only after the last one loaded or failed, and the loop ends when the image leaves the page.
 // A still takes the bridge 10 to 60 s without a live tunnel, so the pause only adds to that: 2 s in the detail view, 10 s on cards.
 const stills = new Map();
+// The <img> stays hidden until a frame has loaded, so a printer whose snapshot fails or takes a minute shows the
+// placeholder, never a broken image. After a first frame, a failed one keeps the last good frame.
+const noImage = (text) => h('div', { class: 'off' }, icon('camera', 28), text);
 function still(p, big) {
   const key = p.serial + (big ? ':big' : '');
   let s = stills.get(key);
   if (!s) {
-    s = { img: h('img', { alt: `Camera of ${p.name}` }), running: false, url: p.camera_url, pause: big ? 2000 : 10000 };
+    const img = h('img', { alt: `Camera of ${p.name}` }), text = h('span', null, 'Loading camera image…');
+    const holder = h('div', { class: 'still' }, h('div', { class: 'off' }, icon('camera', 28), text), img);
+    s = { holder, img, text, running: false, url: p.camera_url, pause: big ? 2000 : 10000 };
     stills.set(key, s);
   }
   s.url = p.camera_url;
   if (!s.running) {
     s.running = true;
     const next = () => {
-      if (!s.img.isConnected) { s.running = false; return; }
+      if (!s.holder.isConnected) { s.running = false; return; }
       if (document.hidden) { setTimeout(next, 1000); return; }
       const probe = new Image();
       const again = () => setTimeout(next, s.pause);
-      probe.onload = () => { s.img.src = probe.src; again(); };
-      probe.onerror = again;
+      probe.onload = () => { s.img.src = probe.src; s.holder.classList.add('ok'); again(); };
+      probe.onerror = () => { if (!s.holder.classList.contains('ok')) s.text.textContent = 'No camera image'; again(); };
       probe.src = s.url + (s.url.includes('?') ? '&' : '?') + 'mode=snapshot&t=' + Date.now();
     };
     setTimeout(next, 0);
   }
-  return s.img;
+  return s.holder;
 }
 
 function camera(p, big) {
   const box = h('div', { class: 'cam' + (big ? ' big' : '') });
   if (p.online && p.camera_url) box.append(still(p, big));
-  else box.append(h('div', { class: 'off' }, icon('camera', 28), p.online ? 'No camera image' : 'Printer offline'));
+  else box.append(noImage(p.online ? 'No camera image' : 'Printer offline'));
   box.append(h('span', { class: 'badge' }, statusPill(p)));
+  if (p.online && p.light != null) box.append(lightButton(p));
   if (p.task_name && isPrinting(p)) box.append(h('div', { class: 'name' }, p.task_name));
   return box;
+}
+
+// Units whose slots are all empty (and an empty external spool) are left out; "AMS empty" says why nothing shows.
+function filament(p, compact) {
+  const loaded = { ...p, ams: (p.ams || []).filter((u) => u.trays.some((t) => t.type)), external: p.external?.type ? p.external : null };
+  if (loaded.ams.length || loaded.external) return amsBlock(loaded, compact);
+  return p.ams?.length ? h('small', { class: 'muted ams-empty' }, 'AMS empty') : null;
+}
+
+// The printer reports the light a few seconds after a switch, so the answer stays on screen until then.
+const lights = new Map();
+const lightOn = (p) => { const l = lights.get(p.serial); return l && Date.now() < l.until ? l.on : p.light; };
+function lightButton(p) {
+  const b = h('button', { class: 'light-btn', type: 'button', role: 'switch', 'aria-label': 'Chamber light', 'aria-checked': String(!!lightOn(p)),
+    title: 'Chamber light', disabled: p.role !== 'admin', 'data-light': lightOn(p) ? 'on' : 'off',
+    onclick: async (e) => {
+      e.preventDefault(); e.stopPropagation();  // the card around it is a link
+      const on = !lightOn(p);
+      b.disabled = true;
+      try { await api.setLight(p.serial, on); lights.set(p.serial, { on, until: Date.now() + 10000 }); b.setAttribute('aria-checked', String(on)); b.dataset.light = on ? 'on' : 'off'; }
+      catch (err) { toast(err.message, 'error'); }
+      b.disabled = false;
+    } }, icon('bulb', 18));
+  return b;
 }
 
 function card(p) {
@@ -62,7 +92,7 @@ function card(p) {
         h('small', null, `Layer ${p.layer}/${p.total_layers}`)),
       p.online && h('div', { class: 'row between' },
         h('small', null, `Nozzle ${Math.round(p.nozzle_temp)}° · Bed ${Math.round(p.bed_temp)}°`)),
-      (p.ams?.length || p.external) && amsBlock(p, true)));
+      filament(p, true)));
 }
 
 async function grid(ctx, root) {
@@ -203,8 +233,9 @@ function draw(ctx, body, camHost, p, mine, refresh) {
     h('div', { class: 'cols' },
       h('div', { class: 'stack' }, camHost, jobCard(p), ctx.canManage(p.serial) && startNext(ctx, p, mine, refresh)),
       h('div', { class: 'stack' },
-        h('section', { class: 'card' }, h('h2', null, 'Temperatures'), p.online ? temps(p) : h('p', { class: 'muted' }, 'No data while offline.')),
-        (p.ams?.length || p.external) && h('section', { class: 'card' }, h('h2', null, 'Filament'), amsBlock(p)),
+        h('section', { class: 'card' }, h('h2', null, 'Temperatures'), p.online ? temps(p) : h('p', { class: 'muted' }, 'No data while offline.'),
+          p.online && p.light != null && h('div', { class: 'row between', style: 'margin-top:12px' }, h('span', null, 'Chamber light'), lightButton(p))),
+        (p.ams?.length || p.external) && h('section', { class: 'card' }, h('h2', null, 'Filament'), filament(p)),
         (p.drying || []).map((u) => dryCard(ctx, p, u, refresh)),
         queueCard)));
 }
