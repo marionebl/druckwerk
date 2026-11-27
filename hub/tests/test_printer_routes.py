@@ -20,6 +20,14 @@ def test_printer_view_from_ha_entities(hub):
     assert p["current_job"] is None and p["queue_length"] == 0 and p["external"] is None
 
 
+def test_remaining_time_uses_the_sensor_unit(hub):
+    hub.setup_printers()
+    for state, unit, minutes in (("0.67", "h", 40), ("73", "min", 73), ("90", "s", 2), ("73", None, 73)):
+        attrs = {"unit_of_measurement": unit} if unit else {}
+        hub.ha.s["sensor.lab_h2s_remaining_time"] = {"state": state, "attributes": attrs}
+        assert hub.req("GET", "/api/printers", user=ADMIN)[1][0]["remaining_min"] == minutes, (state, unit)
+
+
 def test_tray_gets_spool_id(hub):
     hub.setup_printers()
     spool = hub.app.spools.add(type="PETG", colour="ADB1B2", grams_left=900, printer=SERIAL, unit=0, slot=0)
