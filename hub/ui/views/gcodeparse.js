@@ -1,6 +1,6 @@
 // G-code to merged line buffers: one buffer per (feature, object), segments in layer order so a layer range is one draw range.
 // Pure functions, no DOM: runs in a Web Worker (gcodeworker.js) and in node for timing.
-const ARC_STEP = 0.5; // mm per chord of an arc move
+const ARC_SAG = 0.02; // mm the chords of an arc may stray from it (about a pixel at the closest zoom)
 
 class Group {
   constructor(feature, object) { this.feature = feature; this.object = object; this.buf = new Float32Array(3 << 14); this.n = 0; this.layerStart = []; this.last = -1; }
@@ -34,6 +34,8 @@ export function parse(text) {
   let layer = -1, x = 0, y = 0, z = 0, e = 0, feat = '', relE = true, obj = -1, i = 0;
   const bbox = [1e9, 1e9, -1e9, -1e9, 1e9, -1e9];
   let segments = 0;
+  // Orca writes both the label marker and a named one for the same object; use the label marker alone when it exists.
+  const named = !text.includes('; start printing object, unique label id: ');
 
   const group = (f, o) => {
     const k = f + '\u0000' + o;
@@ -71,7 +73,7 @@ export function parse(text) {
       else if (text.startsWith('; CHANGE_LAYER', i) || text.startsWith(';LAYER_CHANGE', i) || text.startsWith(';LAYER:', i)) { layerZ[++layer] = z; }
       else if (text.startsWith('; Z_HEIGHT: ', i) && layer >= 0) layerZ[layer] = parseFloat(text.slice(i + 12, end));
       else if (text.startsWith('; start printing object, unique label id: ', i)) obj = objectOf(text.slice(i + 42, end).trim());
-      else if (text.startsWith('; printing object ', i) && text.indexOf(' id:', i) > 0 && text.indexOf(' id:', i) < end) obj = objectOf(text.slice(text.indexOf(' id:', i) + 4, end).split(' ')[0]);
+      else if (named && text.startsWith('; printing object ', i) && text.indexOf(' id:', i) > 0 && text.indexOf(' id:', i) < end) obj = objectOf(text.slice(text.indexOf(' id:', i) + 4, end).split(' ')[0]);
       else if (text.startsWith('; stop printing object', i)) obj = -1;
     } else if (c === 71) { // 'G'
       let j = readNum(text, i + 1, end);
@@ -95,15 +97,16 @@ export function parse(text) {
           let ext = false;
           if (E === E) { ext = relE ? E > 0 : E > e; if (!relE) e = E; }
           if (layer >= 0) {
-            const moved = nx !== x || ny !== y;
+            const arc = (g === 2 || g === 3) && I === I, moved = arc || nx !== x || ny !== y; // a full-circle arc ends where it began
             if (ext && moved) {
               const f = feat || 'Other';
-              if ((g === 2 || g === 3) && I === I) {
+              if (arc) {
                 const cx = x + (I || 0), cy = y + (J || 0), r = Math.hypot(x - cx, y - cy);
                 let a0 = Math.atan2(y - cy, x - cx), a1 = Math.atan2(ny - cy, nx - cx);
                 if (g === 3 && a1 <= a0) a1 += 2 * Math.PI;
                 if (g === 2 && a1 >= a0) a1 -= 2 * Math.PI;
-                const steps = Math.max(2, Math.ceil(Math.abs(a1 - a0) * r / ARC_STEP));
+                const da = r > ARC_SAG ? 2 * Math.acos(1 - ARC_SAG / r) : Math.PI / 2;
+                const steps = Math.max(2, Math.ceil(Math.abs(a1 - a0) / da));
                 let px = x, py = y;
                 for (let s = 1; s <= steps; s++) {
                   const a = a0 + (a1 - a0) * s / steps, qx = cx + r * Math.cos(a), qy = cy + r * Math.sin(a);
@@ -137,10 +140,10 @@ export function parse(text) {
   return { layers, layerIndex, groups: list, objects, bbox, segments, plate: plateOf(text) };
 }
 
-// Bambu Studio and Orca write the config at the end of the file; Prusa writes bed_shape.
+// Bambu Studio and Orca put printable_area in the header, older ones in the config at the end; Prusa writes bed_shape.
 function plateOf(text) {
-  const tail = text.slice(-80000);
-  const m = /^; (?:printable_area|bed_shape) = (.+)$/m.exec(tail);
+  const re = /^; (?:printable_area|bed_shape) = (.+)$/m;
+  const m = re.exec(text.slice(0, 200000)) || re.exec(text.slice(-80000));
   if (!m) return null;
   const pts = m[1].trim().split(',').map((p) => p.split('x').map(Number));
   return pts.length >= 3 && pts.every((p) => p.length === 2 && p.every(Number.isFinite)) ? pts : null;

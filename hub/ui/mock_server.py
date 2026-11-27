@@ -212,6 +212,8 @@ def camera_svg(p):
 
 
 def gcode():
+    if os.environ.get("MOCK_GCODE"):  # try the viewer on a real file
+        return open(os.environ["MOCK_GCODE"], encoding="latin-1").read()
     """Two objects the way Bambu Studio writes them: label markers, ; FEATURE: comments, config tail with the plate."""
     out = ["; mock gcode", "M83"]
     box = {1: (40, 40, 100, 100, 60), 2: (150, 130, 210, 190, 40)}  # x0, y0, x1, y1, layers

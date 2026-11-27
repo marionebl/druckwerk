@@ -3,7 +3,7 @@ import { h } from '../util.js';
 
 const FEATURE = { 'Outer wall': '#ff8a3d', 'Inner wall': '#ffd166', 'Sparse infill': '#c86bfa', 'Internal solid infill': '#9b5de5',
   'Top surface': '#ef476f', 'Bottom surface': '#4cc9f0', 'Bridge': '#06d6a0', 'Support': '#8ecae6', 'Support interface': '#219ebc',
-  'Brim': '#adb5bd', 'Skirt': '#adb5bd', 'Gap infill': '#f4a261', 'Overhang wall': '#2a9d8f', 'Prime tower': '#6c757d' };
+  'Floating vertical shell': '#a98467', 'Internal Bridge': '#38b000', 'Custom': '#9aa5b1', 'Brim': '#adb5bd', 'Skirt': '#adb5bd', 'Gap infill': '#f4a261', 'Overhang wall': '#2a9d8f', 'Prime tower': '#6c757d' };
 const TRAVEL = 'Travel';
 const color = (f) => (f === TRAVEL ? '#6b7683' : FEATURE[f] || '#dddddd');
 const BG = 0x15181c;
