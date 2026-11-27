@@ -61,6 +61,13 @@ Example with `ha_call_service` (or any REST client: `POST /api/services/druckwer
  "data": {"slice_job_id": "a1b2c3d4e5f6", "target": "any", "model": "H2S", "options": {"timelapse": true}}}
 ```
 
+## Print options, name and drying
+
+- `druckwerk.print_file` and the `options` of `druckwerk.add_to_queue` take the options of the vendor slicer's send dialog: `bed_leveling`, `flow_cali`, `nozzle_offset_cali` (`on`, `off` or `auto`), `vibration_cali`, `layer_inspect`, `ext_change_assist`, `timelapse`, `use_ams` (on or off) and `bed_type` (`auto`, `cool_plate`, `eng_plate`, `hot_plate`, `textured_plate`, `supertack_plate`, `3d_effect_plate`). What you leave out keeps today's value. In the web UI they are under "Advanced print options" on the New print page (closed by default). Not every printer supports every option; the printer ignores what it cannot do.
+- `druckwerk.add_to_queue` also takes `name` (up to 80 characters; default: the file name). The queue, the todo list and the live activity show it. `file` may be an absolute path under `/media` or `/share` to a sliced `.gcode.3mf`; the app copies it into its share (it has read-only access to `/media`).
+- AMS drying (AMS 2 Pro, AMS HT): on the printer page an admin starts and stops drying per AMS unit (a confirm dialog comes first) or adds a drying job to the queue. A drying job is a queue job like a print: it waits for its turn, needs a person to start it, and the next print on that printer waits until the drying is over or stopped. The page shows the state and the time left. The control appears only for units that report a dryer and a printer that supports remote drying; an AMS that the status does not show cannot be controlled.
+- The Filament page lists the filament the hub sees in the AMS first, grouped by printer and AMS unit. The hub adds a spool for every loaded tray it does not know (marked "seen") and follows it when it moves.
+
 ## Print guard
 
 Before anything is sent, `druckwerk.print_file` and the Start button check the first plate's G-code (`gcode_guard.py`) and refuse the file, listing every problem, if:
@@ -72,12 +79,12 @@ Before anything is sent, `druckwerk.print_file` and the Start button check the f
 
 `force` only overrides the "printer is busy" check, not this guard.
 
-## Druckwerk integration (v0.12)
+## Druckwerk integration (v0.13)
 
 - The integration sets itself up: the app announces host, ports and secret through Supervisor discovery, and Home Assistant creates the entry without a question. Install it from the Marketplace (HACS) and restart Home Assistant. The app's setup page shows whether the integration is connected; the URL and secret are there only as a manual fallback.
 - Printers need no setup step either: the app registers every printer that the printer integration in Home Assistant already has. Remove one on the setup page and it stays removed.
 - Options: hub secret (normally delivered by the app through Supervisor discovery, which also keeps URLs and secret current; paste it by hand otherwise), notification recipients as a map `person.<name>: notify.<service>`.
-- Todo list `Queue` per printer: queued and pending jobs (owner in the description). Deleting an item cancels the job, moving it reorders; adding is not supported (a job needs a sliced file).
+- Todo list `Queue` per printer: queued and pending jobs (the title is the print's name, the description has the file and the owner). Deleting an item cancels the job, moving it reorders; adding is not supported (a job needs a sliced file).
 - Events: the hub is polled every 5 s and fires `druckwerk_job_done`, `_job_failed`, `_job_started`, `_approval_needed`, `_queue_changed` with the hub's payload.
 - Notifications go to the printer's admins, and only to people whose `person` is `home`. After `job_done` with a next job queued they get "Plate clear? Start next: <job>"; the action starts it (`start-next` with `plate_clear`). `approval_needed` notifies the admins.
 
@@ -101,6 +108,8 @@ and the bridge build (done in the image build, `hub/bridge/`). Prebuilt images f
 3. The integration reaches the bridge API at `http://<app hostname>:8098` (see below).
 
 On amd64 the bridge and the vendor plugin run natively, on aarch64 under `qemu-x86_64`.
+
+The History view shows every print on a timeline, read from the printer cloud (the source of truth) and matched to the Druckwerk job that started it. HA admins and printer owners see all prints and filter by user; other users see only their own. Prints started at the slicer or the printer have no user. See `hub/API.md`.
 
 The image does not contain the printer vendor's proprietary network plugin. At app start `hub/bridge/plugin.py` downloads it from the vendor's CDN to your device (`/data/plugin/<version>/`), checks its SHA-256 against the value pinned in the repository and installs only the five libraries the bridge loads. Until that has succeeded, `GET /api/health` on the bridge reports `plugin.state` `downloading` or `failed` (with the error and the next retry; retries back off up to 10 minutes) and no login daemon is started. By using the app you download that plugin from the vendor under its terms. The bridge is built from [boo-cloud](https://github.com/estampo/boo-cloud) (MIT, notice in `/usr/share/licenses/boo-cloud/` in the image) plus a patch (`hub/bridge/bridge.patch.xz`); the printer certificate comes from the vendor's AGPL slicer repository. All vendor-owned names, URLs and identifiers are collected in `hub/externals.py`. `hub/tests/no_vendor_libs.sh` (run by `hub/tests/image_test.sh` and CI) fails if a vendor library is found in the image.
 Ingress serves the slicer UI; the bridge page and API are proxied under `api/bridge/`. The bridge also answers on port 8098 inside the Home Assistant network.

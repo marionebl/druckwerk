@@ -102,8 +102,19 @@ class FakeHA:
         return "image/jpeg", b"JPEGDATA"
 
 
+def task(id, title, started, serial=SERIAL, status="finished", seconds=600, grams=5.0):
+    """A normalized cloud task as the bridge's /api/tasks returns it."""
+    return {"id": id, "serial": serial, "title": title, "status": status, "status_code": status, "started_at": started,
+            "ended_at": started + seconds, "seconds": seconds, "grams": grams, "cover_url": "", "plate": 1, "design_title": ""}
+
+
 class FakeBridge(BaseHTTPRequestHandler):
     log = []
+    tasks = {}  # serial -> normalized tasks; a serial in task_fail answers 502
+    task_fail = set()
+    task_calls = []
+    drying = []  # what GET /api/drying/<serial> answers
+    drying_fail = {}  # path -> (status, error) for POSTs that the bridge refuses
 
     def reply(self, code, body, ctype="application/json"):
         data = body if isinstance(body, bytes) else json.dumps(body).encode()
@@ -120,9 +131,17 @@ class FakeBridge(BaseHTTPRequestHandler):
         if self.path == "/api/printers":
             return self.reply(200, [{"serial": SERIAL, "name": "Lab", "dev_product_name": "H2S", "account": "a_x"},
                                     {"serial": SERIAL2, "name": "Other", "dev_product_name": "P1S", "account": "a_x"}])
+        if self.path.startswith("/api/tasks?"):
+            serial = self.path.split("serial=")[1].split("&")[0]
+            FakeBridge.task_calls.append(self.path)
+            if serial in FakeBridge.task_fail:
+                return self.reply(502, {"error": "Bambu cloud answered HTTP 500"})
+            return self.reply(200, FakeBridge.tasks.get(serial, []))
         if self.path.startswith("/api/status/"):
             return self.reply(200, {"print": {"gcode_state": "RUNNING", "mc_percent": 7, "mc_remaining_time": 5, "layer_num": 2,
                                               "total_layer_num": 9, "nozzle_temper": 200, "subtask_name": "from bridge"}})
+        if self.path.startswith("/api/drying/"):
+            return self.reply(200, FakeBridge.drying)
         if self.path.startswith("/api/camera/"):
             return self.reply(200, b"FRAME:" + self.path.encode(), "image/jpeg")
         self.reply(404, {"error": "no"})
@@ -130,6 +149,11 @@ class FakeBridge(BaseHTTPRequestHandler):
     def do_POST(self):
         body = json.loads(self.rfile.read(int(self.headers.get("Content-Length") or 0)) or b"{}")
         FakeBridge.log.append((self.path, body))
+        if "/drying" in self.path and self.path in FakeBridge.drying_fail:
+            code, text = FakeBridge.drying_fail[self.path]
+            return self.reply(code, {"error": text})
+        if re.fullmatch(r"/api/ams/[A-Za-z0-9_-]+/drying(/stop)?", self.path):
+            return self.reply(200, {"sent": 1})
         if self.path == "/api/login/start":
             return self.reply(200, {"state": "need_code", "account": "a_x"})
         if self.path == "/api/login/code":
@@ -153,7 +177,8 @@ class Hub:
         self.tmp = tmp_path
         self.now = 1000.0
         self.ha = FakeHA()
-        FakeBridge.log = []
+        FakeBridge.log, FakeBridge.tasks, FakeBridge.task_fail, FakeBridge.task_calls = [], {}, set(), []
+        FakeBridge.drying, FakeBridge.drying_fail = [], {}
         self.bridge = ThreadingHTTPServer(("127.0.0.1", 0), FakeBridge)
         threading.Thread(target=self.bridge.serve_forever, kwargs={"poll_interval": 0.02}, daemon=True).start()
         from app import App

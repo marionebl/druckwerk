@@ -170,6 +170,34 @@ async def test_action_by_device_id_and_options(hass, addon, media, vendor_device
     assert base64.b64decode(p["file_b64"]) == GOOD
 
 
+async def test_action_passes_advanced_print_options_and_keeps_the_defaults_out(hass, addon, media, vendor_device):
+    await setup_entry(hass)
+    addon.post(f"{URL}/api/print", json={"result": "sent", "return_code": -1})
+    await hass.services.async_call("druckwerk", "print_file", {"serial": SERIAL, "file": "benchy.gcode.3mf"},
+                                   blocking=True, return_response=True)
+    p = posts(addon)[0][2]
+    assert {k: v for k, v in p.items() if k != "file_b64"} == {
+        "serial": SERIAL, "filename": "benchy.gcode.3mf", "timelapse": False, "bed_leveling": True, "use_ams": True}
+    await hass.services.async_call("druckwerk", "print_file", {
+        "serial": SERIAL, "file": "benchy.gcode.3mf", "bed_leveling": "auto", "flow_cali": "off", "vibration_cali": False,
+        "layer_inspect": True, "nozzle_offset_cali": "auto", "bed_type": "textured_plate", "ext_change_assist": True},
+        blocking=True, return_response=True)
+    p = posts(addon)[1][2]
+    assert {k: v for k, v in p.items() if k != "file_b64"} == {
+        "serial": SERIAL, "filename": "benchy.gcode.3mf", "timelapse": False, "bed_leveling": "auto", "use_ams": True,
+        "flow_cali": False, "vibration_cali": False, "layer_inspect": True, "nozzle_offset_cali": "auto",
+        "bed_type": "textured_plate", "ext_change_assist": True}
+
+
+@pytest.mark.parametrize("bad", [{"bed_type": "gold"}, {"flow_cali": "sometimes"}, {"vibration_cali": "auto"}])
+async def test_action_rejects_bad_advanced_options(hass, addon, media, vendor_device, bad):
+    await setup_entry(hass)
+    with pytest.raises(Exception):
+        await hass.services.async_call("druckwerk", "print_file", dict({"serial": SERIAL, "file": "benchy.gcode.3mf"}, **bad),
+                                       blocking=True, return_response=True)
+    assert posts(addon) == []
+
+
 @pytest.mark.parametrize("bad", [
     "../secret.gcode.3mf", "sub/../../secret.gcode.3mf", "/etc/passwd",
     "/root/x.gcode.3mf", "benchy.txt", "missing.gcode.3mf",

@@ -118,6 +118,53 @@ class Spools:
         return next((s for s in loaded if s["type"].lower() == ftype.lower()
                      and (not colour or _colour(s["colour"]) == _colour(colour))), None)
 
+    def see(self, serial, unit, slot, tray, now):
+        """Record what the hub sees in one AMS tray; returns True if something changed. tray: type, colour, name, remain_pct, uid.
+        A person's spool is reused when it matches, never changed apart from where it is loaded."""
+        with self.lock:
+            here = self.in_tray(serial, unit, slot)
+            if not tray["type"]:  # an emptied tray: a seen spool stays on the list, unloaded
+                if here and here.get("source") == "seen":
+                    here.update(printer=None, unit=None, slot=None, loaded_at=now)
+                    self._save()
+                    return True
+                return False
+            uid = tray.get("uid") or ""
+            spool = next((s for s in self.items if uid and s.get("uid") == uid), None)  # the same spool, wherever it was
+            if not spool and here and (here.get("source") != "seen" or not here.get("uid") or not uid or here["uid"] == uid):
+                spool = here
+            if not spool:  # a person's spool of this type and colour that is not loaded anywhere
+                spool = next((s for s in self.items if s.get("source") != "seen" and not s["printer"] and not s.get("uid")
+                              and s["type"].lower() == tray["type"].lower() and _colour(s["colour"]) == _colour(tray["colour"])), None)
+            changed = False
+            if not spool:
+                pct = tray.get("remain_pct")
+                spool = {"id": secrets.token_hex(6), "brand": "", "type": tray["type"], "colour": _colour(tray["colour"]).upper(),
+                         "name": tray.get("name") or "", "grams_left": round(pct * 10, 2) if pct is not None else 1000,
+                         "grams_total": 1000, "price_per_kg": None, "printer": None, "unit": None, "slot": None,
+                         "source": "seen", "uid": uid}
+                self.items.append(spool)
+                changed = True
+            if uid and not spool.get("uid"):
+                spool["uid"] = uid
+                changed = True
+            if spool.get("source") == "seen" and tray.get("remain_pct") is not None:
+                grams = round(tray["remain_pct"] * spool["grams_total"] / 100, 2)
+                if grams != spool["grams_left"]:
+                    spool["grams_left"], changed = grams, True
+            if (spool["printer"], spool["unit"], spool["slot"]) != (serial, unit, slot):
+                for other in self.items:  # one spool per tray
+                    if other is not spool and (other["printer"], other["unit"], other["slot"]) == (serial, unit, slot):
+                        other.update(printer=None, unit=None, slot=None, loaded_at=now)
+                spool.update(printer=serial, unit=unit, slot=slot, loaded_at=now)
+                changed = True
+            if changed:
+                self._save()
+            return changed
+
+    def _save(self):
+        write_json(self.path, self.items)
+
     def consume(self, spool, grams):
         with self.lock:
             spool["grams_left"] = round(max(0.0, spool["grams_left"] - grams), 2)

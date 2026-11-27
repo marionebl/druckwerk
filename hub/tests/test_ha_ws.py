@@ -109,5 +109,5 @@ def test_watch_state_changes(server):
 
 
 def test_unreachable_ha_is_an_haerror_not_a_crash():
-    with pytest.raises(HAError, match="not reachable"):
+    with pytest.raises(HAError, match="restarting"):
         HA("http://x", "ws://127.0.0.1:1/core/websocket", "tok").command("config/auth/list")

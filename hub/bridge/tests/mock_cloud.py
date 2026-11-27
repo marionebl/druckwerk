@@ -4,6 +4,7 @@ Every login issues new tokens (server.tokens: latest per email, server.issued: a
 import json
 import re
 import threading
+from urllib.parse import parse_qs, urlsplit
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 import os
 import sys
@@ -19,6 +20,20 @@ DEVICES = {
     "b@example.com": [
         {"dev_id": "SERIALB01", "name": "Garage H2S", "dev_product_name": "H2S", "dev_access_code": "ACCESS-9999"}],
 }
+
+
+def TASKS(serial, email):
+    """The cloud's task history as the vendor app's list shows it; the title names the account so tests see which token was used."""
+    tag = re.sub(r"\W", "", email)
+    return [
+        {"id": 103, "title": "", "designTitle": "Vase-" + tag, "deviceId": serial, "deviceName": "Office", "status": 4,
+         "startTime": "2026-11-27T12:00:00Z", "endTime": None, "costTime": 0, "weight": 0, "cover": "", "plateIndex": 1, "mode": "local"},
+        {"id": 102, "title": "cube-" + tag, "designTitle": "Cube", "deviceId": serial, "deviceName": "Office", "status": "failed",
+         "startTime": "2026-11-27T10:00:00Z", "endTime": "2026-11-27T10:30:00Z", "costTime": 1800, "weight": 4.5,
+         "cover": "https://cdn.example/c.png", "plateIndex": 2, "mode": "cloud_file"},
+        {"id": 101, "title": "old", "designTitle": "", "deviceId": serial, "deviceName": "Office", "status": 2,
+         "startTime": "2026-11-26T10:00:00Z", "endTime": "2026-11-26T11:00:00Z", "costTime": 3600, "weight": 12.25,
+         "cover": "", "plateIndex": 1, "mode": "cloud_file"}]
 
 
 def devices(email):
@@ -78,6 +93,13 @@ class Handler(BaseHTTPRequestHandler):
             return self.reply(200, {"uid": 4242, "name": "Tester"})
         if self.path == "/v1/iot-service/api/user/bind":
             return self.reply(200, {"devices": devices(email)})
+        if self.path.startswith("/v1/user-service/my/tasks?"):
+            self.server.task_calls.append((self.path, email))
+            q = parse_qs(urlsplit(self.path).query)
+            serial, limit = q["deviceId"][0], int(q["limit"][0])
+            if serial == "SERIAL002":
+                return self.reply(500, {"error": "cloud broke"})
+            return self.reply(200, {"total": 3, "hits": TASKS(serial, email)[:limit]})
         self.reply(404, {})
 
     def log_message(self, *a):
@@ -87,5 +109,6 @@ class Handler(BaseHTTPRequestHandler):
 def start():
     server = ThreadingHTTPServer(("127.0.0.1", 0), Handler)
     server.calls, server.issued, server.tokens, server.owner = [], [], {}, {}
+    server.task_calls = []
     threading.Thread(target=server.serve_forever, daemon=True).start()
     return server

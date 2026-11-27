@@ -100,7 +100,26 @@ async def test_todo_lists_waiting_jobs_for_this_printer(hass, addon, media, vend
     r = await hass.services.async_call("todo", "get_items", {"entity_id": TODO}, blocking=True, return_response=True)
     items = r[TODO]["items"]
     assert [i["uid"] for i in items] == ["aaaaaaaaaaaa", "bbbbbbbbbbbb"]
-    assert items[1]["description"].startswith("Owner: Bo")
+    assert items[1]["description"] == "File: cube.gcode.3mf\nOwner: Bo (needs approval)"
+
+
+async def test_todo_summary_is_the_job_name_and_description_has_the_file(hass, addon, media, vendor_device):
+    jobs = [dict(job("aaaaaaaaaaaa"), name="Benchy for Anna"), job("bbbbbbbbbbbb", "pending_approval", owner="Bo")]
+    await hub_setup(hass, mock=addon, jobs=jobs)
+    r = await hass.services.async_call("todo", "get_items", {"entity_id": TODO}, blocking=True, return_response=True)
+    first, second = r[TODO]["items"]
+    assert first["summary"] == "Benchy for Anna"
+    assert first["description"] == "File: cube.gcode.3mf\nOwner: Anna"
+    assert second["summary"] == "cube.gcode.3mf"  # no name: the file
+    assert second["description"] == "File: cube.gcode.3mf\nOwner: Bo (needs approval)"
+
+
+async def test_todo_shows_a_drying_job(hass, addon, media, vendor_device):
+    dry = dict(job("aaaaaaaaaaaa", file=""), kind="dry", name="Dry AMS 1 PLA", dry={"ams_id": 0, "temp": 55, "hours": 8, "filament": "PLA"})
+    await hub_setup(hass, mock=addon, jobs=[dry])
+    r = await hass.services.async_call("todo", "get_items", {"entity_id": TODO}, blocking=True, return_response=True)
+    (item,) = r[TODO]["items"]
+    assert item["summary"] == "Dry AMS 1 PLA" and item["description"] == "Dry AMS 1, PLA, 55 C, 8 h\nOwner: Anna"
 
 
 async def test_todo_delete_calls_cancel_with_secret(hass, addon, media, vendor_device):

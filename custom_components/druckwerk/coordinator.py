@@ -95,9 +95,10 @@ class SenderCoordinator(DataUpdateCoordinator[SenderData]):
         path: str,
         *,
         timelapse: bool,
-        bed_leveling: bool,
+        bed_leveling: bool | str,
         use_ams: bool,
         force: bool = False,
+        advanced: dict[str, Any] | None = None,
     ) -> dict[str, Any]:
         """Send a validated file to the add-on; returns its answer."""
         # Fresh status so the RUNNING guard does not act on a 30 s old poll.
@@ -133,6 +134,7 @@ class SenderCoordinator(DataUpdateCoordinator[SenderData]):
             "timelapse": timelapse,
             "bed_leveling": bed_leveling,
             "use_ams": use_ams,
+            **(advanced or {}),
         }
         session = async_get_clientsession(self.hass)
         try:

@@ -18,8 +18,15 @@ import urllib.request
 GUID = "258EAFA5-E914-47DA-95CA-C5AB0DC85B11"
 
 
+RESTARTING = "Home Assistant is restarting. This page tries again in a few seconds."
+
+
 class HAError(Exception):
     """HA refused or could not be reached; the text is HA's own where it gave one."""
+
+
+class HAUnavailable(HAError):
+    """Home Assistant cannot answer right now (restart); the UI shows the text and tries again."""
 
 
 class WebSocket:
@@ -116,9 +123,11 @@ class HA:
                 text = d.get("message") or d.get("error") or str(d)
             except (ValueError, AttributeError):
                 text = raw.decode(errors="replace")[:300]
+            if e.code in (502, 503, 504):  # the gateway has nothing behind it while Home Assistant starts
+                raise HAUnavailable(RESTARTING)
             raise HAError("Home Assistant answered %s: %s" % (e.code, text))
         except OSError as e:
-            raise HAError("Home Assistant is not reachable: %s" % e)
+            raise HAUnavailable(RESTARTING)
 
     def state(self, entity_id):
         """Fresh state string, or None for an unknown entity."""
@@ -154,7 +163,7 @@ class HA:
         try:
             ws = WebSocket(self.ws_url, timeout)
         except OSError as e:
-            raise HAError("Home Assistant websocket is not reachable: %s" % e)
+            raise HAUnavailable(RESTARTING)
         try:
             if ws.recv().get("type") != "auth_required":
                 raise HAError("unexpected websocket greeting")

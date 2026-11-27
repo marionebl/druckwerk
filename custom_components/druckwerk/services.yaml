@@ -19,11 +19,39 @@ print_file:
       selector:
         boolean:
     bed_leveling:
+      default: "on"
+      selector:
+        select:
+          options: ["on", "off", "auto"]
+    use_ams:
       default: true
       selector:
         boolean:
-    use_ams:
-      default: true
+    flow_cali:
+      advanced: true
+      selector:
+        select:
+          options: ["on", "off", "auto"]
+    vibration_cali:
+      advanced: true
+      selector:
+        boolean:
+    layer_inspect:
+      advanced: true
+      selector:
+        boolean:
+    nozzle_offset_cali:
+      advanced: true
+      selector:
+        select:
+          options: ["off", "on", "auto"]
+    bed_type:
+      advanced: true
+      selector:
+        select:
+          options: ["auto", "cool_plate", "eng_plate", "hot_plate", "textured_plate", "supertack_plate", "3d_effect_plate"]
+    ext_change_assist:
+      advanced: true
       selector:
         boolean:
     force:
@@ -69,8 +97,14 @@ add_to_queue:
     options:
       example:
         timelapse: true
+        bed_leveling: auto
+        bed_type: textured_plate
       selector:
         object: {}
+    name:
+      example: "Benchy for Anna"
+      selector:
+        text: {}
 
 slice:
   fields:

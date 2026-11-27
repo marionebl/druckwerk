@@ -22,6 +22,15 @@ async def async_setup_entry(hass, entry, async_add_entities) -> None:
         add_per_printer(entry, async_add_entities, lambda c, s: [QueueTodo(c, s, hub)])
 
 
+def _what(job: dict) -> str:
+    """The file of a print job, or the settings of a drying job."""
+    d = job.get("dry")
+    if job.get("kind") == "dry" and isinstance(d, dict):
+        unit = f"AMS {d.get('ams_id', 0) + 1}" if d.get("ams_id", 0) < 128 else "AMS HT"
+        return f"Dry {unit}, {d.get('filament') or 'any filament'}, {d.get('temp')} C, {d.get('hours')} h"
+    return f"File: {job.get('file')}"
+
+
 class QueueTodo(SenderEntity, TodoListEntity):
     # No CREATE: adding a job needs a sliced file.
     _attr_supported_features = (
@@ -51,9 +60,9 @@ class QueueTodo(SenderEntity, TodoListEntity):
         return [
             TodoItem(
                 uid=j["id"],
-                summary=str(j.get("file")),
+                summary=str(j.get("name") or j.get("file")),
                 status=TodoItemStatus.NEEDS_ACTION,
-                description=f"Owner: {j.get('owner_name') or 'unknown'}"
+                description=f"{_what(j)}\nOwner: {j.get('owner_name') or 'unknown'}"
                 + (" (needs approval)" if j.get("state") == "pending_approval" else ""),
             )
             for j in self._mine()

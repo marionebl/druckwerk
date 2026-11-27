@@ -225,3 +225,29 @@ input[type=range] { width: 100%; accent-color: var(--accent); }
 /* Setup */
 .wizard { max-width: 760px; margin: 0 auto; }
 .secret { font-family: ui-monospace, "SF Mono", Menlo, monospace; background: var(--soft); border-radius: 8px; padding: 8px 12px; overflow-wrap: anywhere; }
+
+/* History timeline */
+.filters { display: flex; gap: 12px; flex-wrap: wrap; margin-bottom: 16px; }
+.filters .field { min-width: 200px; flex: 1 1 200px; max-width: 320px; }
+.timeline { display: grid; gap: 22px; }
+.tl-day h2 { font-size: 13px; text-transform: uppercase; letter-spacing: .05em; color: var(--muted); margin: 0 0 10px; }
+.tl-day ol { list-style: none; margin: 0; padding: 0 0 0 22px; border-left: 2px solid var(--line); display: grid; gap: 10px; }
+.tl-item { position: relative; }
+.tl-item::before { content: ''; position: absolute; left: -29px; top: 22px; width: 10px; height: 10px; border-radius: 50%; background: var(--muted); border: 2px solid var(--bg); }
+.tl-item.ok::before { background: var(--accent); } .tl-item.err::before { background: var(--err); }
+.tl-card { display: grid; grid-template-columns: 56px 1fr; gap: 12px; align-items: center; padding: 10px 12px; background: var(--card); border: 1px solid var(--line); border-radius: var(--radius); }
+.tl-card .thumb { width: 56px; height: 56px; border-radius: 8px; background: var(--soft); object-fit: cover; display: block; }
+.tl-card .main { min-width: 0; display: grid; gap: 4px; }
+.tl-card .ttl { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; min-width: 0; }
+.tl-card .meta { display: flex; flex-wrap: wrap; gap: 2px 12px; color: var(--muted); font-size: 13px; font-variant-numeric: tabular-nums; }
+.who-tag { display: inline-flex; align-items: center; gap: 4px; }
+
+/* Home Assistant restart notice */
+.restart { position: sticky; top: 0; z-index: 50; padding: 10px 16px; text-align: center; background: var(--warn-soft); color: var(--warn); border-bottom: 1px solid var(--line); font-size: 14px; }
+/* Advanced print options and AMS drying */
+details.adv { border: 1px solid var(--line); border-radius: 10px; padding: 10px 14px; }
+details.adv summary { cursor: pointer; font-weight: 600; }
+details.adv .form { margin-top: 12px; }
+.dry .unit-head { display: flex; justify-content: space-between; gap: 8px; align-items: center; flex-wrap: wrap; }
+.dry .form.two { margin-top: 10px; }
+.dry-state { font-size: 14px; margin: 6px 0; }

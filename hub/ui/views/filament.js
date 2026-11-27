@@ -19,7 +19,7 @@ export async function mount(ctx, root) {
     const frac = s.grams_total ? s.grams_left / s.grams_total : 0, low = frac < 0.15;
     return h('section', { class: 'card spool' },
       swatch(s.colour, 44),
-      h('div', null, h('div', { class: 'row between' }, h('b', null, `${s.brand} ${s.type}`), s.printer ? pill(`${pname(s.printer)} · AMS ${s.unit + 1}·${s.slot + 1}`, 'ok') : pill('not loaded')),
+      h('div', null, h('div', { class: 'row between' }, h('b', null, `${s.brand} ${s.type}`.trim()), s.source === 'seen' && pill('seen'), s.printer ? pill(`${pname(s.printer)} · AMS ${s.unit + 1}·${s.slot + 1}`, 'ok') : pill('not loaded')),
         h('small', null, s.name)),
       h('div', { class: 'bar' + (low ? ' low' : '') }, h('i', { style: `width:${Math.round(frac * 100)}%` })),
       h('div', { class: 'row between', style: 'grid-column:1/-1' }, h('span', null, h('b', null, Math.round(s.grams_left) + ' g'), h('small', null, ` of ${s.grams_total} g`)),
@@ -27,7 +27,17 @@ export async function mount(ctx, root) {
       canEdit(s) && h('div', { class: 'acts' }, btn([icon('edit', 16), 'Edit'], () => edit(s), 'sm'),
         btn([icon('trash', 16), 'Delete'], async () => { if (confirm(`Delete ${s.brand} ${s.type} (${s.name})?`) && await attempt(() => api.deleteSpool(s.id), 'Deleted')) load(); }, 'sm danger')));
   }
-  function draw() { clear(list, spools.length ? spools.map(card) : empty('No spools yet.')); }
+  // What is loaded now comes first, by printer and AMS unit; then the other known spools.
+  function draw() {
+    if (!spools.length) return clear(list, empty('No spools yet. The hub adds the filament it sees in the AMS here.'));
+    const loaded = spools.filter((s) => s.printer).sort((a, b) => pname(a.printer).localeCompare(pname(b.printer)) || a.unit - b.unit || a.slot - b.slot);
+    const groups = new Map();
+    for (const s of loaded) { const k = `${pname(s.printer)} · AMS ${s.unit + 1}`; (groups.get(k) || groups.set(k, []).get(k)).push(s); }
+    const other = spools.filter((s) => !s.printer);
+    clear(list, h('div', { class: 'stack', style: 'grid-column:1/-1' },
+      [...groups].map(([k, items]) => h('section', { class: 'group' }, h('h3', null, k), h('div', { class: 'grid' }, items.map(card)))),
+      other.length > 0 && h('section', { class: 'group' }, h('h3', null, 'Not loaded'), h('div', { class: 'grid' }, other.map(card)))));
+  }
 
   function edit(s) {
     return modal(s ? 'Edit spool' : 'Add spool', (close) => {

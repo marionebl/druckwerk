@@ -63,15 +63,33 @@ PRINTERS = {
                    "url": "https://example.com/hms/0300_0100_0001_0007"}]},
 }
 T0 = {H2S: NOW() - 58 * 60}
+# AMS units with a dryer, per serial; a drying unit counts down from "until".
+DRYING = {H2S: {0: {"name": "AMS 2 Pro", "lo": 45, "hi": 65, "until": None, "filament": "", "temp": None},
+                128: {"name": "AMS HT", "lo": 45, "hi": 85, "until": None, "filament": "", "temp": None}}}
+RESTART = {"until": 0.0}  # while NOW() is before this, every API call answers like Home Assistant that restarts
+MOCK_QUEUED = []  # what the UI sent to queue a slice, for the tests
+
+
+def drying_out(s):
+    out = []
+    for ams_id, u in DRYING.get(s, {}).items():
+        left = max(0, int((u["until"] - NOW()) / 60)) if u["until"] else 0
+        active = bool(u["until"] and u["until"] > NOW())
+        out.append({"ams_id": ams_id, "name": u["name"], "status": "drying" if active else "off", "active": active, "left_min": left,
+                    "filament": u["filament"] if active else "", "temp": u["temp"] if active else None, "hours": None,
+                    "temp_min": u["lo"], "temp_max": u["hi"]})
+    return out
 
 
 def job(id_, file, target, owner, state, model="", **kw):
-    j = {"id": id_, "file": file, "source": file.replace(".gcode.3mf", ""), "target": target, "model": model,
-         "filaments": [{"type": "PLA", "colour": "F2F2F2"}], "options": {"timelapse": False, "bed_leveling": True, "use_ams": True},
+    j = {"id": id_, "kind": "print", "name": file.replace(".gcode.3mf", ""), "file": file, "source": file.replace(".gcode.3mf", ""), "target": target, "model": model,
+         "filaments": [{"type": "PLA", "colour": "F2F2F2"}], "options": {"timelapse": False, "bed_leveling": True, "use_ams": True, "flow_cali": True, "vibration_cali": True,
+                                        "layer_inspect": False, "nozzle_offset_cali": False, "bed_type": "auto", "ext_change_assist": False},
          "state": state, "error": None, "created_at": NOW() - 3600 * kw.pop("age", 2), "owner_user_id": owner, "owner_name": USERS[owner],
          "plate_png": f"api/queue/{id_}/plate.png"}
     j.update(kw)
     return j
+
 
 
 JOBS = [
@@ -82,12 +100,62 @@ JOBS = [
     job("a00000000005", "toy_dragon_articulated.gcode.3mf", P1S, "u-lena", "pending_approval", grams=96.0, cost=2.10),
     job("a00000000006", "drawer_divider_s.gcode.3mf", P1S, "u-alex", "queued", grams=8.9, cost=0.22),
 ]
+JOBS[1]["name"] = "Cable clips for the desk"
+
+
+def dry_job(id_, target, owner, ams_id, temp, hours, filament, state="queued", **kw):
+    unit = "AMS %d" % (ams_id + 1) if ams_id < 128 else "AMS HT"
+    label = "Dry %s (%s)" % (unit, filament)
+    j = {"id": id_, "kind": "dry", "name": label, "file": "", "source": label, "target": target, "model": "", "filaments": [], "options": {},
+         "dry": {"ams_id": ams_id, "temp": temp, "hours": hours, "filament": filament}, "state": state, "error": None,
+         "created_at": NOW() - 600, "owner_user_id": owner, "owner_name": USERS[owner], "plate_png": None}
+    j.update(kw)
+    return j
+
+
+JOBS.append(dry_job("a00000000007", H2S, "u-alex", 0, 55, 8, "PLA"))
+
 HISTORY = [
     job("b00000000001", "benchy_test.gcode.3mf", H2S, "u-lena", "done", printer=H2S, grams=14.0, cost=0.35, age=30, finished_at=NOW() - 3600 * 28),
     job("b00000000002", "hook_wall_large.gcode.3mf", P1S, "u-jonas", "failed", printer=P1S, grams=3.1, cost=0.08, age=50,
         error="printer reported a failed print", finished_at=NOW() - 3600 * 47),
     job("b00000000003", "lens_cap.gcode.3mf", P1S, "u-alex", "cancelled", age=70, finished_at=NOW() - 3600 * 70),
 ]
+# Cloud tasks: (id, title, printer, hours ago, status, minutes, grams, user id or None for "not started here", cost)
+TASKS = [
+    (9, "gridfinity_bin_4x2", H2S, 0.9, "running", 0, 0, "u-alex", None),
+    (8, "cable_clip_set", H2S, 3.5, "finished", 42, 12.5, "u-lena", 0.31),
+    (7, "Slicer plate 1", P1S, 5, "finished", 95, 61.0, None, None),
+    (6, "phone_stand_v3", H2S, 20, "finished", 130, 55.0, "u-jonas", 1.2),
+    (5, "benchy_test", H2S, 28, "finished", 61, 14.0, "u-lena", 0.35),
+    (4, "hook_wall_large", P1S, 47, "failed", 12, 3.1, "u-jonas", 0.08),
+    (3, "lens_cap", P1S, 70, "cancelled", 4, 0.6, "u-alex", None),
+    (2, "calibration cube", P1S, 75, "finished", 28, 6.2, None, None),
+    (1, "drawer_divider_s", H2S, 150, "finished", 20, 8.9, "u-alex", 0.22),
+]
+
+
+def history_out(ident, q):
+    """Same rules as the hub: admins see all and may filter; others only their own prints on their printers."""
+    admin, uid = IDENT[ident]["is_admin"], IDENT[ident]["user_id"]
+    out = []
+    for id_, title, serial, ago, status, minutes, grams, user, cost in TASKS:
+        if serial not in visible(ident) or (q.get("printer") and q["printer"][0] != serial):
+            continue
+        if admin:
+            if q.get("user") and q["user"][0] != (user or "unknown"):
+                continue
+        elif user != uid:
+            continue
+        started = NOW() - ago * 3600
+        out.append({"id": id_, "serial": serial, "title": title, "status": status, "status_code": status, "started_at": int(started),
+                    "ended_at": None if status == "running" else int(started + minutes * 60), "seconds": minutes * 60 or None,
+                    "grams": grams or None, "cover_url": f"api/history-cover/{id_}.svg" if id_ % 2 else "", "plate": 1, "design_title": "",
+                    "printer_name": PRINTERS[serial]["name"], "job_id": None, "user_id": user, "user_name": USERS.get(user),
+                    "cost": cost, "source": "druckwerk" if user else "cloud"})
+    return {"items": out, "unavailable": []}
+
+
 SPOOLS = [
     {"id": "s1", "brand": "Acme", "type": "PLA", "colour": "F2F2F2", "name": "White", "grams_left": 880, "grams_total": 1000, "price_per_kg": 19.99, "printer": H2S, "unit": 0, "slot": 0},
     {"id": "s2", "brand": "Prusament", "type": "PETG", "colour": "1F6FEB", "name": "Blue", "grams_left": 610, "grams_total": 1000, "price_per_kg": 27.5, "printer": H2S, "unit": 0, "slot": 1},
@@ -185,6 +253,7 @@ def printer_out(ident, p):
     p["cover_url"] = f"api/printers/{s}/cover" if p["online"] else None
     p["camera_url"] = f"api/printers/{s}/camera" if p["online"] else None
     p["current_job"] = next((j for j in JOBS if j["state"] == "printing" and j.get("printer") == s), None)
+    p["drying"] = drying_out(s)
     p["queue_length"] = sum(1 for j in JOBS if j["state"] in WAITING and (j["target"] == s or (j["target"] == "any" and j["model"] == p["model"])))
     return p
 
@@ -194,6 +263,17 @@ def sees(ident, j):
         return True
     vis = visible(ident)
     return j["target"] in vis or (j["target"] == "any" and any(PRINTERS[s]["model"] == j["model"] for s in vis))
+
+
+def start_dry(serial, d):
+    u = DRYING.get(serial, {}).get(d.get("ams_id"))
+    if not u:
+        raise Err(400, "This printer reports no dryer on AMS unit %s." % d.get("ams_id"))
+    if not (isinstance(d.get("temp"), int) and u["lo"] <= d["temp"] <= u["hi"]):
+        raise Err(400, "temp must be %d to %d for %s." % (u["lo"], u["hi"], u["name"]))
+    if not (isinstance(d.get("hours"), int) and 1 <= d["hours"] <= 72):
+        raise Err(400, "hours must be 1 to 72.")
+    u.update(until=NOW() + d["hours"] * 3600, filament=d.get("filament", ""), temp=d["temp"])
 
 
 class Err(Exception):
@@ -236,6 +316,11 @@ def job_action(ident, jid, action, body):
         pool.remove(j); pool.insert(max(0, min(pos, len(pool))), j)
         for i, x in zip(slots, pool):
             JOBS[i] = x
+    elif action == "stop":
+        if not admin or j.get("kind") != "dry" or j["state"] != "drying":
+            raise Err(403 if not admin else 409, "rule: only admins stop a drying" if not admin else "this job is not drying")
+        DRYING[j["printer"]][j["dry"]["ams_id"]]["until"] = None
+        j.update(state="cancelled", error="stopped", finished_at=NOW()); JOBS.remove(j); HISTORY.insert(0, j)
     elif action in ("approve", "reject", "skip", "move"):
         if not admin:
             raise Err(403, "rule: only admins of the printer may %s jobs" % action)
@@ -309,6 +394,11 @@ class H(BaseHTTPRequestHandler):
             return self.send(404, {"error": "outside the ingress prefix: " + u.path})
         path = u.path[len(PREFIX):]
         raw = self.body()
+        if path == "api/_mock/restart":  # test hook: answer 502 for ?s= seconds
+            RESTART["until"] = NOW() + float((q.get("s") or ["6"])[0])
+            return self.send(200, {"until": RESTART["until"]})
+        if path.startswith("api/") and NOW() < RESTART["until"]:
+            return self.send(502, b"<html><body>502: Bad Gateway</body></html>", "text/html")
         try:
             with LOCK:
                 if path.startswith("api/"):
@@ -336,6 +426,8 @@ class H(BaseHTTPRequestHandler):
             return ok(me(ident))
         if path == "api/printers" and m == "GET":
             return ok([printer_out(ident, PRINTERS[s]) for s in visible(ident)])
+        if path == "api/_mock/queued":
+            return ok(MOCK_QUEUED)
         r = re.fullmatch(r"api/printers/([^/]+)/(camera|cover)", path)
         if r:
             if r.group(1) not in visible(ident):
@@ -346,14 +438,45 @@ class H(BaseHTTPRequestHandler):
             s, b = r.group(1), J()
             if not admin:
                 raise Err(403, "rule: only admins of the printer may start prints")
-            if b.get("plate_clear") is not True:
-                raise Err(409, "confirm that the plate is clear")
             nxt = next((j for j in JOBS if j["id"] == b.get("job_id")), None) if r.group(2) == "start" else \
                 next((j for j in JOBS if j["state"] == "queued" and (j["target"] == s or j["target"] == "any")), None)
             if not nxt:
                 raise Err(409, "no job to start")
+            if nxt.get("kind") == "dry":
+                if b.get("confirmed") is not True:
+                    raise Err(409, "confirm the start of the drying")
+                start_dry(s, nxt["dry"])
+                nxt.update(state="drying", printer=s, started_at=NOW())
+                return ok(nxt)
+            if b.get("plate_clear") is not True:
+                raise Err(409, "confirm that the plate is clear")
             nxt.update(state="printing", printer=s, started_at=NOW())
             return ok(nxt)
+        r = re.fullmatch(r"api/printers/([^/]+)/drying(/stop)?", path)
+        if r and m == "POST":
+            s, b = r.group(1), J()
+            if not admin or s not in visible(ident):
+                raise Err(403, "rule: only an admin of the printer can dry an AMS")
+            if r.group(2):
+                DRYING.get(s, {}).get(b.get("ams_id"), {})["until"] = None
+                for j in [x for x in JOBS if x.get("kind") == "dry" and x["state"] == "drying" and x.get("printer") == s]:
+                    j.update(state="cancelled", error="stopped", finished_at=NOW()); JOBS.remove(j); HISTORY.insert(0, j)
+                return ok({"stopped": b.get("ams_id")})
+            if b.get("confirmed") is not True:
+                raise Err(409, "confirm the start of the drying")
+            start_dry(s, b)
+            jb = dry_job(secrets.token_hex(6), s, uid, b["ams_id"], b["temp"], b["hours"], b.get("filament", ""), "drying", printer=s, started_at=NOW())
+            JOBS.append(jb)
+            return ok(jb)
+        if path == "api/queue" and m == "POST":
+            b = J()
+            if b.get("kind") != "dry":
+                raise Err(400, "file must be a .gcode.3mf name in the share")
+            if not (admin or visible(ident)):
+                raise Err(403, "rule: adding a job needs an active grant on the target printer")
+            jb = dry_job(secrets.token_hex(6), b["target"], uid, b["ams_id"], b["temp"], b["hours"], b.get("filament", ""))
+            JOBS.append(jb)
+            return ok(jb)
         if path == "api/queue" and m == "GET":
             vis = [j for j in JOBS if sees(ident, j)]
             return ok({"jobs": vis, "history": [j for j in HISTORY if sees(ident, j)], "printers": [{"serial": s} for s in visible(ident)]})
@@ -398,6 +521,9 @@ class H(BaseHTTPRequestHandler):
                 jb = job(secrets.token_hex(6), re.sub(r"\.\w+$", "", sl["filename"]) + ".gcode.3mf", b["target"], uid, "queued",
                          model=b.get("model", ""), grams=st["info"]["grams"], age=0)
                 jb["options"].update(b.get("options") or {})
+                if b.get("name"):
+                    jb["name"] = b["name"]
+                MOCK_QUEUED.append({"options": b.get("options"), "name": b.get("name")})
                 if uid == "u-jonas":
                     jb["state"] = "pending_approval"
                 JOBS.append(jb)
@@ -448,7 +574,13 @@ class H(BaseHTTPRequestHandler):
                 raise Err(400, "unknown user or printer")
             name = "Druckwerk %s %s" % (who, pr["name"] if pr else "All printers")
             return ok({"entity_id": "input_boolean." + re.sub(r"[^a-z0-9]+", "_", name.lower()), "name": name, "state": "off"})
+        if path == "api/history":
+            return ok(history_out(ident, q))
+        r = re.fullmatch(r"api/history-cover/(\d+)\.svg", path)
+        if r:
+            return svg(plate_svg(r.group(1)))
         if path == "api/ha/users":
+            need_admin()
             return ok(HA_USERS)
         if path == "api/ha/entities":
             doms = (q.get("domains") or [""])[0].split(",")

@@ -14,6 +14,14 @@ from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 
 AMS = {"ams": {"ams": [{"id": "0", "tray": [{"id": "0", "tray_type": "PLA", "tray_color": "FF0000FF"}]}]}, "vt_tray": {}}
 
+# info: hex string, bits 0-3 AMS type (1 AMS, 3 AMS 2 Pro, 4 AMS HT), bits 4-7 dry status (0 off, 2 drying).
+DRY_UNITS = [
+    {"id": "0", "info": "23", "dry_time": 90, "temp": "30.5", "humidity": "3",
+     "dry_setting": {"dry_filament": "PLA", "dry_temperature": 45, "dry_duration": 12}, "tray": []},
+    {"id": "1", "info": "1", "tray": []},
+    {"id": "128", "info": "4", "dry_time": 0, "tray": []},
+]
+
 H264_SERIAL, JPEG_SERIAL = "SERIAL001", "SERIAL002"  # which serial answers /live with which format
 SAMPLE = os.path.join(tempfile.gettempdir(), "mock_testsrc_320x240_g15.h264")
 FFMPEG = ["ffmpeg", "-loglevel", "error", "-f", "lavfi", "-i", "testsrc=size=320x240:rate=15"]
@@ -97,7 +105,10 @@ class Handler(BaseHTTPRequestHandler):
         elif self.path.startswith("/status/") and self.path[8:] in s.serials:
             # SERIALB01 (the H2S) answers like a new-protocol printer, the others like a P1S.
             np = {"cfg": "0", "fun": "0", "aux": "0", "stat": "0"} if self.path.endswith("SERIALB01") else {}
-            self.reply(200, {"print": dict({"gcode_state": "IDLE", "nozzle_temper": 21.5}, **np), "served_by": s.creds})
+            extra = {"fun2": "20", "ams": {"ams": DRY_UNITS}} if self.path.endswith("SERIAL001") else {}
+            if self.path.endswith("SERIAL002"):
+                extra = {"fun2": "0", "ams": {"ams": DRY_UNITS}}  # a printer without remote drying
+            self.reply(200, {"print": dict({"gcode_state": "IDLE", "nozzle_temper": 21.5}, **np, **extra), "served_by": s.creds})
         elif self.path == "/live-log":  # mock only: stream connects and disconnects
             self.reply(200, s.live_log)
         elif self.path.startswith("/camera/") and "/live" in self.path and self.path.split("/")[2] in s.serials:
