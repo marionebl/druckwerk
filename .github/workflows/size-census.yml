@@ -12,17 +12,15 @@ jobs:
         run: docker build -q -f hub/Dockerfile --build-arg VERSION=census --build-arg HASS_ARCH=aarch64 -t census . >/dev/null
       - name: Census
         run: |
-          docker image ls census --format 'image size {{.Size}}'
-          docker history --no-trunc --format '{{.Size}}\t{{.CreatedBy}}' census | cut -c1-160
-          docker run --rm --entrypoint sh census -c '
-            for d in /opt/bs/app /opt/bs/runtime /opt/bs/resources /amd64 /usr/lib /usr/share /usr/bin /srv/engine /var/lib /usr/libexec; do du -sk "$d" 2>/dev/null; done
-            echo == studio app; du -k --max-depth=2 /opt/bs/app | sort -rn | head -25
-            echo == studio runtime; du -k --max-depth=3 /opt/bs/runtime | sort -rn | head -40
-            echo == profiles; du -k --max-depth=1 -L /opt/bs/resources/profiles | sort -rn | head -15
-            echo == usr/lib; du -k --max-depth=2 /usr/lib | sort -rn | head -25
-            echo == usr/share; du -k --max-depth=1 /usr/share | sort -rn | head -15
-            echo == amd64; du -k --max-depth=3 /amd64 | sort -rn | head -15
-            echo == packages by size; dpkg-query -W -f="\${Installed-Size}\t\${Package}\n" | sort -rn | head -30
-            echo == qemu; ls -l /usr/bin/qemu-* | head -5; du -ck /usr/bin/qemu-* | tail -1
-            echo == ffmpeg; ls -l /usr/bin/ff*
-          '
+          docker run --rm --entrypoint bash census -c '
+            cd /opt/bs
+            echo == BambuStudio share; du -k --max-depth=2 app/share/BambuStudio | sort -rn | head -30
+            echo == app/lib biggest; find app/lib -type f -printf "%s %p\n" | sort -rn | head -45
+            echo == runtime/lib biggest; find runtime/lib -type f -printf "%s %p\n" | sort -rn | head -50
+            echo == app/bin; ls -lS app/bin | head; ls -l bin
+            REAL=$(ls app/bin | grep -i bambu | head -1); echo real=$REAL
+            LP="app/lib:runtime/lib/aarch64-linux-gnu:runtime/lib"
+            echo == ldd closure; LD_LIBRARY_PATH=$LP runtime/lib/ld-linux-aarch64.so.1 --list app/bin/$REAL 2>&1 | awk "{print \$3}" | grep "^/\|^[a-z]" | sort -u > /tmp/closure.txt; wc -l /tmp/closure.txt
+            cat /tmp/closure.txt | xargs -r -I{} sh -c "readlink -f {} 2>/dev/null" | sort -u | xargs -r du -ck | tail -1
+            echo == slice size; du -sk app runtime
+          ' 2>&1 | head -230
