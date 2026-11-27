@@ -58,6 +58,13 @@ def check_viewer(page, shot):
     setrange = lambda name, v: page.evaluate("([n, v]) => { const e = document.querySelector(`.preview3d input[aria-label='${n}']`); e.value = v; e.dispatchEvent(new Event('input', { bubbles: true })); }", [name, v])
 
     full = read()
+    if MODEL["name"] != "demo_part.stl":  # a real slice (image run): the checks below need the mock's two-object plate
+        m = re.fullmatch(r"Layers 1 to (\d+) of (\d+) · Z .* mm", text())
+        assert m and m[1] == m[2], text()
+        assert full["lit"] > 50, f"the canvas draws no toolpaths: {full}"
+        setrange("To layer", int(m[2]) // 2)
+        assert read()["sum"] != full["sum"], "layer range changes nothing"
+        return
     assert full["lit"] > 800, f"the canvas draws no toolpaths: {full}"
     assert re.fullmatch(r"Layers 1 to 60 of 60 · Z 0\.20 to 12\.00 mm", text()), text()
     assert page.locator(".preview3d .legend .key").count() >= 4, "legend lists the features"
