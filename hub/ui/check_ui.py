@@ -61,6 +61,10 @@ def check_viewer(page, shot):
     setrange = lambda name, v: page.evaluate("([n, v]) => { const e = document.querySelector(`.preview3d input[aria-label='${n}']`); e.value = v; e.dispatchEvent(new Event('input', { bubbles: true })); }", [name, v])
 
     full = read()
+    for _ in range(50):  # software WebGL on a slow arm runner can need seconds for the first frame; poll, do not guess
+        if full["lit"] > 50:
+            break
+        full = read()
     if MODEL["name"] != "demo_part.stl":  # a real slice (image run): the checks below need the mock's two-object plate
         m = re.fullmatch(r"Layers 1 to (\d+) of (\d+) · Z .* mm", text())
         assert m and m[1] == m[2], text()
