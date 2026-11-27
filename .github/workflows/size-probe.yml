@@ -11,30 +11,24 @@ jobs:
       matrix:
         include:
           - {arch: aarch64, runner: ubuntu-24.04-arm}
-          - {arch: amd64, runner: ubuntu-24.04}
     runs-on: ${{ matrix.runner }}
     steps:
-      - name: Orca vs Bambu Studio flatpaks
-        env:
-          GH_TOKEN: ${{ github.token }}
+      - name: Orca vs Bambu Studio, slimmed estimate and profiles
         run: |
           sudo apt-get update -qq && sudo apt-get install -y -qq flatpak >/dev/null
           sudo flatpak remote-add --system --if-not-exists flathub https://dl.flathub.org/repo/flathub.flatpakrepo
-          echo "=== search orca"; sudo flatpak search --system orca 2>&1 | head -8
-          echo "=== orca release assets"; gh api "repos/SoftFever/OrcaSlicer/releases?per_page=6" --jq '.[] | "\(.tag_name) pre=\(.prerelease) \(.published_at[0:10])", (.assets[] | select(.name|test("arm|aarch|linux";"i")) | "    \(.name) \((.size/1e6|floor)) MB")' 2>&1 | head -30
-          for id in com.orcaslicer.OrcaSlicer com.bambulab.BambuStudio; do
-            echo "=== remote-info $id"; sudo flatpak remote-info --system flathub $id | head -14
-          done
-          for id in com.orcaslicer.OrcaSlicer com.bambulab.BambuStudio; do
-            sudo flatpak install --system -y --noninteractive flathub $id >/dev/null 2>&1 || echo "install failed $id"
-          done
+          for id in com.orcaslicer.OrcaSlicer com.bambulab.BambuStudio; do sudo flatpak install --system -y --noninteractive flathub $id >/dev/null 2>&1 || echo "install failed $id"; done
           for id in com.orcaslicer.OrcaSlicer com.bambulab.BambuStudio; do
             echo "=== $id"; A=$(sudo flatpak info --system --show-location $id)/files
             RT=$(sudo flatpak info --system --show-runtime $id); R=$(sudo flatpak info --system --show-location $RT)/files
-            echo "runtime=$RT"; sudo du -sm "$A" "$R" | sed 's|^|MB |'
-            echo "-- app depth1 (MB)"; sudo du -m -d1 "$A" | sort -rn | head -6
-            echo "-- app/bin"; sudo ls -l "$A/bin" | head
-            echo "-- BBL.json"; F=$(sudo find "$A" -name BBL.json -path "*profiles*" | head -1); echo "$F"; sudo grep -m3 -E '"(name|version)"' "$F"
-            echo "-- machine files H2S / P1S"; sudo find "$A" -path "*profiles/BBL/machine/*" \( -name "*H2S*" -o -name "*P1S*" \) | sed 's|.*/BBL/||' | head -12
-            echo "-- BBL dir size (MB)"; sudo du -sm "$(dirname "$F")/BBL"
+            BIN=$(sudo find "$A/bin" -maxdepth 1 -type f \( -name "orca-slicer" -o -name "bambu-studio" -o -name "OrcaSlicer" -o -name "BambuStudio" \) | head -1); echo "binary: $BIN $(sudo du -m "$BIN" | cut -f1) MB"
+            LD=$(sudo find "$R/lib" -name 'ld-linux-aarch64.so.1' | head -1)
+            echo "-- runtime libs the binary links (loader --list), MB:"
+            sudo "$LD" --library-path "$A/lib:$R/lib/aarch64-linux-gnu:$R/lib" --list "$BIN" 2>&1 | awk '/=>/ {print $3} /not found/ {print "MISSING " $0}' | sudo xargs -r -I{} sh -c 'case {} in MISSING*) echo {};; *) readlink -f {} ;; esac' | sort -u > /tmp/libs.txt
+            grep -c . /tmp/libs.txt; grep MISSING /tmp/libs.txt | head -5
+            grep -v MISSING /tmp/libs.txt | sudo xargs -r du -cm | tail -1 | sed 's/^/closure total MB /'
+            echo "-- app share depth1 (MB)"; sudo du -m -d1 "$A/share" | sort -rn | head -8
+            echo "-- app share/* depth1 (MB, >=10)"; sudo du -m -d2 "$A/share" | sort -rn | awk '$1>=10' | head -12 | sed "s|$A/||"
+            echo "-- BBL profiles"; sudo find "$A" -type d -name BBL | head -3 | sed "s|$A/||"
+            for d in $(sudo find "$A" -type d -name BBL | head -1); do echo "dir MB: $(sudo du -sm $d | cut -f1)"; echo "BBL.json:"; sudo grep -m3 -E '"(name|version)"' "$(dirname $d)/BBL.json"; echo "machines:"; sudo ls $d/machine | grep -Ei "H2S|P1S|X1C" | head -14; echo "process H2S count: $(sudo ls $d/process | grep -c H2S)"; done
           done
