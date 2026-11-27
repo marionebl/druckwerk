@@ -316,3 +316,15 @@ The file is stored as `/media/druckwerk/<name>` (mode 0644, replaced atomically)
 ### What the app owns now
 
 The G-code guard, the plate picture, the print send with its busy check, the per-printer send result, the watchdog, the notifications and the bus events, the notification button, the file list and path rules, the upload checks, and the entity state. The integration can delete `gcode_guard.py`, `preview.py`, `watchdog.py`, `upload.py` checks, `api.scan_files`, `api.resolve_file`, `api.read_b64`, `api.plate_png`, `coordinator.async_print`, the notification code of `hub.py`, `offline.jpg` and the entity names of `strings.json`.
+
+## Plates inbox (agents push a sliced plate, the app queues it)
+
+For agents that cannot reach Home Assistant. The app option `plates_token` (a GitHub token with Contents read and write) turns it on; `plates_repo` names the private repo (default `marionebl/druckwerk-plates`).
+
+An agent pushes to the default branch of that repo:
+
+- `plates/<id>/<name>.gcode.3mf`: a sliced plate. `<id>` is a new folder name that was never used before (letters, digits, `.`, `_`, `-`, for example a date and a random suffix). One folder per upload. Files up to 100 MB.
+- `plates/<id>/job.json` (optional): `{"printer": "<serial>", "model": "H2S", "name": "Bracket v2", "owner": "<HA user id or name>"}`. All fields are optional. `printer` sends the job to that printer (the file's model must match). Without it, `model` or the model in the G-code header picks any printer of that model. `name` is the queue name (at most 80 characters). `owner` must be an active HA user who has a grant on the printer, otherwise the printer's owner gets the job.
+- Push the plate and `job.json` in one commit. If you use the contents API, upload `job.json` first and the plate last.
+
+The app checks `plates/` every 60 s. A plate that passes the checks (sliced, G-code guard, printer model) is added to the queue and waits there for a person or an automation to start it. Then the app deletes the folder from the repo. A plate that fails a check stays in the repo with no job; the reason is in the Setup view and the app log. Fix it by pushing a new folder with a new id.
