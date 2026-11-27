@@ -1,7 +1,7 @@
 name: Changelog
 on:
   push:
-    branches: [main]
+    branches: [main, plates-url]
     paths: ['**/config.yaml', '**/CHANGELOG.md', 'tools/check-changelog.sh', '.github/workflows/changelog.yml']
   pull_request:
     paths: ['**/config.yaml', '**/CHANGELOG.md', 'tools/check-changelog.sh', '.github/workflows/changelog.yml']
