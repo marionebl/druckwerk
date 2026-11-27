@@ -225,14 +225,20 @@ SETTINGS_GROUPS = [
 SETTINGS_OF = {"8": ("slice", True), "5": ("saved", False), "10": ("cloud", True)}
 
 
+# Files the hub still holds per cloud task: (kind, name). Item 8 has its model, 10 only the cloud's sliced file; the others have none.
+FILES_OF = {"8": ("model", "cable_clip_set.stl"), "10": ("sliced", "Slicer_plate_3.gcode.3mf")}
+
+
 def settings_out(item):
     src, again = SETTINGS_OF.get(str(item["id"]), (None, False))
     task = {k: item[k] for k in ("title", "design_title", "plate", "status_code") if item.get(k) not in (None, "")}
+    kind, fname = FILES_OF.get(str(item["id"]), (None, None))
+    dl = {"download": kind and {"kind": kind, "name": fname}}
     if not src:
-        return {"available": False, "source": None, "can_reprint": False, "task": dict(task, model_id="US1", profile_id=4711) if item["source"] == "cloud" else task,
+        return {**dl, "available": False, "source": None, "can_reprint": False, "task": dict(task, model_id="US1", profile_id=4711) if item["source"] == "cloud" else task,
                 "reason": "The Bambu cloud did not give the file (cloud file: HTTP Error 404)." if item["source"] == "cloud" else "The sliced file is gone.",
                 "groups": [], "all": [], "plate": {}, "slicer": None}
-    return {"available": True, "source": src, "reason": "", "can_reprint": again, "task": task, "slicer": "02.09.02.62", "plate": {},
+    return {**dl, "available": True, "source": src, "reason": "", "can_reprint": again, "task": task, "slicer": "02.09.02.62", "plate": {},
             "groups": [{"title": t, "rows": [{"key": l, "label": l, "value": v, "unit": ""} for l, v in rows]} for t, rows in SETTINGS_GROUPS],
             "all": SETTINGS_ALL}
 
@@ -784,7 +790,7 @@ class H(BaseHTTPRequestHandler):
             return ok({"entity_id": "input_boolean." + re.sub(r"[^a-z0-9]+", "_", name.lower()), "name": name, "state": "off"})
         if path == "api/history":
             return ok(history_out(ident, q))
-        r = re.fullmatch(r"api/history/([\w-]+)/(settings|queue)", path)
+        r = re.fullmatch(r"api/history/([\w-]+)/(settings|queue|file)", path)
         if r:
             item = next((i for i in history_out(ident, {})["items"] if str(i["id"]) == r.group(1)), None)
             if not item:
@@ -792,6 +798,10 @@ class H(BaseHTTPRequestHandler):
             out = settings_out(item)
             if r.group(2) == "settings":
                 return ok(out)
+            if r.group(2) == "file":
+                if not out["download"]:
+                    raise Err(404, "no stored file for this print")
+                return (200, b"solid mock\nendsolid mock\n", "application/octet-stream")
             if not out["can_reprint"]:
                 raise Err(409, "No stored file for this print: " + out["reason"] + " Slice the model again.")
             old = item.get("job") or {}

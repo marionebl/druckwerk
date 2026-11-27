@@ -101,6 +101,7 @@ export const api = {
   queueDry: (body) => post('api/queue', { ...body, kind: 'dry' }),
   history: (query) => get('api/history' + (query ? '?' + query : '')),
   historySettings: (id) => get(`api/history/${q(id)}/settings`),
+  historyFileUrl: (id) => `api/history/${q(id)}/file`,
   historyQueue: (id) => post(`api/history/${q(id)}/queue`, {}),
   // queue
   queue: () => get('api/queue'),

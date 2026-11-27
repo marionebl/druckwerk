@@ -834,6 +834,35 @@ class App:
             raise
         return dest
 
+    def history_files(self, it):
+        """What Druckwerk still holds for a print: {'model': (path, name), 'sliced': (path, name)}, either may be missing."""
+        job, out = it.get("job") or {}, {}
+        sj = self.s.jobs.get(job.get("slice_job") or "")
+        if sj and os.path.isfile(sj.get("model") or ""):
+            out["model"] = (sj["model"], os.path.basename(sj.get("filename") or sj["model"]))
+        path = (self.kept_slice(it) or {}).get("result")
+        if not path and job.get("file") and os.path.isfile(os.path.join(self.share, os.path.basename(job["file"]))):
+            path = os.path.join(self.share, os.path.basename(job["file"]))
+        if not path:
+            try:
+                path = self.cloud_file(it)
+            except ValueError:
+                pass
+        if path:
+            out["sliced"] = (path, re.sub(r"[^A-Za-z0-9._ -]+", "_", str(it.get("title") or job.get("name") or "print")).strip("_")[:60] + ".gcode.3mf")
+        return out
+
+    def get_history_file(self, h, m, q, c):
+        """The source model, else the sliced 3MF; ?kind=sliced asks for the 3MF. Only for a print the caller may see."""
+        it = self.history_item(c, unquote(m.group(1)))
+        files = self.history_files(it)
+        want = (q.get("kind") or [""])[0]
+        path, _name = files.get("sliced" if want == "sliced" else "model") or files.get("sliced") or (None, None)
+        if not path:
+            raise NotFound("no stored file for this print")
+        with open(path, "rb") as f:
+            h.send(200, f.read(), "application/octet-stream")
+
     def get_history_settings(self, h, m, q, c):
         it = self.history_item(c, unquote(m.group(1)))
         job = it.get("job") or {}
@@ -860,6 +889,9 @@ class App:
             if source == "slice" and job:
                 self.save_settings(job["id"], path)
             out["can_reprint"] = bool(path) and self.sliced_file(path)
+        files = self.history_files(it)
+        kind = "model" if "model" in files else "sliced" if "sliced" in files else None
+        out["download"] = kind and {"kind": kind, "name": files[kind][1]}
         return out
 
     @staticmethod
@@ -1504,6 +1536,7 @@ class App:
             ("POST", r"/api/jobs/" + JOB_ID + r"/queue", w(self.queue_job)),
             ("GET", r"/api/history", w(self.get_history)),
             ("GET", r"/api/history/([A-Za-z0-9_-]{1,40})/settings", w(self.get_history_settings)),
+            ("GET", r"/api/history/([A-Za-z0-9_-]{1,40})/file", w(self.get_history_file)),
             ("POST", r"/api/history/([A-Za-z0-9_-]{1,40})/queue", w(self.post_history_queue)),
             ("GET", r"/api/spools", w(self.get_spools)),
             ("GET", r"/api/spools/(\d{1,19})/prints", w(self.get_spool_prints)),

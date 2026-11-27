@@ -380,6 +380,23 @@ def check_history_details(page, base, ident, go, shot):
         page.wait_for_selector("h1:has-text('Slicer plate 3')")
 
 
+def check_history_download(page, base, ident):
+    """The download button shows only when the hub holds a file: the model first, else the sliced 3MF."""
+    def open_item(id_):
+        fresh(page, f"{base}/?as={ident}#/history/{id_}")
+        page.wait_for_function("() => /Slicing settings|No slicing settings|Saved when|Read from/.test(document.querySelector('.detail')?.textContent || '')", timeout=8000)
+        page.wait_for_timeout(300)
+        return page.locator(".detail a[download]")
+    a = open_item(TASK_CLIPS)
+    assert a.count() == 1 and "Download model" in a.text_content() and a.get_attribute("download") == "cable_clip_set.stl", "a print with its model offers the model"
+    assert page.evaluate("async h => (await fetch(h)).status", a.get_attribute("href")) == 200, "the link downloads"
+    if ident == "admin":  # the cloud-only items are not the user's own
+        a = open_item(TASK_OWNED_CLOUD)
+        assert a.count() == 1 and "Download sliced 3MF" in a.text_content(), "no model, a sliced file: the 3MF"
+    for id_ in ((TASK_CLOUD, TASK_BENCHY, JOB_ONLY) if ident == "admin" else (JOB_ONLY,)):
+        assert open_item(id_).count() == 0, f"no file for {id_}: no download button"
+
+
 def check_queue_details(page, base, ident, go, shot):
     fresh(page, f"{base}/?as={ident}#/queue/{JOB_CLIPS}")
     page.wait_for_selector(".detail")
@@ -605,6 +622,9 @@ def walk(page, ident, base, shot, inject):
     if ONLY == "cache":
         check_cache(page, base, ident)
         return
+    if ONLY == "download":
+        check_history_download(page, base, ident)
+        return
     page.wait_for_selector(".pcard")
     if inject:
         page.evaluate("fetch('/api/me')")
@@ -633,6 +653,7 @@ def walk(page, ident, base, shot, inject):
         check_history_list(page, base, ident, go, shot)
         shot("history-list")
         check_history_details(page, base, ident, go, shot)
+        check_history_download(page, base, ident)
         check_queue_details(page, base, ident, go, shot)
         check_spool_detail(page, base, ident, go, shot)
         check_loading(page, go)
@@ -697,7 +718,7 @@ def walk(page, ident, base, shot, inject):
 def main():
     ap = argparse.ArgumentParser()
     ap.add_argument("--shots")
-    ap.add_argument("--only", choices=["cache", "reslice", "panel"], help="run one check only")
+    ap.add_argument("--only", choices=["cache", "reslice", "panel", "download", "preview"], help="run one check only")
     ap.add_argument("--port", type=int, default=18099, help="port of the mock server")
     ap.add_argument("--inject-absolute", action="store_true")
     ap.add_argument("--base-url")

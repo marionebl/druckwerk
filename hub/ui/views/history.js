@@ -133,7 +133,7 @@ async function detailView(ctx, root, id) {
     h('span', null, spoolName(u.spool_id)), h('span', { class: 'muted' }, Math.round(u.grams * 10) / 10 + ' g')));
   const secs = t.seconds || job?.print_seconds;
   const settings = h('div', null, h('section', { class: 'card' }, loading()));
-  const same = h('span', { style: 'display:contents' });
+  const same = h('span', { style: 'display:contents' }), get = h('span', { style: 'display:contents' });
   clear(box, D.page({
     title: titleOf(t), sub: job?.name && t.title && job.name !== t.title ? 'Cloud title: ' + t.title : null,
     pills: [pill(label, cls), SOURCE[t.source] && pill(...SOURCE[t.source])],
@@ -146,7 +146,7 @@ async function detailView(ctx, root, id) {
       ['Error', (t.error || job?.error) && h('span', { style: 'color:var(--err)' }, t.error || job.error)]]),
     blocks: [...D.settingsCards(job), settings, D.card('Spools used', used), D.previewCard(source && job.slice_job)],
     actions: [
-      same,
+      same, get,
       source && btn('Reslice', () => D.reslice(ctx, job, source)),
       can && ['failed', 'cancelled'].includes(job?.state) && btn('Retry', async () => { if (await attempt(() => api.jobAction(job.id, 'retry'), 'Requeued')) ctx.go('#/queue/' + job.id); }),
     ],
@@ -155,6 +155,8 @@ async function detailView(ctx, root, id) {
   api.historySettings(t.id).then((data) => {
     clear(settings, D.slicingCard(data, job));
     const label = [icon('plus', 18), 'New print job with the same settings'];
+    if (data.download) get.append(h('a', { class: 'btn', href: api.historyFileUrl(t.id), download: data.download.name },
+      icon('download', 18), data.download.kind === 'model' ? 'Download model' : 'Download sliced 3MF'));
     if (data.can_reprint) same.append(btn(label, () => D.sameJob(ctx, t.id), 'primary'));
     else if (job) same.append(btn(label, () => D.reslice(ctx, job, source), 'primary'));
   }).catch((e) => clear(settings, D.card('Slicing settings', h('p', { class: 'muted', style: 'margin:0' }, 'Could not load the settings: ' + e.message))));
