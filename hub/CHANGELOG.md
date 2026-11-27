@@ -1,5 +1,10 @@
 # Changelog
 
+## 2.7.1 (2026-11-27)
+
+- Make the app image about 70 % smaller, so updates download faster.
+- Remove unused slicer files, the full qemu package and the full ffmpeg package.
+
 ## 2.7.0 (2026-11-27)
 
 - Add a 3D G-code preview on the New print page.
