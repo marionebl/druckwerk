@@ -113,6 +113,10 @@ class FakeHA:
         return "image/jpeg", b"JPEGDATA"
 
 
+DEFAULT_SPOOL = {"id": "", "brand": "", "type": "PLA", "name": "PLA Basic", "colour": "FFFFFF", "grams_left": 1000, "grams_total": 1000,
+                 "printer": None, "unit": None, "slot": None, "in_printer": False, "rfid": None, "account": "a_x"}
+
+
 def task(id, title, started, serial=SERIAL, status="finished", seconds=600, grams=5.0):
     """A normalized cloud task as the bridge's /api/tasks returns it."""
     return {"id": id, "serial": serial, "title": title, "status": status, "status_code": status, "started_at": started,
@@ -128,6 +132,9 @@ class FakeBridge(BaseHTTPRequestHandler):
     drying_fail = {}  # path -> (status, error) for POSTs that the bridge refuses
     printer_extra = {}  # serial -> fields merged into GET /api/printers (print_status, live)
     post_answer = {}  # path -> (status, body) instead of the usual answer
+    library = {}  # account -> spools as the bridge's /api/filament lists them
+    library_fail = None  # (status, error) that every /api/filament call answers
+    library_calls = []  # (method, path, body)
 
     def reply(self, code, body, ctype="application/json"):
         data = body if isinstance(body, bytes) else json.dumps(body).encode()
@@ -145,6 +152,8 @@ class FakeBridge(BaseHTTPRequestHandler):
             return self.reply(200, [dict(p, **FakeBridge.printer_extra.get(p["serial"], {})) for p in (
                 {"serial": SERIAL, "name": "Lab", "dev_product_name": "H2S", "account": "a_x", "email": "a@example.invalid"},
                 {"serial": SERIAL2, "name": "Other", "dev_product_name": "P1S", "account": "a_x"})])
+        if self.path.startswith("/api/filament"):
+            return self.filament("GET", None)
         if self.path.startswith("/api/tasks?"):
             serial = self.path.split("serial=")[1].split("&")[0]
             FakeBridge.task_calls.append(self.path)
@@ -160,9 +169,34 @@ class FakeBridge(BaseHTTPRequestHandler):
             return self.reply(200, b"FRAME:" + self.path.encode(), "image/jpeg")
         self.reply(404, {"error": "no"})
 
+    def filament(self, method, body):
+        FakeBridge.library_calls.append((method, self.path, body))
+        if FakeBridge.library_fail:
+            return self.reply(FakeBridge.library_fail[0], {"error": FakeBridge.library_fail[1]})
+        path, _, query = self.path.partition("?")
+        account = query.split("account=")[1]
+        spools = FakeBridge.library.setdefault(account, [])
+        if method == "GET":
+            return self.reply(200, spools)
+        if method == "POST":
+            spool = dict(DEFAULT_SPOOL, id=str(7000 + len(spools)), account=account, **body)
+            spools.append(spool)
+            return self.reply(200, spool)
+        spool = next((x for x in spools if x["id"] == path.rsplit("/", 1)[1]), None)
+        if method == "DELETE":
+            spools.remove(spool)
+            return self.reply(200, {"removed": spool["id"]})
+        spool.update(body)
+        self.reply(200, spool)
+
+    def do_PUT(self):
+        self.filament("PUT", json.loads(self.rfile.read(int(self.headers.get("Content-Length") or 0)) or b"{}"))
+
     def do_POST(self):
         body = json.loads(self.rfile.read(int(self.headers.get("Content-Length") or 0)) or b"{}")
         FakeBridge.log.append((self.path, body))
+        if self.path.startswith("/api/filament"):
+            return self.filament("POST", body)
         if self.path in FakeBridge.post_answer:
             code, answer = FakeBridge.post_answer[self.path]
             return self.reply(code, answer)
@@ -182,6 +216,8 @@ class FakeBridge(BaseHTTPRequestHandler):
         self.reply(404, {"error": "no"})
 
     def do_DELETE(self):
+        if self.path.startswith("/api/filament"):
+            return self.filament("DELETE", None)
         self.reply(200, {"deleted": self.path.rsplit("/", 1)[1]})
 
     def log_message(self, *a):
@@ -201,6 +237,7 @@ class Hub:
         FakeBridge.log, FakeBridge.tasks, FakeBridge.task_fail, FakeBridge.task_calls = [], {}, set(), []
         FakeBridge.drying, FakeBridge.drying_fail = [], {}
         FakeBridge.printer_extra, FakeBridge.post_answer = {}, {}
+        FakeBridge.library, FakeBridge.library_fail, FakeBridge.library_calls = {}, None, []
         self.bridge = ThreadingHTTPServer(("127.0.0.1", 0), FakeBridge)
         threading.Thread(target=self.bridge.serve_forever, kwargs={"poll_interval": 0.02}, daemon=True).start()
         from app import App
@@ -247,6 +284,13 @@ class Hub:
     def setup_printers(self):
         self.app.registry.put(SERIAL, name="Lab", model="H2S", account="a_x", prefix="lab_h2s", electricity_kwh_price=0.4)
         self.app.registry.put(SERIAL2, name="Other", model="P1S", account="a_x", prefix="lab_p1s")
+
+    def cloud_spool(self, account="a_x", **fields):
+        """Put a spool into the fake bridge's cloud library (loaded in a tray when printer, unit and slot are given)."""
+        spools = FakeBridge.library.setdefault(account, [])
+        spool = dict(DEFAULT_SPOOL, id=str(5000 + len(spools)), account=account, in_printer=bool(fields.get("printer")), **fields)
+        spools.append(spool)
+        return spool
 
     def grant(self, user, printer=SERIAL, **kw):
         return self.app.grants.add(user, printer, **kw)

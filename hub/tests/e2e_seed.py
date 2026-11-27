@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Write the hub's data dir for the e2e run: three printers, two grants for the test user, spools, a queue and history.
+"""Write the hub's data dir for the e2e run: three printers, two grants for the test user, spool prices, a queue and history.
   python3 e2e_seed.py DATA_DIR       (an empty DATA_DIR is the "not set up yet" state)"""
 import json
 import os
@@ -22,11 +22,7 @@ dump("printers.json", {s: {"name": NAMES[s][0], "model": NAMES[s][1], "account":
                            "nozzle": "0.4", "pause_entities": [], "electricity_kwh_price": 0.32} for s in (H2S, P1S, X1C)})
 dump("grants.json", [{"id": "a00000000001", "user_id": "u-user", "printer": H2S, "role": "user"},
                      {"id": "a00000000002", "user_id": "u-user", "printer": P1S, "role": "user"}])
-spool = lambda i, t, c, n, left, price, pr, u, s: {"id": "5b%010d" % i, "brand": n.split()[0], "type": t, "colour": c, "name": n, "grams_left": left,
-                                                    "grams_total": 1000, "price_per_kg": price, "printer": pr, "unit": u, "slot": s}
-dump("spools.json", [spool(1, "PLA", "F2F2F2", "Acme PLA White", 880, 21.0, H2S, 0, 0), spool(2, "PETG", "1F6FEB", "Prusament PETG Blue", 610, 26.0, H2S, 0, 1),
-                     spool(3, "PLA", "E4572E", "Sunlu PLA Red", 140, 15.0, H2S, 0, 2), spool(4, "TPU", "222222", "TPU 95A Black", 730, 30.0, H2S, 1, 0),
-                     spool(5, "PLA", "2E2E2E", "Generic PLA Black", 950, 18.0, None, None, None)])
+dump("spool_prices.json", {"5000": 21.0, "5001": 26.0, "5002": 15.0, "5003": 30.0, "5004": 18.0})  # by cloud spool id, see e2e_mock.SPOOLS
 job = lambda i, state, target, owner, name, age, **kw: dict({"id": "b%011d" % i, "file": name + ".gcode.3mf", "source": name + ".stl", "target": target,
                                                               "model": "H2S" if target == "any" else "", "filaments": [], "error": None, "state": state,
                                                               "options": {"timelapse": False, "bed_leveling": True, "use_ams": True},

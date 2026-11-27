@@ -1,7 +1,15 @@
 # Changelog
 
+## 2.9.0 (unreleased)
+
+- Ask the printer owner to load a spool: `POST /api/spools/<id>/load-request`, `GET /api/load-requests`, `DELETE /api/load-requests/<id>`. The Filament tab has an "Ask to load" button per spool and shows open requests as a pill, so owners use it as a to-do list. The owners of the printer (not other HA admins) get a mobile notification when they are home; the `druckwerk_load_requested` bus event is fired. A request closes when the cloud library shows the spool in that printer, or when it is cancelled. Open requests are kept in `load_requests.json`.
+
 ## 2.8.0 (unreleased)
 
+- The Filament tab shows and edits the Bambu Cloud filament library (the spool list Bambu Studio and Bambu Handy sync) instead of a local store. The bridge adds `GET|POST /api/filament?account=<id>` and `PUT|DELETE /api/filament/<id>?account=<id>`. `/api/spools` reads and writes through them for every linked account the caller may see; a cloud failure is an error, never old data.
+- The price per kg stays in the hub (`spool_prices.json`, by cloud spool id) because the cloud has none. A finished print takes its grams off the matching cloud spool (`netWeight`).
+- The hub no longer records AMS trays as "seen" spools; the cloud library gets them from the vendor's own sync. The "Loaded in" selector is gone: the AMS location comes from the cloud and is read-only.
+- Migration: `spools.json` is no longer read. Prices of local spools are dropped; spools that exist only in the old file are not copied to the cloud. Enter prices again in the Filament tab.
 - Own the actions and the LLM tools of the integration. The integration reads them from `GET /api/integration/manifest`.
 - Add `POST /api/actions/<name>` and `POST /api/tools/<name>`.
 - Add `manifest_revision` to `GET /api/events`.

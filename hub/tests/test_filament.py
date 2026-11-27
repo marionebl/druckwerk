@@ -4,7 +4,7 @@ import os
 import pytest
 
 import filament
-from hubfakes import ADMIN, OTHER, SERIAL, SERIAL2, USER, make_3mf
+from hubfakes import ADMIN, OTHER, SERIAL, SERIAL2, USER, FakeBridge, make_3mf
 
 
 def test_grams_from_a_real_sliced_3mf(tmp_path):
@@ -30,23 +30,70 @@ def test_cost_arithmetic():
     assert filament.watts("p1s") == 105
 
 
-def test_spool_validation_and_permissions(hub):
+def put_calls(hub):
+    return [(path, body) for method, path, body in FakeBridge.library_calls if method == "PUT"]
+
+
+def test_spools_come_from_the_cloud_library_with_the_local_price(hub):
+    hub.setup_printers()
+    mine = hub.cloud_spool(brand="Acme", type="PETG", name="PETG HF", colour="ADB1B2", grams_left=640, printer=SERIAL, unit=0, slot=1)
+    other = hub.cloud_spool(type="PLA", printer=SERIAL2, unit=0, slot=0)
+    loose = hub.cloud_spool(type="TPU", grams_left=None, grams_total=None)
+    hub.app.prices.set(mine["id"], 19.5)
+    got = hub.req("GET", "/api/spools", user=ADMIN)[1]
+    assert [(s["id"], s["price_per_kg"]) for s in got] == [(mine["id"], 19.5), (other["id"], None), (loose["id"], None)]
+    assert got[2]["grams_left"] is None  # unknown stays unknown
+    assert hub.req("GET", "/api/spools", user=USER)[0] == 409  # no printer, so no cloud account to show
+    hub.grant(USER, SERIAL)
+    assert [s["id"] for s in hub.req("GET", "/api/spools", user=USER)[1]] == [mine["id"], loose["id"]]  # not the spool on a printer it cannot see
+
+
+def test_the_library_is_cached_and_a_write_drops_the_cache(hub):
+    hub.setup_printers()
+    sp = hub.cloud_spool(type="PLA")
+    gets = lambda: len([c for c in FakeBridge.library_calls if c[0] == "GET"])
+    hub.req("GET", "/api/spools", user=ADMIN)
+    hub.req("GET", "/api/spools", user=ADMIN)
+    assert gets() == 1
+    hub.req("PUT", "/api/spools/" + sp["id"], {"grams_left": 5}, user=ADMIN)
+    hub.req("GET", "/api/spools", user=ADMIN)
+    assert gets() == 2
+    hub.now += 31
+    hub.req("GET", "/api/spools", user=ADMIN)
+    assert gets() == 3
+
+
+def test_a_cloud_failure_is_an_error_not_old_data(hub):
+    hub.setup_printers()
+    hub.cloud_spool(type="PLA")
+    assert len(hub.req("GET", "/api/spools", user=ADMIN)[1]) == 1
+    hub.now += 31
+    FakeBridge.library_fail = (502, "Bambu cloud answered HTTP 401 for /v1/design-user-service/my/filament/v2")
+    st, body = hub.req("GET", "/api/spools", user=ADMIN)
+    assert st == 502 and "filament library" in body["error"] and "HTTP 401" in body["error"]
+
+
+def test_create_edit_delete_go_to_the_cloud_and_the_price_stays_local(hub):
     hub.setup_printers()
     hub.grant(USER, SERIAL, role="owner")  # owner = admin of that printer
-    body = {"brand": "B", "type": "PLA", "colour": "#ff0000", "grams_left": 800, "grams_total": 1000, "price_per_kg": 20,
-            "printer": SERIAL, "unit": 0, "slot": 2}
-    st, sp = hub.req("POST", "/api/spools", body, user=USER)
-    assert st == 200 and sp["colour"] == "FF0000" and len(sp["id"]) == 12
-    assert hub.req("POST", "/api/spools", dict(body, printer=SERIAL2), user=USER)[0] == 403
-    assert hub.req("POST", "/api/spools", {"type": "PLA"}, user=USER)[0] == 403  # unassigned: HA admins only
-    assert hub.req("POST", "/api/spools", dict(body, grams_left=-1), user=ADMIN)[0] == 400
-    assert hub.req("POST", "/api/spools", dict(body, printer=SERIAL, slot=None), user=ADMIN)[0] == 400
-    assert hub.req("PUT", "/api/spools/" + sp["id"], {"grams_left": 700}, user=USER)[1]["grams_left"] == 700
-    assert hub.req("PUT", "/api/spools/" + sp["id"], {"grams_left": 5}, user=OTHER)[0] == 403
-    assert [s["id"] for s in hub.req("GET", "/api/spools", user=USER)[1]] == [sp["id"]]
-    assert hub.req("GET", "/api/spools", user=OTHER)[1] == []
-    assert hub.req("DELETE", "/api/spools/" + sp["id"], user=USER)[0] == 200
-    assert hub.req("DELETE", "/api/spools/" + sp["id"], user=ADMIN)[0] == 404
+    st, sp = hub.req("POST", "/api/spools", {"brand": "B", "type": "PLA", "name": "PLA Basic", "colour": "#ff0000", "grams_left": 800,
+                                             "grams_total": 1000, "price_per_kg": 20}, user=USER)
+    assert st == 200 and sp["id"] == "7000" and sp["price_per_kg"] == 20
+    (call,) = [c for c in FakeBridge.library_calls if c[0] == "POST"]
+    assert call[1] == "/api/filament?account=a_x" and "price_per_kg" not in call[2]
+    assert hub.req("PUT", "/api/spools/7000", {"grams_left": 700}, user=USER)[1]["grams_left"] == 700
+    assert put_calls(hub) == [("/api/filament/7000?account=a_x", {"grams_left": 700})]
+    assert hub.req("PUT", "/api/spools/7000", {"price_per_kg": 25}, user=USER)[1]["price_per_kg"] == 25
+    assert len(put_calls(hub)) == 1  # a price alone never reaches the cloud
+    assert [s["price_per_kg"] for s in hub.req("GET", "/api/spools", user=USER)[1]] == [25]
+    assert hub.req("PUT", "/api/spools/7000", {"price_per_kg": "x"}, user=USER)[0] == 400
+    assert hub.req("PUT", "/api/spools/7000", {"grams_left": 5}, user=OTHER)[0] == 409  # no printer of the account
+    hub.grant(OTHER, SERIAL)
+    assert hub.req("PUT", "/api/spools/7000", {"grams_left": 5}, user=OTHER)[0] == 403  # sees it, may not change it
+    assert hub.req("PUT", "/api/spools/999", {"grams_left": 5}, user=ADMIN)[0] == 404
+    assert hub.req("DELETE", "/api/spools/7000", user=USER)[0] == 200
+    assert hub.app.prices.get("7000") is None and hub.req("GET", "/api/spools", user=USER)[1] == []
+    assert hub.req("DELETE", "/api/spools/7000", user=ADMIN)[0] == 404
 
 
 def finish_a_print(hub):
@@ -66,32 +113,40 @@ def finish_a_print(hub):
 
 
 def test_done_takes_grams_off_the_spool_and_prices_the_job(hub):
-    spool = hub.app.spools.add(type="PETG", colour="ADB1B2", grams_left=500, grams_total=1000, price_per_kg=30,
-                               printer=SERIAL, unit=0, slot=0)
-    other = hub.app.spools.add(type="PETG", colour="ADB1B2", grams_left=900, printer=SERIAL, unit=0, slot=3)
+    spool = hub.cloud_spool(type="PETG", colour="ADB1B2", grams_left=500, printer=SERIAL, unit=0, slot=0)
+    other = hub.cloud_spool(type="PETG", colour="ADB1B2", grams_left=900, printer=SERIAL, unit=0, slot=3)
+    hub.app.prices.set(spool["id"], 30)
     jid = finish_a_print(hub)
     done = hub.req("GET", "/api/queue", user=ADMIN)[1]["history"][0]
     assert done["id"] == jid and done["state"] == "done"
     assert done["cost"] == 2.38 and done["spools_used"] == [{"spool_id": spool["id"], "grams": 75.22}]
-    assert hub.app.spools.get(spool["id"])["grams_left"] == 424.78
-    assert hub.app.spools.get(other["id"])["grams_left"] == 900  # the slice named tray 0:0
+    assert put_calls(hub) == [("/api/filament/%s?account=a_x" % spool["id"], {"grams_left": 424.78})]  # the other tray's spool is untouched
     assert not os.path.exists(os.path.join(hub.s.SHARE, done["file"]))
     hub.app.tick_all()  # a later tick must not take the grams off again
-    assert hub.app.spools.get(spool["id"])["grams_left"] == 424.78
+    assert len(put_calls(hub)) == 1
+    assert other["grams_left"] == 900
 
 
 def test_done_without_a_matching_spool_still_finishes(hub):
-    hub.app._track_at = 10 ** 12  # the hub would otherwise record the loaded tray as a spool first
     finish_a_print(hub)
     done = hub.req("GET", "/api/queue", user=ADMIN)[1]["history"][0]
     assert done["state"] == "done" and done["spools_used"] == [] and done["cost"] == 0.12  # electricity only: 0.124 at 0.40
-    spool = hub.app.spools.add(type="PETG", colour="ADB1B2", grams_left=10, printer=SERIAL, unit=0, slot=0)
+    hub.cloud_spool(type="PETG", colour="ADB1B2", grams_left=10, printer=SERIAL, unit=0, slot=0)
+    hub.now += 31  # past the cached empty library
     hub.app.settle(dict(done, file="gone.gcode.3mf"))
-    assert hub.app.spools.get(spool["id"])["grams_left"] == 0  # never below zero
+    assert put_calls(hub)[-1][1] == {"grams_left": 0}  # never below zero
+
+
+def test_done_settles_when_the_cloud_is_down(hub):
+    hub.cloud_spool(type="PETG", colour="ADB1B2", grams_left=500, printer=SERIAL, unit=0, slot=0)
+    FakeBridge.library_fail = (502, "cloud down")
+    finish_a_print(hub)
+    done = hub.req("GET", "/api/queue", user=ADMIN)[1]["history"][0]
+    assert done["state"] == "done" and done["spools_used"] == [] and done["cost"] == 0.12
 
 
 def test_failed_print_keeps_the_spool(hub):
-    spool = hub.app.spools.add(type="PETG", colour="ADB1B2", grams_left=500, printer=SERIAL, unit=0, slot=0)
+    hub.cloud_spool(type="PETG", colour="ADB1B2", grams_left=500, printer=SERIAL, unit=0, slot=0)
     hub.setup_printers()
     hub.grant(USER, SERIAL)
     jid = hub.sliced(owner=USER)
@@ -102,13 +157,12 @@ def test_failed_print_keeps_the_spool(hub):
     hub.app.tick_all()
     hub.ha.s["sensor.lab_h2s_print_status"]["state"] = "failed"
     hub.app.tick_all()
-    assert hub.app.spools.get(spool["id"])["grams_left"] == 500
+    assert put_calls(hub) == []
 
 
 def test_spool_without_price_is_allowed_and_costs_nothing(hub):
     hub.setup_printers()
-    sp = hub.req("POST", "/api/spools", {"type": "PLA", "price_per_kg": None}, user=ADMIN)
+    sp = hub.req("POST", "/api/spools", {"type": "PLA", "name": "PLA Basic", "colour": "ffffff", "price_per_kg": None}, user=ADMIN)
     assert sp[0] == 200 and sp[1]["price_per_kg"] is None
     assert hub.req("PUT", "/api/spools/" + sp[1]["id"], {"price_per_kg": 12.5}, user=ADMIN)[1]["price_per_kg"] == 12.5
-    assert hub.req("PUT", "/api/spools/" + sp[1]["id"], {"price_per_kg": None, "printer": None, "unit": None, "slot": None}, user=ADMIN)[0] == 200
-    assert hub.req("PUT", "/api/spools/" + sp[1]["id"], {"price_per_kg": "x"}, user=ADMIN)[0] == 400
+    assert hub.req("PUT", "/api/spools/" + sp[1]["id"], {"price_per_kg": None}, user=ADMIN)[1]["price_per_kg"] is None
