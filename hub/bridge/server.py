@@ -369,10 +369,15 @@ def number(value):
 def normalize_task(t, serial):
     raw = t.get("status")
     status = TASK_STATUS.get(str(raw).strip().lower(), str(raw)) if raw is not None else "unknown"
-    return {"id": t.get("id"), "serial": serial, "title": t.get("title") or t.get("designTitle") or "", "status": status,
-            "status_code": raw, "started_at": epoch(t.get("startTime")), "ended_at": epoch(t.get("endTime")),
-            "seconds": number(t.get("costTime")), "grams": number(t.get("weight")), "cover_url": t.get("cover") or "",
-            "plate": t.get("plateIndex"), "design_title": t.get("designTitle") or ""}
+    out = {"id": t.get("id"), "serial": serial, "title": t.get("title") or t.get("designTitle") or "", "status": status,
+           "status_code": raw, "started_at": epoch(t.get("startTime")), "ended_at": epoch(t.get("endTime")),
+           "seconds": number(t.get("costTime")), "grams": number(t.get("weight")), "cover_url": t.get("cover") or "",
+           "plate": t.get("plateIndex"), "design_title": t.get("designTitle") or ""}
+    # The ids that name the task's file in the cloud (the vendor slicer reads profileId from the same record).
+    for key, cloud_key in (("model_id", "modelId"), ("profile_id", "profileId"), ("design_id", "designId")):
+        if t.get(cloud_key) not in (None, ""):
+            out[key] = t[cloud_key]
+    return out
 
 
 def get_tasks(h, m, body):
@@ -397,6 +402,27 @@ def get_tasks(h, m, body):
     if not isinstance(hits, list):
         raise Upstream("%s cloud sent no task list" % externals.CLOUD_NAME)
     h.send(200, [normalize_task(t, serial) for t in hits if isinstance(t, dict)])
+
+
+def get_task_file(h, m, body):
+    """The download URL of the sliced 3MF behind a task (its modelId and profileId); the caller fetches the file."""
+    q = parse_qs(urlsplit(h.path).query)
+    serial, model_id, profile_id = ((q.get(k) or [""])[0] for k in ("serial", "model_id", "profile_id"))
+    if not (SERIAL.fullmatch(serial) and re.fullmatch(r"[A-Za-z0-9_-]{1,64}", model_id) and re.fullmatch(r"\d{1,19}", profile_id)):
+        raise ValueError("serial, model_id and profile_id are required")
+    acc = owner(serial)
+    if not acc:
+        return h.send(404, {"error": "unknown printer"})
+    token = read_cloud(acc.creds).get("token")
+    if not token:
+        raise Upstream("No cloud login for this printer's account")
+    data = cloud("GET", "/v1/iot-service/api/user/profile/%s?model_id=%s" % (profile_id, model_id), token=token)
+    data = data if isinstance(data, dict) else {}
+    listed = data.get("profile_print_3mf")
+    url = data.get("url") or (listed[0].get("url") if isinstance(listed, list) and listed and isinstance(listed[0], dict) else None)
+    if not isinstance(url, str) or not url.startswith("https://"):
+        raise Upstream("%s cloud sent no file URL" % externals.CLOUD_NAME)
+    h.send(200, {"url": url})
 
 
 # ---- filament library (the cloud's "Filament Manager" spool list) ----
@@ -1213,6 +1239,7 @@ ROUTES = [
     ("GET", r"/api/camera/" + SER + r"/live", lambda h, m, b: get_live(h, m.group(1)), 0),
     ("GET", r"/api/camera/" + SER + r"/snapshot", lambda h, m, b: camera(h, "snapshot", m.group(1)), 0),
     ("GET", r"/api/tasks", get_tasks, 0),
+    ("GET", r"/api/tasks/file", get_task_file, 0),
     ("GET", r"/api/filament", get_filament, 0),
     ("POST", r"/api/filament", post_filament, MAX_SMALL_BODY),
     ("PUT", r"/api/filament/(\d{1,19})", put_filament, MAX_SMALL_BODY),

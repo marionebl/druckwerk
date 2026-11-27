@@ -1,5 +1,11 @@
 # Changelog
 
+## 3.3.0 (unreleased)
+
+- History detail shows all slicing settings of a print: Quality, Strength, Support and adhesion, Speed, Filament, Plate and bed, Printer, and an "All settings" list with every key and a search field. They are read from the sliced file (`Metadata/project_settings.config` and `slice_info.config`) by `hub/slice_settings.py`. `GET /api/history/{id}/settings` is new. The settings are saved when a job is queued, so they stay after the slicer forgot the slice.
+- One primary action on a history item: "New print job with the same settings". It queues the stored file again with the print's target and options (`POST /api/history/{id}/queue` is new). When the file is gone it opens New print with the same printer, options, quality, filament and plate; choose the model again. "Print again" is replaced by this button.
+- Prints that were not started in Druckwerk: the bridge now passes `model_id`, `profile_id` and `design_id` of the Bambu cloud task, and `GET /api/tasks/file` asks the cloud for the file URL. The hub fetches the 3MF once into `data/cloud` and reads the same settings. If the cloud gives no file, the detail says so and shows the fields of the cloud record. The cloud file request is not checked against a real account yet.
+
 ## 3.2.0 (unreleased)
 
 - One History. The History tab lists the Bambu Cloud tasks with the Druckwerk job merged in (name, owner, cost, options, slice). A finished job that no cloud task explains (never sent, cancelled before the start) is listed too and marked "Druckwerk only". The Queue no longer has a History segment. `GET /api/history` items gain `job`, `when` and `printer_owner`; `source` can be `job`.

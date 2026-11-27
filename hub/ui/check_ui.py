@@ -277,6 +277,39 @@ def check_reslice(page, base, ident):
     check_reslice_lands(page)
 
 
+GROUPS = ["Quality", "Strength", "Support and adhesion", "Speed", "Filament", "Plate and bed", "Printer"]
+SAME = "New print job with the same settings"
+
+
+def check_settings(page, base, ident, shot):
+    """The history detail shows all slicing settings; the one primary action queues the same file with the same options."""
+    page.wait_for_selector(".sgroup", timeout=8000)
+    assert page.locator(".sgroup h3").all_text_contents() == GROUPS, "the settings are grouped"
+    body = page.locator(".detail").text_content()
+    for want in ("Layer height", "0.2 mm", "Infill density", "15%", "Nozzle temperature", "Flow ratio", "Build plate", "Read from the sliced file."):
+        assert want in body, f"settings show {want!r}"
+    all_ = page.locator("details.allsettings")
+    assert all_.locator("summary").text_content().startswith("All settings (") and all_.get_attribute("open") is None
+    all_.locator("summary").click()
+    all_.locator("dt").first.wait_for()
+    assert all_.locator("dt").count() == 8, "all settings list every key"
+    all_.get_by_label("Find a setting").fill("infill")
+    page.wait_for_function("() => document.querySelectorAll('details.allsettings dt').length === 1")
+    assert all_.locator("dt").all_text_contents() == ["sparse_infill_density"], "the list can be searched"
+    all_.get_by_label("Find a setting").fill("")
+    shot("history-detail")
+    assert page.get_by_role("button", name=SAME).count() == 1 and page.get_by_role("button", name="Print again").count() == 0, "one action, not two"
+    assert page.locator(".btn.primary", has_text=SAME).count() == 1, "it is the primary button"
+    page.get_by_role("button", name=SAME).click()
+    page.wait_for_function("() => /^#\\/queue\\/[0-9a-f]{12}$/.test(location.hash)", timeout=5000)
+    page.wait_for_selector("h2:has-text('Change this job')")
+    assert page.locator("h1").text_content() == "Cable clip set (desk)", "the name is kept"
+    assert page.locator("input[data-opt=timelapse]").is_checked() and page.locator("select[data-opt=flow_cali]").input_value() == "auto" \
+        and page.locator("select[data-opt=bed_leveling]").input_value() == "false", "the new job has the options of the print"
+    page.go_back()
+    page.wait_for_selector(".sgroup")
+
+
 def check_history_details(page, base, ident, go, shot):
     go("#/history", ".tl-card")
     page.locator(".tl-card", has_text="Cable clip set (desk)").click()
@@ -287,21 +320,39 @@ def check_history_details(page, base, ident, go, shot):
         assert want in body, f"history detail shows {want!r}"
     assert page.locator("a.spoolprint[href='#/filament/5000']").count() == 1, "the spool links to the filament detail"
     page.wait_for_selector(".preview3d", timeout=8000)  # the slice is still stored: the 3D preview
-    shot("history-detail")
+    check_settings(page, base, ident, shot)
     page.get_by_role("button", name="Reslice").click()
     hash_is(page, "#/new")
     check_reslice_lands(page)
+    fresh(page, f"{base}/?as={ident}#/history/{TASK_BENCHY}")  # settings kept, file gone: the one action opens New print with the options
+    page.wait_for_selector(".sgroup", timeout=8000)
+    assert "Saved when the job was queued." in page.locator(".detail").text_content() and "The sliced file is gone" in page.locator(".detail").text_content()
+    page.get_by_role("button", name=SAME).click()
+    hash_is(page, "#/new")
+    page.wait_for_selector(".toast:has-text('model is no longer stored')")
     fresh(page, f"{base}/?as={ident}#/history/{JOB_ONLY}")
     page.wait_for_selector(".detail")
     body = page.locator(".detail").text_content()
     assert "Druckwerk only" in body and "The printer is busy" in body and "Print options" in body, "a job-only item shows its error and settings"
-    assert page.get_by_role("button", name="Print again").count() == 0, "no stored slice: no Print again"
+    page.wait_for_selector("h2:has-text('Slicing settings')")
+    assert "No slicing settings for this print" in page.locator(".detail").text_content(), "a job without a file says so"
     if ident == "admin":
         fresh(page, f"{base}/?as={ident}#/history/{TASK_CLOUD}")
         page.wait_for_selector(".detail")
         body = page.locator(".detail").text_content()
         assert "Not started here" in body and "Print options" not in body, "a cloud-only print shows what the cloud knows"
+        page.wait_for_selector("h2:has-text('Slicing settings')")
+        body = page.locator(".detail").text_content()
+        assert "No slicing settings for this print" in body and "What the Bambu cloud record has" in body and "profileId" in body and "4711" in body, "cloud-only without a file: the record's fields and the reason"
+        assert page.get_by_role("button", name="New print job with the same settings").count() == 0, "no file and no job: no new print job"
         assert page.locator(".detail-img.ph").count() == 1 and page.locator(".detail-img img").count() == 0, "a broken cover leaves the placeholder box"
+        shot("history-cloud-only")
+        fresh(page, f"{base}/?as={ident}#/history/{TASK_OWNED_CLOUD}")  # the cloud gave a file: settings and the same action as for a Druckwerk print
+        page.wait_for_selector(".sgroup", timeout=8000)
+        assert "Read from the file of the Bambu cloud task." in page.locator(".detail").text_content()
+        page.get_by_role("button", name=SAME).click()
+        page.wait_for_function("() => /^#\\/queue\\/[0-9a-f]{12}$/.test(location.hash)", timeout=5000)
+        page.wait_for_selector("h1:has-text('Slicer plate 3')")
 
 
 def check_queue_details(page, base, ident, go, shot):
@@ -314,7 +365,7 @@ def check_queue_details(page, base, ident, go, shot):
     shot("queue-detail")
     # a fresh job to change and cancel: print the finished clip set again
     go(f"#/history/{TASK_CLIPS}", ".detail")
-    page.get_by_role("button", name="Print again").click()
+    page.get_by_role("button", name=SAME).click()
     page.wait_for_function("() => /^#\\/queue\\/[0-9a-f]{12}$/.test(location.hash)", timeout=5000)
     url = page.url
     page.wait_for_selector(".detail")

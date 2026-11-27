@@ -142,7 +142,8 @@ HISTORY = [
 ]
 HISTORY[0].update(name="Benchy for the shelf", started_at=NOW() - 28 * 3600, print_seconds=3660, spools_used=[{"spool_id": "5000", "grams": 14.0}, {"spool_id": "5001", "grams": 0.4}],
                   slice=slice_of("better", 3660, 14.0, "benchy.stl"), options=dict(HISTORY[0]["options"], timelapse=True))
-HISTORY[4].update(name="Cable clip set (desk)", slice_job=SLICE_JOB, slice=slice_of("best", 2520, 12.5, "cable_clip_set.stl"))
+HISTORY[4].update(name="Cable clip set (desk)", slice_job=SLICE_JOB, slice=slice_of("best", 2520, 12.5, "cable_clip_set.stl"),
+                  options=dict(HISTORY[4]["options"], timelapse=True, flow_cali="auto", bed_leveling=False))
 HISTORY[3].pop("printer", None)
 TASK_JOB = {5: "b00000000001", 4: "b00000000002", 3: "b00000000003", 8: "b00000000005"}
 SLOW = {}  # test hook: path fragment -> seconds to wait before answering
@@ -201,6 +202,32 @@ def history_out(ident, q):
                     "when": int(j.get("started_at") or j["finished_at"])})
     out.sort(key=lambda i: i["when"], reverse=True)
     return {"items": out, "unavailable": []}
+
+
+SETTINGS_ALL = [["curr_bed_type", "Textured PEI Plate"], ["filament_flow_ratio", "0.98"], ["layer_height", "0.2"], ["nozzle_diameter", "0.4"],
+                ["outer_wall_speed", "200 / 500"], ["printer_model", "Bambu Lab H2S"], ["sparse_infill_density", "15%"], ["wall_loops", "2"]]
+SETTINGS_GROUPS = [
+    ("Quality", [("Layer height", "0.2 mm"), ("First layer height", "0.2 mm"), ("Outer wall line width", "0.42 mm"), ("Seam position", "aligned")]),
+    ("Strength", [("Wall loops", "2"), ("Top shell layers", "5"), ("Bottom shell layers", "3"), ("Infill density", "15%"), ("Infill pattern", "grid")]),
+    ("Support and adhesion", [("Support", "Off"), ("Brim", "auto_brim"), ("Prime tower", "On")]),
+    ("Speed", [("Outer wall", "200 / 500 mm/s"), ("Infill", "350 / 600 mm/s"), ("Travel", "1000 mm/s")]),
+    ("Filament", [("Preset", "Bambu PLA Basic @BBL H2S"), ("Type", "PLA"), ("Nozzle temperature", "220 °C"), ("Flow ratio", "0.98")]),
+    ("Plate and bed", [("Build plate", "Textured PEI Plate"), ("Bed temperature", "55 °C")]),
+    ("Printer", [("Printer model", "Bambu Lab H2S"), ("Nozzle diameter", "0.4 mm"), ("Process preset", "0.20mm Standard @BBL H2S")])]
+# task id -> (source, can_reprint) of the settings the mock has; other items have none
+SETTINGS_OF = {"8": ("slice", True), "5": ("saved", False), "10": ("cloud", True)}
+
+
+def settings_out(item):
+    src, again = SETTINGS_OF.get(str(item["id"]), (None, False))
+    task = {k: item[k] for k in ("title", "design_title", "plate", "status_code") if item.get(k) not in (None, "")}
+    if not src:
+        return {"available": False, "source": None, "can_reprint": False, "task": dict(task, model_id="US1", profile_id=4711) if item["source"] == "cloud" else task,
+                "reason": "The Bambu cloud did not give the file (cloud file: HTTP Error 404)." if item["source"] == "cloud" else "The sliced file is gone.",
+                "groups": [], "all": [], "plate": {}, "slicer": None}
+    return {"available": True, "source": src, "reason": "", "can_reprint": again, "task": task, "slicer": "02.09.02.62", "plate": {},
+            "groups": [{"title": t, "rows": [{"key": l, "label": l, "value": v, "unit": ""} for l, v in rows]} for t, rows in SETTINGS_GROUPS],
+            "all": SETTINGS_ALL}
 
 
 JOB_FIELDS = ("id", "name", "state", "error", "file", "source", "target", "model", "filaments", "options", "spools_used", "grams", "print_seconds",
@@ -750,6 +777,23 @@ class H(BaseHTTPRequestHandler):
             return ok({"entity_id": "input_boolean." + re.sub(r"[^a-z0-9]+", "_", name.lower()), "name": name, "state": "off"})
         if path == "api/history":
             return ok(history_out(ident, q))
+        r = re.fullmatch(r"api/history/([\w-]+)/(settings|queue)", path)
+        if r:
+            item = next((i for i in history_out(ident, {})["items"] if str(i["id"]) == r.group(1)), None)
+            if not item:
+                raise Err(404, "unknown history item")
+            out = settings_out(item)
+            if r.group(2) == "settings":
+                return ok(out)
+            if not out["can_reprint"]:
+                raise Err(409, "No stored file for this print: " + out["reason"] + " Slice the model again.")
+            old = item.get("job") or {}
+            jb = job(secrets.token_hex(6), re.sub(r"\W+", "_", item["title"]) + ".gcode.3mf", item["serial"], uid, "queued", age=0, grams=item.get("grams"))
+            jb["options"] = dict(old.get("options") or jb["options"])
+            jb["name"] = old.get("name") or item["title"]
+            MOCK_QUEUED.append({"options": jb["options"], "name": jb["name"], "target": jb["target"], "history": str(item["id"])})
+            JOBS.append(jb)
+            return ok(jb)
         r = re.fullmatch(r"api/history-cover/(\d+)\.svg", path)
         if r:
             if int(r.group(1)) in BROKEN_COVERS:
