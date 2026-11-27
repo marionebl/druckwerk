@@ -111,6 +111,7 @@ ENTITIES = [
 SETUP = {"accounts": [{"id": "acc1", "email": "owner@example.invalid", "logged_in": True, "daemon_running": True}],
          "printers": {s: {"serial": s, "device_name": PRINTERS[s]["name"], "model": PRINTERS[s]["model"], "account": "acc1",
                           "configured": s != X1C, "config": None, "suggested_prefix": {H2S: "h2s_fake0001", P1S: "p1s_fake0002"}.get(s)} for s in PRINTERS}}
+FEEDBACK = []  # what the feedback button posted, for the UI proof
 SLICES = {}
 LOCK = threading.Lock()
 QUALITY = {"good": (7800, 41.0, "0.24mm Draft"), "better": (10500, 42.5, "0.20mm Standard"), "best": (14700, 44.1, "0.16mm High Quality")}
@@ -418,6 +419,12 @@ class H(BaseHTTPRequestHandler):
             else:
                 sp.update(J())
             return ok(sp)
+        if path == "api/feedback" and m == "POST":
+            b = J()
+            if not isinstance(b.get("item"), str) or not b["item"] or not isinstance(b.get("description"), str) or not b["description"]:
+                raise Err(400, "expected item and description")
+            FEEDBACK.append(b)
+            return ok({"ok": True})
         # admin-only
         if path.startswith("api/grants") or path.startswith("api/ha/") or path.startswith("api/setup") or path == "api/integration":
             need_admin()
@@ -434,6 +441,13 @@ class H(BaseHTTPRequestHandler):
         if r and m == "DELETE":
             GRANTS[:] = [g for g in GRANTS if g["id"] != r.group(1)]
             return ok({})
+        if path == "api/ha/switches" and m == "POST":
+            b = J()
+            who, pr = USERS.get(b.get("user_id")), PRINTERS.get(b.get("printer"))
+            if not who or not (pr or b.get("printer") == "*"):
+                raise Err(400, "unknown user or printer")
+            name = "Druckwerk %s %s" % (who, pr["name"] if pr else "All printers")
+            return ok({"entity_id": "input_boolean." + re.sub(r"[^a-z0-9]+", "_", name.lower()), "name": name, "state": "off"})
         if path == "api/ha/users":
             return ok(HA_USERS)
         if path == "api/ha/entities":

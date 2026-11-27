@@ -45,11 +45,22 @@ export async function mount(ctx, root) {
     const cond = h('input', { type: 'text', list: 'cond-ents', placeholder: 'Search schedule, helper, sensor or person', autocomplete: 'off' });
     const dl = h('datalist', { id: 'cond-ents' }, entities.map((e) => h('option', { value: e.entity_id }, `${e.name} (${e.state})`)));
     const appr = h('input', { type: 'checkbox' });
+    cond.style.cssText = 'flex:1;min-width:0';
+    const mkSwitch = btn([icon('plus', 18), 'Create switch'], async () => {
+      const made = await attempt(() => api.createSwitch(user.value, printer.value), 'Switch created');
+      if (!made) return;
+      // HA lists the new entity a moment later, so the form adds it itself; the add-grant check needs it in `entities`.
+      if (!entities.some((e) => e.entity_id === made.entity_id)) {
+        entities.push(made);
+        dl.append(h('option', { value: made.entity_id }, `${made.name} (${made.state})`));
+      }
+      cond.value = made.entity_id;
+    });
     return h('section', { class: 'card' }, h('h2', null, 'Add grant'),
       h('div', { class: 'form' },
         h('div', { class: 'form two' }, field('Home Assistant user', user), field('Printer', printer), field('Role', role),
           field('Until', until, 'Leave empty for no end date.')),
-        field('Only while this entity is on', cond, 'Optional. A schedule, helper, binary sensor or person decides when the grant applies.'), dl,
+        field('Only while this entity is on', h('div', { class: 'row', style: 'flex-wrap:nowrap' }, cond, mkSwitch), 'Optional. A schedule, helper, binary sensor or person decides when the grant applies. Create switch makes a new helper switch for the chosen user and printer.'), dl,
         h('label', { class: 'check' }, appr, h('span', null, h('b', null, 'Jobs need approval'), h('br'), h('small', null, 'An admin approves each job before it can print.'))),
         h('div', null, btn([icon('plus', 18), 'Add grant'], async () => {
           if (cond.value && !entities.some((e) => e.entity_id === cond.value)) return attempt(() => { throw new Error('Pick the condition from the list, or clear it.'); });

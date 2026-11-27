@@ -37,7 +37,9 @@ SENSORS = {"status": "print_status", "stage": "current_stage", "progress": "prin
            "bed_t": "bed_target_temperature", "chamber": "chamber_temperature", "tray": "active_tray",
            "task": "task_name"}
 BRIDGE_STATE = {"RUNNING": "running", "FINISH": "finish", "FAILED": "failed", "IDLE": "idle", "PAUSE": "pause"}
-UI_FILES = r"(index\.html|style\.css|app\.js|api\.js|util\.js|views/[a-z]+\.js)"
+UI_FILES = r"(index\.html|style\.css|app\.js|api\.js|util\.js|feedback\.js|views/[a-z]+\.js)"
+# A feedback post carries screenshots; every other route keeps the slicer's 8 KB JSON limit.
+FEEDBACK_MAX = 1500000
 MIME = {"html": "text/html; charset=utf-8", "css": "text/css; charset=utf-8", "js": "text/javascript; charset=utf-8"}
 DOMAIN_DEFAULTS = "schedule,input_boolean,binary_sensor,person"
 
@@ -806,6 +808,35 @@ class App:
         b = h.json()
         return self.grant_view(self.access.bind(self.queue, c).grants_add(**{k: b[k] for k in GRANT_FIELDS if k in b}))
 
+    def create_switch(self, h, m, q, c):
+        """An input_boolean for the grant condition, named after the grant's user and printer (needs HA admin, like grants)."""
+        b = h.json()
+        user = self.get_user(b.get("user_id") or "")
+        if not user:
+            raise ValueError("user_id must be an active Home Assistant user")
+        printer = self.registry.get(b.get("printer") or "")
+        if b.get("printer") != "*" and not printer:
+            raise ValueError("printer must be a known serial or *")
+        name = "Druckwerk %s %s" % (user["name"], printer["name"] if printer else "All printers")
+        made = self.ha.command("input_boolean/create", name=name, icon="mdi:printer-3d")
+        return {"entity_id": "input_boolean." + made["id"], "name": name, "state": "off"}  # not in the states cache yet
+
+    def post_feedback(self, h, m, q, c):
+        """The feedback button: one item of the to-do list todo.feedback, which an HA automation turns into a Claude session."""
+        length = int(h.headers.get("Content-Length") or 0)
+        err = "expected {\"item\": ..., \"description\": ...} of at most %d bytes" % FEEDBACK_MAX
+        if not 0 < length <= FEEDBACK_MAX:
+            raise ValueError(err)
+        try:
+            req = json.loads(h.rfile.read(length))
+            item, description = req["item"], req["description"]
+            if not isinstance(item, str) or not 0 < len(item) <= 300 or not isinstance(description, str) or not description:
+                raise TypeError
+        except (ValueError, KeyError, TypeError, AttributeError):
+            raise ValueError(err)
+        self.ha.call_service("todo", "add_item", {"entity_id": "todo.feedback", "item": item, "description": description})
+        return {"ok": True}
+
     def get_events(self, h, m, q, c):
         self.sync()
         if "since" not in q:
@@ -848,6 +879,8 @@ class App:
             ("DELETE", r"/api/spools/([0-9a-f]{12})", w(self.delete_spool)),
             ("GET", r"/api/ha/users", w(self.get_ha_users, "ha_admin")),
             ("GET", r"/api/ha/entities", w(self.get_ha_entities, "ha_admin")),
+            ("POST", r"/api/ha/switches", w(self.create_switch, "ha_admin")),
+            ("POST", r"/api/feedback", w(self.post_feedback)),
             ("GET", r"/api/events", w(self.get_events, "internal")),
             ("GET", r"/api/grants", w(self.get_grants)),
             ("POST", r"/api/grants", w(self.post_grants)),

@@ -5,8 +5,14 @@ from hubfakes import ADMIN
 def test_index_and_assets_load_without_identity(hub):
     st, body = hub.req("GET", "/")
     assert st == 200 and b"<title>Druckwerk</title>" in body and b'src="app.js"' in body
-    for path in ("/index.html", "/style.css", "/app.js", "/api.js", "/util.js", "/views/queue.js", "/views/setup.js"):
+    for path in ("/index.html", "/style.css", "/app.js", "/api.js", "/util.js", "/views/queue.js", "/views/setup.js", "/feedback.js"):
         assert hub.req("GET", path)[0] == 200, path
+
+
+def test_index_loads_the_feedback_button(hub):
+    assert b'src="feedback.js"' in hub.req("GET", "/")[1]  # relative, so it works behind the ingress prefix
+    st, body = hub.req("GET", "/feedback.js")
+    assert st == 200 and b"api/feedback" in body
 
 
 def test_only_the_ui_files_are_served(hub):
