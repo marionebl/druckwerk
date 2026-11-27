@@ -19,7 +19,8 @@ IDENTITIES = {  # fake HA users; the test HA reports u-admin as system-admin
 HOP = {"connection", "keep-alive", "transfer-encoding", "server", "date"}
 
 
-def start(upstream, port=0):
+def start(upstream, port=0, strip=()):
+    """strip: response headers to drop (lower case), to show a gateway that does not pass the isolation headers on."""
     host, up_port = upstream
 
     class H(BaseHTTPRequestHandler):
@@ -56,7 +57,7 @@ def start(upstream, port=0):
                 return self.reply(502, str(e).encode())
             finally:
                 conn.close()
-            self.reply(r.status, body, [(k, v) for k, v in r.getheaders() if k.lower() not in HOP | {"content-length"}])
+            self.reply(r.status, body, [(k, v) for k, v in r.getheaders() if k.lower() not in HOP | {"content-length"} | set(strip)])
 
         do_GET = do_POST = do_PUT = do_DELETE = handle_any
 

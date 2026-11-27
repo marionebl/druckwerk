@@ -19,7 +19,7 @@ jobs:
           - {arch: aarch64, runner: ubuntu-24.04-arm}  # the Pi
           - {arch: amd64, runner: ubuntu-24.04}
     runs-on: ${{ matrix.runner }}
-    timeout-minutes: 60
+    timeout-minutes: 90
     steps:
       - uses: actions/checkout@v4
       - name: Unit tests (fake slicer)
@@ -28,6 +28,12 @@ jobs:
         run: |
           V=$(sed -n 's/^version: "\(.*\)"/\1/p' hub/config.yaml)
           BUILD_ARGS="--build-arg VERSION=$V --build-arg HASS_ARCH=${{ matrix.arch }}" hub/tests/image_test.sh
+      - name: Browser tools for the UI tests
+        run: pip install -q playwright && python3 -m playwright install --with-deps chromium
+      - name: UI end-to-end (real hub in the image, fake HA and bridge, Pi slicing)
+        run: SKIP_BUILD=1 IMG=druckwerk-test hub/tests/ui_e2e.sh
+      - name: Slice in headless Chromium (mt, iframe, not isolated) vs native Bambu Studio, G-code guard
+        run: SKIP_BUILD=1 IMG=druckwerk-test hub/tests/browser_test.sh
       - name: Version must change with the app
         if: github.event_name == 'pull_request'
         run: |

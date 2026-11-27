@@ -31,6 +31,13 @@ RUN apt-get update && apt-get install -y --no-install-recommends flatpak ca-cert
 COPY hub/slicer/flatpak-app.sh hub/externals.env /
 RUN /flatpak-app.sh /opt/bs && rm -rf /var/lib/flatpak
 
+# OrcaSlicer compiled to WebAssembly (Muon3D Slicer Engine, AGPL-3.0) for slicing in the browser, with the presets flattened
+# at build time. The output is the same on every arch, so it is built natively on the builder. Only /out/engine is used.
+FROM --platform=$BUILDPLATFORM node:22-bookworm AS engine
+COPY hub/slicer/engine/ /w/hub/slicer/engine/
+COPY hub/externals.py /w/hub/externals.py
+RUN /w/hub/slicer/engine/build.sh /out
+
 FROM debian:trixie-slim AS base
 RUN apt-get update && apt-get install -y --no-install-recommends python3 ca-certificates ffmpeg && rm -rf /var/lib/apt/lists/*
 
@@ -72,6 +79,8 @@ COPY hub/bridge/server.py hub/bridge/plugin.py hub/bridge/bridge.sh hub/external
 COPY --from=studio /opt/bs /opt/bs
 COPY hub/slicer/slice.sh hub/slicer/bs.py hub/externals.py hub/externals.env /opt/bs/bin/
 COPY hub/slicer/server.py /srv/slicer_server.py
+COPY hub/slicer/pack.py /srv/
+COPY --from=engine /out/engine /srv/engine
 COPY hub/externals.py /srv/
 COPY hub/hub.py /srv/
 COPY hub/ui/index.html hub/ui/style.css hub/ui/app.js hub/ui/api.js hub/ui/util.js hub/ui/feedback.js /srv/ui/
@@ -79,7 +88,7 @@ COPY hub/ui/views /srv/ui/views
 COPY hub/app.py hub/ha.py hub/filament.py hub/history.py hub/queue/queue_*.py /srv/
 COPY hub/run.sh /run.sh
 ENV DW_DAEMON_CMD=/opt/bridge/bridge.sh DW_CERT=/opt/bridge/slicer_base64.cer \
-    SLICER_SENDER_URL=http://127.0.0.1:8098 SLICER_PORT=8099 \
+    SLICER_SENDER_URL=http://127.0.0.1:8098 SLICER_PORT=8099 SLICER_ENGINE=/srv/engine \
     BS_APP=/opt/bs SLICER_SLICE_CMD=/opt/bs/bin/slice.sh SLICER_BS=/opt/bs/bin/bs.py SLICER_PROFILES=/opt/bs/resources/profiles
 LABEL io.hass.type="app" io.hass.name="Druckwerk" io.hass.version="$VERSION" io.hass.arch="$HASS_ARCH" \
       org.opencontainers.image.source="https://github.com/marionebl/druckwerk"

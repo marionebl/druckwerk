@@ -72,6 +72,7 @@ The secret reaches the integration through Supervisor discovery: on start the ap
 
 - Existing slicer routes: `POST /api/jobs` (upload), `POST /api/jobs/{id}/slice`, `GET /api/jobs/{id}` (a done slice also carries `cost_estimate`: filament from the matching spool plus electricity, same formula as the final job cost; `null` when it cannot be read), `GET /api/jobs/{id}/(plate.png|plate.gcode)`, `POST /api/jobs/{id}/print` (direct print, admin of the printer only; the queue is the normal path).
   A slice belongs to the user who uploaded it (`owner_user_id`); others get 403, HA admins and the integration may use any. Slicing needs an active grant on the chosen printer.
+- `POST /api/jobs/{id}/gcode?serial=&quality=&tray=&bed=&filament=&seconds=&grams=&metres=&engine=&slice_s=` (body: G-code): G-code sliced in the browser, packed as a `.gcode.3mf` and stored like a slice (no plate image: `info.has_png` is false). Same identity, grant (403 `rule: slicing needs an active grant on the printer`) and owner rules as `/slice`. `GET /api/engine/filament?serial=&tray=` → `{filament}`, the preset the browser slices a tray with (grant needed). `GET /engine/...` serves the WASM engine and the flattened presets.
 - `POST /api/jobs/{id}/queue` `{target: serial|"any", model?, options?, name?}` → queue job (file, grams and plate image taken from the slice). The 3MF is copied into the share under a unique name; the add follows the normal grant rules (403, or `pending_approval`).
 
 ## Filament and cost

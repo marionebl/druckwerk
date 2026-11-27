@@ -32,6 +32,6 @@ fi
 if [ "${ONLY:-seeded}" = seeded ]; then
   echo "== seeded hub: admin and a user with grants on two printers"
   python3 "$HERE/e2e_seed.py" $WORK/seeded; run_hub $WORK/seeded
-  check --idents admin,user --model "$REPO/hub/tests/fixtures/cube20.stl" --slice-timeout 240
+  check --idents admin,user --model "$REPO/hub/tests/fixtures/cube20.stl" --slice-timeout 240 --slice-on "Pi (Bambu Studio)"
 fi
 echo "screenshots in $SHOTS"

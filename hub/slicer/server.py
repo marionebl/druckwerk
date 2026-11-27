@@ -24,6 +24,7 @@ HERE = os.path.dirname(os.path.abspath(__file__))
 for _d in (HERE, os.path.dirname(HERE)):  # python -I drops the script dir; the repo keeps externals.py one level up
     sys.path.insert(0, _d)
 import externals  # noqa: E402
+import pack  # noqa: E402
 
 env = os.environ.get
 JOBS = env("SLICER_JOBS", "/data/jobs")
@@ -32,6 +33,7 @@ SENDER = env("SLICER_SENDER_URL", "http://127.0.0.1:8098")
 CORE = env("SLICER_CORE_URL", "http://supervisor/core/api")
 SLICE = env("SLICER_SLICE_CMD", os.path.join(HERE, "slice.sh")).split()
 PROFILES = env("SLICER_PROFILES", "/opt/bs/resources/profiles")
+ENGINE = env("SLICER_ENGINE", "/srv/engine")  # OrcaSlicer WASM runtime and presets/<model>.json (see engine/build.sh)
 BS = env("SLICER_BS", os.path.join(HERE, "bs.py"))
 MAX_MODEL = 100 * 1024 * 1024
 KEEP_JOBS = 10
@@ -180,6 +182,21 @@ def print_name(job):
 
 # --- HTTP handlers -------------------------------------------------------------------------------
 
+TYPES = {".wasm": "application/wasm", ".mjs": "text/javascript", ".js": "text/javascript",
+         ".json": "application/json", ".md": "text/plain; charset=utf-8", ".txt": "text/plain; charset=utf-8"}
+
+
+def get_engine(h, m, q):
+    root = os.path.realpath(ENGINE)
+    path = os.path.realpath(os.path.join(root, m.group(1)))
+    if not path.startswith(root + os.sep) or not os.path.isfile(path):
+        return h.send(404, {"error": "not found"})
+    # Runtime folders are named after the engine release; version.json and presets change with the app.
+    immutable = "/" in m.group(1) and not m.group(1).startswith("presets/")
+    h.send_file(path, TYPES.get(os.path.splitext(path)[1], "application/octet-stream"),
+                "public, max-age=31536000, immutable" if immutable else "no-cache")
+
+
 def get_printers(h, m, q):
     try:
         h.send(200, {"printers": printers(), "beds": BEDS})
@@ -228,13 +245,8 @@ def get_job(h, m, q):
     h.send(200, out)
 
 
-def post_slice(h, m, q):
-    job = jobs.get(m.group(1))
-    if not job:
-        return h.send(404, {"error": "unknown job"})
-    if job["state"] == "slicing":
-        return h.send(409, {"error": "This job is slicing."})
-    body = h.json()
+def pick(h, body):
+    """The printer, quality, plate and tray a request names, or None after answering with the error."""
     try:
         printer = next(p for p in printers() if p["serial"] == body.get("serial"))
     except StopIteration:
@@ -247,11 +259,94 @@ def post_slice(h, m, q):
     tray = next((t for t in printer["trays"] if t["ams"] + ":" + t["id"] == body.get("tray")), None)
     if not tray:
         return h.send(400, {"error": "Pick a loaded AMS tray."})
+    return printer, quality, bed, tray
+
+
+def post_slice(h, m, q):
+    job = jobs.get(m.group(1))
+    if not job:
+        return h.send(404, {"error": "unknown job"})
+    if job["state"] == "slicing":
+        return h.send(409, {"error": "This job is slicing."})
+    picked = pick(h, h.json())
+    if not picked:
+        return
+    printer, quality, bed, tray = picked
     job.update(state="queued", printer={k: printer[k] for k in ("serial", "name", "model")}, quality=quality,
                error=None, info=None, log="", sent=None)
     save_job(job)
     threading.Thread(target=run_slice, args=(job["id"], printer, quality, tray, bed), daemon=True).start()
     h.send(202, public(job))
+
+
+def presets_of(model):
+    with open(os.path.join(ENGINE, "presets", model + ".json")) as f:
+        return json.load(f)
+
+
+def choose_filament(filaments, tray):
+    """Same rule as bs.py filament-for: the tray's filament id, else Generic of its type; fewest printers first."""
+    def rank(f):
+        return 0 if tray["idx"] and f["id"] == tray["idx"] else 1 if f["name"].startswith("Generic ") and f["type"] == tray["type"] else 9
+    ok = sorted((f for f in filaments if rank(f) < 9), key=lambda f: (rank(f), f["n"], f["name"]))
+    return ok[0] if ok else None
+
+
+def get_filament(h, m, q):
+    """The filament preset (name) the browser slices a tray with."""
+    arg = {k: v[0] for k, v in q.items()}
+    try:
+        printer = next(p for p in printers() if p["serial"] == arg.get("serial"))
+        tray = next(t for t in printer["trays"] if t["ams"] + ":" + t["id"] == arg.get("tray"))
+        f = choose_filament(presets_of(printer["model"])["filaments"], tray)
+    except StopIteration:
+        return h.send(400, {"error": "Pick a printer and a loaded AMS tray."})
+    except (OSError, RuntimeError) as e:
+        return h.send(502, {"error": str(e)})
+    if not f:
+        return h.send(400, {"error": "No filament preset for %s (%s)." % (tray["name"], tray["type"])})
+    h.send(200, {"filament": f["name"]})
+
+
+def post_gcode(h, m, q):
+    """G-code the browser sliced: packed as a .gcode.3mf and stored like a slice made here."""
+    job = jobs.get(m.group(1))
+    if not job:
+        return h.send(404, {"error": "unknown job"})
+    if job["state"] in ("queued", "slicing"):
+        return h.send(409, {"error": "This job is slicing."})
+    arg = {k: v[0] for k, v in q.items()}
+    length = int(h.headers.get("Content-Length") or 0)
+    if not 0 < length <= MAX_MODEL:
+        return h.send(413, {"error": "The G-code must be 1 byte to 100 MB."})
+    gcode = h.rfile.read(length)
+    if len(gcode) != length:
+        return h.send(400, {"error": "The G-code upload was cut short."})
+    picked = pick(h, arg)
+    if not picked:
+        return
+    printer, quality, bed, tray = picked
+    cfg = PRINTERS[printer["model"]]
+    try:
+        presets = presets_of(printer["model"])
+        filament = next(x for x in presets["filaments"] if x["name"] == arg.get("filament"))
+        seconds, grams, metres = int(float(arg["seconds"])), float(arg["grams"]), float(arg.get("metres") or 0)
+    except (OSError, StopIteration, KeyError, ValueError):
+        return h.send(400, {"error": "Unknown filament preset or missing print statistics."})
+    out = os.path.join(job_dir(job["id"]), "out")
+    shutil.rmtree(out, ignore_errors=True)
+    os.makedirs(out)
+    result = os.path.join(out, os.path.splitext(os.path.basename(job["model"]))[0] + ".gcode.3mf")
+    pack.pack(result, gcode, {"machine": presets["machine"], "process": presets["process"][quality]},
+              filament, bed, cfg["model_id"], tray["colour"], seconds, grams, metres, job["filename"])
+    job.update(state="done", result=result, info=slice_info(result), quality=quality, error=None, sent=None,
+               printer={k: printer[k] for k in ("serial", "name", "model")},
+               settings={"printer": cfg["preset"], "process": cfg["quality"][quality], "filament": filament["name"],
+                         "bed": bed, "tray": tray},
+               log="Sliced in the browser (%s engine, %s s)." % (arg.get("engine", "?"), arg.get("slice_s", "?")),
+               finished=time.time())
+    save_job(job)
+    h.send(200, public(job))
 
 
 def get_file(h, m, q):
@@ -291,24 +386,45 @@ def post_print(h, m, q):
 
 
 ROUTES = [
+    ("GET", r"/engine/(.+)", get_engine),
+    ("GET", r"/api/engine/filament", get_filament),
     ("GET", r"/api/printers", get_printers),
     ("POST", r"/api/jobs", post_job),
     ("GET", r"/api/jobs/" + JOB_ID, get_job),
     ("POST", r"/api/jobs/" + JOB_ID + r"/slice", post_slice),
+    ("POST", r"/api/jobs/" + JOB_ID + r"/gcode", post_gcode),
     ("GET", r"/api/jobs/" + JOB_ID + r"/(plate\.png|plate\.gcode)", get_file),
     ("POST", r"/api/jobs/" + JOB_ID + r"/print", post_print),
 ]
 
 
+def isolation_headers(h):
+    """Cross-origin isolation gives the multi-thread engine its SharedArrayBuffer. COOP+COEP isolate a top-level tab;
+    Document-Isolation-Policy (Chrome 137+) isolates a frame, such as the Home Assistant sidebar."""
+    h.send_header("Cross-Origin-Opener-Policy", "same-origin")
+    h.send_header("Cross-Origin-Embedder-Policy", "require-corp")
+    h.send_header("Document-Isolation-Policy", "isolate-and-require-corp")
+    h.send_header("Cross-Origin-Resource-Policy", "same-origin")
+
+
 class Handler(BaseHTTPRequestHandler):
-    def send(self, status, body, ctype="application/json"):
-        data = body if isinstance(body, bytes) else json.dumps(body).encode()
+    def head(self, status, ctype, length, cache):
         self.send_response(status)
         self.send_header("Content-Type", ctype)
-        self.send_header("Content-Length", str(len(data)))
-        self.send_header("Cache-Control", "no-store")
+        self.send_header("Content-Length", str(length))
+        self.send_header("Cache-Control", cache)
+        isolation_headers(self)
         self.end_headers()
+
+    def send(self, status, body, ctype="application/json"):
+        data = body if isinstance(body, bytes) else json.dumps(body).encode()
+        self.head(status, ctype, len(data), "no-store")
         self.wfile.write(data)
+
+    def send_file(self, path, ctype, cache):
+        with open(path, "rb") as f:
+            self.head(200, ctype, os.fstat(f.fileno()).st_size, cache)
+            shutil.copyfileobj(f, self.wfile, 1 << 20)
 
     def json(self):
         length = int(self.headers.get("Content-Length") or 0)
