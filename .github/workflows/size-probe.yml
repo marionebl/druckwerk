@@ -1,0 +1,32 @@
+name: Size probe
+on:
+  push:
+    branches: [size-probe]
+permissions:
+  contents: read
+  packages: read
+jobs:
+  probe:
+    strategy:
+      matrix:
+        include:
+          - {arch: aarch64, runner: ubuntu-24.04-arm}
+          - {arch: amd64, runner: ubuntu-24.04}
+    runs-on: ${{ matrix.runner }}
+    steps:
+      - uses: actions/checkout@v4
+      - name: Measure
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          echo "$GH_TOKEN" | docker login ghcr.io -u "${{ github.actor }}" --password-stdin
+          BASE=ghcr.io/${{ github.repository_owner }}/druckwerk-base-${{ matrix.arch }}:$(hub/tests/base_tag.sh)
+          docker pull -q "$BASE" >/dev/null
+          docker image ls "$BASE" --format 'base {{.Size}}'
+          id=$(docker create "$BASE" true); mkdir /tmp/rootfs; docker export "$id" | tar -x -C /tmp/rootfs 2>/dev/null || true
+          cd /tmp/rootfs
+          echo "== top dirs (MB)"; du -xm -d1 . | sort -rn | head -12
+          echo "== depth 2 under usr, opt, srv, amd64 (MB, >=10)"; du -xm -d2 usr opt srv amd64 2>/dev/null | sort -rn | awk '$1>=10' | head -40
+          echo "== opt/bs depth 3 (>=8 MB)"; du -xm -d3 opt/bs 2>/dev/null | sort -rn | awk '$1>=8' | head -30
+          echo "== 40 biggest files (MB)"; find . -xdev -type f -size +4M -printf '%s %p\n' | sort -rn | head -40 | awk '{printf "%.1f %s\n",$1/1048576,$2}'
+          echo "== ffmpeg, qemu"; ls -l usr/local/bin/ffmpeg usr/bin/qemu-x86_64 2>&1
