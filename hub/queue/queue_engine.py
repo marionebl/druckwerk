@@ -1,7 +1,8 @@
 """Multi-printer print queue. Home Assistant I/O is injected so tests can use fakes.
 
 get_state(entity_id) -> str | None          fresh state of the vendor integration's sensor
-call_service(domain, service, data) -> any  raises on refusal; the message is kept on the job
+call_service(domain, service, data) -> any  raises on refusal (pausing and resuming automations)
+send_print(data) -> any                     sends one file to a printer; raises on refusal, the message is kept on the job
 get_trays(serial) -> [{"type": "PLA", "colour": "#RRGGBB"}]   loaded AMS trays
 dry (optional): start(serial, {"ams_id", "temp", "hours", "filament"}) and stop(serial, ams_id) raise on refusal;
     state(serial, ams_id) -> {"active": bool, "left_min": int} | None (None: unknown)
@@ -70,10 +71,11 @@ def _tray_ok(v):
 
 class Queue:
     def __init__(self, registry, data_dir, get_state, call_service, get_trays=None,
-                 clock=time.time, start_timeout=START_TIMEOUT, job_allowed=None, dry=None):
+                 clock=time.time, start_timeout=START_TIMEOUT, job_allowed=None, dry=None, send_print=None):
         self.registry = registry
         self.path = os.path.join(data_dir, "queue.json")
         self.get_state, self.call_service = get_state, call_service
+        self.send_print = send_print  # send_print(data) sends one file; raises with the refusal text
         self.get_trays = get_trays or (lambda serial: [])
         self.clock, self.start_timeout = clock, start_timeout
         # job_allowed(job, serial) lets the access layer veto a job at start time (grant lapsed).
@@ -363,7 +365,7 @@ class Queue:
             for k in OPTIONS:
                 if k not in data and o.get(k, OPTIONS[k]) != OPTIONS[k]:
                     data[k] = o[k]
-            self.call_service("druckwerk", "print_file", data)
+            self.send_print(data)
             return None
         except Exception as e:  # the guard's refusal text is the useful part
             return str(e) or e.__class__.__name__

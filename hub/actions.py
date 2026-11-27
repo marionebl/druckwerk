@@ -10,6 +10,8 @@ import re
 import time
 from urllib.parse import quote
 
+from entities import ENTITIES
+
 API_VERSION = 1
 QUALITIES = ("good", "better", "best")
 MODEL_SUFFIXES = (".stl", ".3mf", ".obj", ".step", ".stp")
@@ -585,6 +587,7 @@ def action_view(name, a):
 def manifest():
     body = {"api_version": API_VERSION,
             "actions": [action_view(n, a) for n, a in ACTIONS.items()],
+            "entities": ENTITIES,
             "llm": {"prompt": PROMPT, "tools": [tool_view(n, *t) for n, t in TOOLS.items()]}}
     return {**body, "revision": revision(body)}
 
@@ -675,8 +678,6 @@ def validate(fields, data, strict, path=""):
 def run_action(name, data, ops):
     if name not in ACTIONS:
         raise ActionError(404, "no such action")
-    if name == "print_file":
-        raise ValueError("print_file runs in the integration")
     return getattr(ops, name)(**validate(ACTIONS[name]["fields"], data, strict=False))
 
 
@@ -713,8 +714,11 @@ def write(path, data):
 class Ops:
     """One call of one user. call(method, path, body=None, data=None, binary=False, timeout=30) asks the app as that user."""
 
-    def __init__(self, call, media_roots, media_dir):
-        self.call, self.media_roots, self.media_dir = call, media_roots, media_dir
+    def __init__(self, call, media_roots, media_dir, send_print):
+        self.call, self.media_roots, self.media_dir, self.send_print = call, media_roots, media_dir, send_print
+
+    def print_file(self, **fields):
+        return self.send_print(fields)
 
     # -- printers
     def serial(self, printer):

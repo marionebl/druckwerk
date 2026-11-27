@@ -12,23 +12,18 @@ def unit(**kw):
                  "temp": None, "hours": None, "temp_min": 45, "temp_max": 65}, **kw)
 
 
-def print_calls(hub):
-    return [c for c in hub.ha.calls if c[:2] == ("druckwerk", "print_file")]
-
-
 # ---- print options
 def test_queue_takes_print_options_and_the_send_passes_them(hub):
     hub.setup_printers()
+    hub.seed_share()
     hub.ha.s["sensor.lab_h2s_print_status"]["state"] = "idle"
     opts = {"bed_leveling": "auto", "flow_cali": False, "layer_inspect": True, "bed_type": "textured_plate"}
     st, job = hub.req("POST", "/api/queue", {"file": "a.gcode.3mf", "target": SERIAL, "options": opts}, user=ADMIN)
     assert st == 200 and job["options"]["bed_leveling"] == "auto" and job["options"]["vibration_cali"] is True
     assert hub.req("POST", "/api/printers/%s/start" % SERIAL, {"plate_clear": True, "job_id": job["id"]}, user=ADMIN)[0] == 200
-    data = dict(print_calls(hub)[0][2])
-    data["file"] = os.path.basename(data["file"])  # the app hands the integration the path in the share
-    assert data == {"serial": SERIAL, "file": "a.gcode.3mf", "timelapse": False, "bed_leveling": "auto",
-                                      "use_ams": True, "flow_cali": False, "layer_inspect": True,
-                                      "bed_type": "textured_plate", "force": True}
+    assert hub.sent() == [{"serial": SERIAL, "filename": "a.gcode.3mf", "file_b64": "...", "timelapse": False,
+                           "bed_leveling": "auto", "use_ams": True, "flow_cali": False, "layer_inspect": True,
+                           "bed_type": "textured_plate"}]
 
 
 def test_bad_print_options_are_a_400(hub):
@@ -56,6 +51,7 @@ def test_name_survives_slice_to_queue(hub):
 
 def test_started_event_carries_the_name(hub):
     hub.setup_printers()
+    hub.seed_share()
     hub.ha.s["sensor.lab_h2s_print_status"]["state"] = "idle"
     since = hub.req("GET", "/api/events", secret=True)[1]["seq"]
     job = hub.req("POST", "/api/queue", {"file": "a.gcode.3mf", "target": SERIAL, "name": "Live name"}, user=ADMIN)[1]
@@ -67,10 +63,8 @@ def test_started_event_carries_the_name(hub):
 
 # ---- files by absolute path
 def roots(hub, tmp_path):
-    media = tmp_path / "media"
-    media.mkdir()
-    hub.app.media_roots = [os.path.realpath(str(media))]
-    return media
+    hub.app.media_roots = [os.path.realpath(str(hub.media))]
+    return hub.media
 
 
 def test_a_sliced_file_under_media_is_copied_into_the_share_and_queued(hub, tmp_path):

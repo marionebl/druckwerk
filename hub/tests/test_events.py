@@ -22,6 +22,7 @@ def test_first_poll_has_no_backlog(hub):
 
 def test_events_sequence_over_a_job_life(hub):
     hub.setup_printers()
+    hub.seed_share()
     hub.grant(USER, SERIAL, needs_approval=True)
     start = hub.req("GET", "/api/events", secret=True)[1]["seq"]
     job = hub.req("POST", "/api/queue", {"file": "a.gcode.3mf", "target": SERIAL}, user=USER)[1]
@@ -48,6 +49,7 @@ def test_events_sequence_over_a_job_life(hub):
 
 def test_failed_job_event_and_seq_grows(hub):
     hub.setup_printers()
+    hub.seed_share()
     hub.req("POST", "/api/queue", {"file": "a.gcode.3mf", "target": SERIAL}, user=ADMIN)
     hub.ha.s["sensor.lab_h2s_print_status"]["state"] = "idle"
     hub.req("POST", "/api/printers/%s/start-next" % SERIAL, {"plate_clear": True}, user=ADMIN)

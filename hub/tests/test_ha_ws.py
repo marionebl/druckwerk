@@ -111,3 +111,23 @@ def test_watch_state_changes(server):
 def test_unreachable_ha_is_an_haerror_not_a_crash():
     with pytest.raises(HAError, match="restarting"):
         HA("http://x", "ws://127.0.0.1:1/core/websocket", "tok").command("config/auth/list")
+
+
+def test_watch_events_subscribes_to_the_type_and_hands_over_the_data(server):
+    url, seen = server
+    got, stop = [], threading.Event()
+
+    def cb(data):
+        got.append(data)
+        stop.set()
+    HA("http://x", url, "tok").watch_events("mobile_app_notification_action", cb, stop)
+    assert seen[1] == {"id": 1, "type": "subscribe_events", "event_type": "mobile_app_notification_action"}
+    assert got == [{"entity_id": "sensor.x_current_stage", "new_state": {"state": "changing_filament"}}]
+
+
+def test_fire_event_posts_to_the_rest_api(monkeypatch):
+    calls = []
+    ha = HA("http://core/api", "ws://x", "tok")
+    monkeypatch.setattr(ha, "_rest", lambda method, path, body=None, timeout=30: calls.append((method, path, body)))
+    ha.fire_event("druckwerk_job_done", {"seq": 1})
+    assert calls == [("POST", "/events/druckwerk_job_done", {"seq": 1})]

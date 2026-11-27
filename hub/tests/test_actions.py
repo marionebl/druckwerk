@@ -15,13 +15,9 @@ FLAGS = {"plate_clear": True, "confirmed_by_person": True}
 
 @pytest.fixture
 def hub(hub, tmp_path):
-    """The shared hub with printers and a media folder inside the test directory."""
-    media = tmp_path / "media"
-    (media / "druckwerk").mkdir(parents=True)
-    hub.media = media
-    hub.app.media_roots = [os.path.realpath(media), os.path.realpath(hub.s.SHARE)]
-    hub.app.media_dir = str(media / "druckwerk")
+    """The shared hub with printers (its media folder is inside the test directory)."""
     hub.setup_printers()
+    hub.seed_share()
     return hub
 
 
@@ -155,7 +151,7 @@ def test_start_is_refused_without_both_flags(hub, name, flags):
     data = dict({"printer": SERIAL}, **flags, **({"job_id": job["id"]} if name == "start_job" else {}))
     status, body = act(hub, name, data)
     assert status == 400 and "camera snapshot" in body["error"] and "explicit yes" in body["error"]
-    assert not [c for c in hub.ha.calls if c[1] == "print_file"]
+    assert hub.sent() == []
     assert ok(act(hub, "get_queue"))["waiting"][SERIAL][0]["state"] == "queued"
 
 
@@ -165,7 +161,7 @@ def test_start_next_and_start_job_with_both_flags(hub):
     assert ok(act(hub, "start_next", dict(printer="Lab", **FLAGS)))["job"]["id"] == one["id"]
     hub.app.queue.jobs[0].update(state="done", printer=None)
     assert ok(act(hub, "start_job", dict(printer=SERIAL, job_id=two["id"], **FLAGS)))["job"]["state"] == "starting"
-    assert [c[1] for c in hub.ha.calls].count("print_file") == 2
+    assert [s["filename"] for s in hub.sent()] == ["a.gcode.3mf", "b.gcode.3mf"]
 
 
 def test_start_is_for_admins_even_with_both_flags(hub):
@@ -328,7 +324,7 @@ def test_tools_are_strict_where_actions_coerce(hub):
     ("add_to_queue", {"file": "a", "options": {"gold": 1}}, "extra keys not allowed @ data['options']['gold']"),
     ("add_to_queue", {"file": "a", "name": "x" * 81}, "length of value must be at most 80"),
     ("get_printers", {"printer": ["a"]}, "value should be a string"),
-    ("print_file", {"file": "a.gcode.3mf"}, "print_file runs in the integration"),
+    ("print_file", {"file": "a.gcode.3mf"}, "must contain at least one of device_id, serial."),
 ])
 def test_validation_errors_are_400(hub, name, data, text):
     status, body = act(hub, name, data)
