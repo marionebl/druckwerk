@@ -44,9 +44,9 @@ PRINTERS = {
           "bed_temp": 59.6, "bed_target": 60, "chamber_temp": 38, "task_name": "Gridfinity bin 4x2",
           "active_tray": {"unit": 0, "slot": 1},
           "ams": [{"unit": 0, "humidity_index": 4, "temp": 27, "trays": [
-              tray(0, "PLA", "F2F2F2", "Acme PLA White", 88, "s1"), tray(1, "PETG", "1F6FEB", "Prusament PETG Blue", 61, "s2"),
-              tray(2, "PLA", "E4572E", "Sunlu PLA Red", 14, "s3"), tray(3, "", "", "", -1)]},
-              {"unit": 1, "humidity_index": 2, "temp": 31, "trays": [tray(0, "TPU", "222222", "TPU 95A Black", 73, "s4")]}],
+              tray(0, "PLA", "F2F2F2", "Acme PLA White", 88, "5000"), tray(1, "PETG", "1F6FEB", "Prusament PETG Blue", 61, "5001"),
+              tray(2, "PLA", "E4572E", "Sunlu PLA Red", 14, "5002"), tray(3, "", "", "", -1)]},
+              {"unit": 1, "humidity_index": 2, "temp": 31, "trays": [tray(0, "TPU", "222222", "TPU 95A Black", 73, "5003")]}],
           "external": None, "hms": []},
     P1S: {"serial": P1S, "name": "Office P1S", "model": "P1S", "online": True, "status": "idle", "stage": "idle",
           "progress": 0, "remaining_min": 0, "layer": 0, "total_layers": 0, "nozzle_temp": 31, "nozzle_target": 0,
@@ -156,12 +156,22 @@ def history_out(ident, q):
     return {"items": out, "unavailable": []}
 
 
+# The Bambu Cloud filament library as the hub lists it; prices live in the hub (PRICES), the cloud has none.
+def cloud_spool(id_, brand, type_, name, colour, left, total, loaded=None):
+    p, u, sl = loaded or (None, None, None)
+    return {"id": id_, "brand": brand, "type": type_, "name": name, "colour": colour, "grams_left": left, "grams_total": total,
+            "printer": p, "unit": u, "slot": sl, "in_printer": p is not None, "rfid": None, "account": "acc1"}
+
+
 SPOOLS = [
-    {"id": "s1", "brand": "Acme", "type": "PLA", "colour": "F2F2F2", "name": "White", "grams_left": 880, "grams_total": 1000, "price_per_kg": 19.99, "printer": H2S, "unit": 0, "slot": 0},
-    {"id": "s2", "brand": "Prusament", "type": "PETG", "colour": "1F6FEB", "name": "Blue", "grams_left": 610, "grams_total": 1000, "price_per_kg": 27.5, "printer": H2S, "unit": 0, "slot": 1},
-    {"id": "s3", "brand": "Sunlu", "type": "PLA", "colour": "E4572E", "name": "Red", "grams_left": 140, "grams_total": 1000, "price_per_kg": 14.0, "printer": H2S, "unit": 0, "slot": 2},
-    {"id": "s4", "brand": "Generic", "type": "TPU", "colour": "222222", "name": "Black 95A", "grams_left": 730, "grams_total": 1000, "price_per_kg": 32.0, "printer": H2S, "unit": 1, "slot": 0},
+    cloud_spool("5000", "Acme", "PLA", "PLA Basic White", "F2F2F2", 880, 1000, (H2S, 0, 0)),
+    cloud_spool("5001", "Prusament", "PETG", "PETG Blue", "1F6FEB", 610, 1000, (H2S, 0, 1)),
+    cloud_spool("5002", "Sunlu", "PLA", "PLA Red", "E4572E", 140, 1000, (H2S, 0, 2)),
+    cloud_spool("5003", "Generic", "TPU", "TPU 95A Black", "222222", 730, 1000, (H2S, 1, 0)),
+    cloud_spool("5004", "Bambu Lab", "PLA", "PLA Matte Charcoal", "2E2E2E", None, None),
 ]
+PRICES = {"5000": 19.99, "5001": 27.5, "5002": 14.0, "5003": 32.0}
+SPOOLS_DOWN = {"on": False}  # test hook: the cloud library does not answer
 GRANTS = [
     {"id": "c00000000001", "user_id": "u-lena", "user_name": "Lena Tester", "printer": H2S, "role": "user",
      "until": time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime(NOW() + 86400 * 30)), "condition_entity": "schedule.workshop_hours", "needs_approval": False, "active": True},
@@ -402,6 +412,8 @@ class H(BaseHTTPRequestHandler):
         if ident not in IDENT:
             ident = "admin"
         extra = [("Set-Cookie", f"as={ident}; Path=/")] if "as" in q else []
+        if u.path == "/favicon.ico":  # the system Chrome asks for it; a 404 would count as a console error
+            return self.send(204, b"")
         if u.path == "/" or u.path == PREFIX.rstrip("/"):
             return self.send(302, b"", extra=[("Location", PREFIX + ("?as=" + ident if "as" in q else ""))] + extra)
         if not u.path.startswith(PREFIX):
@@ -542,12 +554,21 @@ class H(BaseHTTPRequestHandler):
                     jb["state"] = "pending_approval"
                 JOBS.append(jb)
                 return ok(jb)
+        if path == "api/_mock/spools-down":
+            SPOOLS_DOWN["on"] = (q.get("on") or ["1"])[0] == "1"
+            return ok({"on": SPOOLS_DOWN["on"]})
+        if path.startswith("api/spools") and SPOOLS_DOWN["on"]:
+            raise Err(502, "Bambu Cloud filament library: Bambu cloud answered HTTP 401 for /v1/design-user-service/my/filament/v2")
         if path == "api/spools":
             if m == "GET":
-                return ok(SPOOLS)
-            b = J(); b["id"] = "s" + secrets.token_hex(3); SPOOLS.append(b)
-            return ok(b)
-        r = re.fullmatch(r"api/spools/(\w+)", path)
+                return ok([dict(s, price_per_kg=PRICES.get(s["id"])) for s in SPOOLS])
+            if not admin:
+                raise Err(403, "rule: only admins of the spool's printer may change it")
+            b = J(); price = b.pop("price_per_kg", None)
+            sp = dict(cloud_spool("5" + secrets.token_hex(2), "", "", "", "", None, None), **b)
+            SPOOLS.append(sp); PRICES[sp["id"]] = price
+            return ok(dict(sp, price_per_kg=price))
+        r = re.fullmatch(r"api/spools/(\d+)", path)
         if r:
             sp = next((s for s in SPOOLS if s["id"] == r.group(1)), None)
             if not sp:
@@ -556,9 +577,12 @@ class H(BaseHTTPRequestHandler):
                 raise Err(403, "rule: only admins of the spool's printer may change it")
             if m == "DELETE":
                 SPOOLS.remove(sp)
-            else:
-                sp.update(J())
-            return ok(sp)
+                return ok({"removed": sp["id"]})
+            b = J()
+            if "price_per_kg" in b:
+                PRICES[sp["id"]] = b.pop("price_per_kg")
+            sp.update(b)
+            return ok(dict(sp, price_per_kg=PRICES.get(sp["id"])))
         if path == "api/feedback" and m == "POST":
             b = J()
             if not isinstance(b.get("item"), str) or not b["item"] or not isinstance(b.get("description"), str) or not b["description"]:

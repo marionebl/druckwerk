@@ -25,6 +25,8 @@ import ingress_proxy  # noqa: E402
 MODEL = {"name": "demo_part.stl", "mimeType": "model/stl", "buffer": b"solid x\nendsolid x\n"}
 SLICE_TIMEOUT = 15000
 SLICE_ON = None
+MOCKED = True  # False against a real hub (--base-url): no mock hooks, other spool names
+ALLOW_502 = []  # path fragments whose 502 answer is the point of the step
 SIZES = {"390x844": (390, 844), "1440x900": (1440, 900)}
 H2S = "FAKE-H2S-0001"
 
@@ -143,6 +145,18 @@ def check_viewer(page, shot):
     assert note["disabled"] and note["note"] == "One object on this plate", note
 
 
+def check_cloud_down(page, go, shot):
+    """The mock's cloud library stops answering: the tab says so instead of showing old spools."""
+    ALLOW_502.append("api/spools")
+    page.evaluate("fetch('api/_mock/spools-down?on=1')")
+    go("#/queue", ".job")
+    go("#/filament", ".empty")
+    assert "filament library" in page.locator(".empty").text_content() and page.locator(".spool").count() == 0, "the error replaces the list"
+    shot("filament-error")
+    page.evaluate("fetch('api/_mock/spools-down?on=0')")
+    ALLOW_502.clear()
+
+
 def walk(page, ident, base, shot, inject):
     def go(h, wait):
         page.evaluate("h => { location.hash = h }", h)
@@ -208,14 +222,27 @@ def walk(page, ident, base, shot, inject):
     shot("queue-after-add")
     go("#/filament", ".spool")
     shot("filament")
+    assert page.locator(".spool").count() == 5, "the cloud library lists five spools: %d" % page.locator(".spool").count()
+    assert page.locator("h3", has_text="Not loaded").count() == 1 and page.get_by_text("Bambu Cloud filament library").count() == 1, "not-loaded group and the subtitle"
+    if MOCKED:
+        assert "unknown" in page.locator(".spool", has_text="Matte Charcoal").text_content(), "a spool without grams says unknown"
+        assert "of 1000 g" in page.locator(".spool", has_text="PLA Basic White").text_content()
     if ident == "admin":
         page.get_by_role("button", name="Edit").first.click()
         page.wait_for_selector("dialog[open]")
         shot("filament-edit")
+        assert page.get_by_label("Loaded in").count() == 0, "the AMS location is read-only"
+        page.get_by_label("Grams left").fill("700")
         page.get_by_label("Price per kg (EUR)").fill("")  # "no price" is allowed
         page.get_by_role("button", name="Save", exact=True).click()
         page.wait_for_selector("text=Saved")
         page.wait_for_selector("dialog[open]", state="detached")
+        page.wait_for_selector(".spool:has-text('700 g')")
+        assert "no price" in page.locator(".spool", has_text="PLA").first.text_content()
+    # the cloud library does not answer: the tab says so instead of showing old spools
+    if MOCKED:
+        check_cloud_down(page, go, shot)
+    if ident == "admin":
         go("#/access", "table")
         shot("access")
         page.locator("label.field", has_text="Home Assistant user").locator("select").select_option(label="Jonas Example")
@@ -240,7 +267,8 @@ def main():
     ap.add_argument("--expect-403", default="")
     ap.add_argument("--slice-on", help="chip to press under Slice on, e.g. \"Pi (Bambu Studio)\"")
     a = ap.parse_args()
-    global PREFIX, MODEL, SLICE_TIMEOUT, SLICE_ON
+    global PREFIX, MODEL, SLICE_TIMEOUT, SLICE_ON, MOCKED
+    MOCKED = not a.base_url
     SLICE_ON = a.slice_on
     SLICE_TIMEOUT = a.slice_timeout * 1000
     if a.model:
@@ -266,7 +294,7 @@ def main():
                     ctx = br.new_context(viewport={"width": w, "height": h}, is_mobile=w < 500, has_touch=w < 500)
                     page = ctx.new_page()
                     where = f"{ident}@{sz}"
-                    page.on("console", lambda m, wh=where: m.type == "error" and problems.append(f"console error [{wh}]: {m.text}"))
+                    page.on("console", lambda m, wh=where: m.type == "error" and not (ALLOW_502 and "status of 502" in m.text) and problems.append(f"console error [{wh}]: {m.text}"))
                     page.on("pageerror", lambda e, wh=where: problems.append(f"page error [{wh}]: {e}"))
                     page.on("requestfailed", lambda r, wh=where: problems.append(f"request failed [{wh}]: {r.url}"))
 
@@ -282,7 +310,7 @@ def main():
 
                     def on_resp(r, wh=where):
                         u = urlparse(r.url)
-                        if r.status >= 400 and not (r.status == 403 and any(x in u.path for x in expected_403)):
+                        if r.status >= 400 and not (r.status == 403 and any(x in u.path for x in expected_403)) and not (r.status == 502 and any(x in u.path for x in ALLOW_502)):
                             problems.append(f"HTTP {r.status} [{wh}]: {r.request.method} {u.path[len(PREFIX):] or u.path}")
                     page.on("response", on_resp)
                     shot = lambda name, s=sz, i=ident, pg=page: a.shots and pg.screenshot(path=f"{a.shots}/{i}-{s}-{name}.png", full_page=True)

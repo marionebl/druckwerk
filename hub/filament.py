@@ -1,8 +1,7 @@
-"""Filament grams from a slice, cost arithmetic and the spool store."""
+"""Filament grams from a slice, cost arithmetic, spool matching and the price store."""
 import json
 import os
 import re
-import secrets
 import threading
 import xml.etree.ElementTree as ET
 import zipfile
@@ -42,130 +41,39 @@ def _colour(c):
     return re.sub(r"[^0-9a-f]", "", str(c or "").lower())[:6]
 
 
-FIELDS = ("brand", "type", "colour", "name", "grams_left", "grams_total", "price_per_kg", "printer", "unit", "slot")
-NUMBERS = ("grams_left", "grams_total", "price_per_kg")
+class Prices:
+    """Price per kg by cloud spool id; the cloud's filament library has no price field."""
 
-
-class Spools:
     def __init__(self, data_dir):
-        self.path = os.path.join(data_dir, "spools.json")
+        self.path = os.path.join(data_dir, "spool_prices.json")
         self.lock = threading.RLock()
-        self.items = []
+        self.items = {}
         if os.path.exists(self.path):
             with open(self.path) as f:
                 self.items = json.load(f)
 
-    def _clean(self, fields, base=None):
-        unknown = set(fields) - set(FIELDS)
-        if unknown:
-            raise ValueError("unknown spool fields: " + ", ".join(sorted(unknown)))
-        s = dict(base or {"brand": "", "type": "", "colour": "", "name": "", "grams_left": 0, "grams_total": 1000,
-                          "price_per_kg": 0, "printer": None, "unit": None, "slot": None})
-        s.update(fields)
-        if not str(s["type"]).strip():
-            raise ValueError("type is required")
-        for k in NUMBERS:
-            if k == "price_per_kg" and s[k] is None:
-                continue  # "no price" is allowed; cost counts it as 0
-            if isinstance(s[k], bool) or not isinstance(s[k], (int, float)) or s[k] < 0:
-                raise ValueError(k + " must be a number >= 0")
-        for k in ("unit", "slot"):
-            if s[k] is not None and (isinstance(s[k], bool) or not isinstance(s[k], int)):
-                raise ValueError(k + " must be an integer")
-        if s["printer"] and (s["unit"] is None or s["slot"] is None):
-            raise ValueError("an assigned spool needs unit and slot")
-        s["colour"] = _colour(s["colour"]).upper()
-        return s
-
-    def add(self, **fields):
-        s = dict(self._clean(fields), id=secrets.token_hex(6))
-        with self.lock:
-            self.items.append(s)
-            write_json(self.path, self.items)
-        return s
-
     def get(self, spool_id):
-        return next((s for s in self.items if s["id"] == spool_id), None)
+        return self.items.get(spool_id)
 
-    def update(self, spool_id, **fields):
+    def set(self, spool_id, price):
+        """price None removes the entry."""
         with self.lock:
-            s = self.get(spool_id)
-            if not s:
-                return None
-            s.update(self._clean(fields, {k: v for k, v in s.items() if k != "id"}))
+            if price is None:
+                self.items.pop(spool_id, None)
+            else:
+                self.items[spool_id] = price
             write_json(self.path, self.items)
-            return s
 
-    def remove(self, spool_id):
-        with self.lock:
-            before = len(self.items)
-            self.items = [s for s in self.items if s["id"] != spool_id]
-            if len(self.items) == before:
-                return False
-            write_json(self.path, self.items)
-            return True
 
-    def in_tray(self, serial, unit, slot):
-        return next((s for s in self.items if s["printer"] == serial and s["unit"] == unit and s["slot"] == slot), None)
+def in_tray(spools, serial, unit, slot):
+    return next((s for s in spools if s["printer"] == serial and s["unit"] == unit and s["slot"] == slot), None)
 
-    def match(self, serial, ftype, colour, tray_hint=None):
-        """The spool in the tray the slice was made for, else a loaded spool of that type and colour."""
-        loaded = [s for s in self.items if s["printer"] == serial]
-        if tray_hint:
-            hit = self.in_tray(serial, *tray_hint)
-            if hit and hit["type"].lower() == ftype.lower():
-                return hit
-        return next((s for s in loaded if s["type"].lower() == ftype.lower()
-                     and (not colour or _colour(s["colour"]) == _colour(colour))), None)
 
-    def see(self, serial, unit, slot, tray, now):
-        """Record what the hub sees in one AMS tray; returns True if something changed. tray: type, colour, name, remain_pct, uid.
-        A person's spool is reused when it matches, never changed apart from where it is loaded."""
-        with self.lock:
-            here = self.in_tray(serial, unit, slot)
-            if not tray["type"]:  # an emptied tray: a seen spool stays on the list, unloaded
-                if here and here.get("source") == "seen":
-                    here.update(printer=None, unit=None, slot=None, loaded_at=now)
-                    self._save()
-                    return True
-                return False
-            uid = tray.get("uid") or ""
-            spool = next((s for s in self.items if uid and s.get("uid") == uid), None)  # the same spool, wherever it was
-            if not spool and here and (here.get("source") != "seen" or not here.get("uid") or not uid or here["uid"] == uid):
-                spool = here
-            if not spool:  # a person's spool of this type and colour that is not loaded anywhere
-                spool = next((s for s in self.items if s.get("source") != "seen" and not s["printer"] and not s.get("uid")
-                              and s["type"].lower() == tray["type"].lower() and _colour(s["colour"]) == _colour(tray["colour"])), None)
-            changed = False
-            if not spool:
-                pct = tray.get("remain_pct")
-                spool = {"id": secrets.token_hex(6), "brand": "", "type": tray["type"], "colour": _colour(tray["colour"]).upper(),
-                         "name": tray.get("name") or "", "grams_left": round(pct * 10, 2) if pct is not None else 1000,
-                         "grams_total": 1000, "price_per_kg": None, "printer": None, "unit": None, "slot": None,
-                         "source": "seen", "uid": uid}
-                self.items.append(spool)
-                changed = True
-            if uid and not spool.get("uid"):
-                spool["uid"] = uid
-                changed = True
-            if spool.get("source") == "seen" and tray.get("remain_pct") is not None:
-                grams = round(tray["remain_pct"] * spool["grams_total"] / 100, 2)
-                if grams != spool["grams_left"]:
-                    spool["grams_left"], changed = grams, True
-            if (spool["printer"], spool["unit"], spool["slot"]) != (serial, unit, slot):
-                for other in self.items:  # one spool per tray
-                    if other is not spool and (other["printer"], other["unit"], other["slot"]) == (serial, unit, slot):
-                        other.update(printer=None, unit=None, slot=None, loaded_at=now)
-                spool.update(printer=serial, unit=unit, slot=slot, loaded_at=now)
-                changed = True
-            if changed:
-                self._save()
-            return changed
-
-    def _save(self):
-        write_json(self.path, self.items)
-
-    def consume(self, spool, grams):
-        with self.lock:
-            spool["grams_left"] = round(max(0.0, spool["grams_left"] - grams), 2)
-            write_json(self.path, self.items)
+def match(spools, serial, ftype, colour, tray_hint=None):
+    """The spool in the tray the slice was made for, else a loaded spool of that type and colour."""
+    if tray_hint:
+        hit = in_tray(spools, serial, *tray_hint)
+        if hit and hit["type"].lower() == ftype.lower():
+            return hit
+    return next((s for s in spools if s["printer"] == serial and s["type"].lower() == ftype.lower()
+                 and (not colour or _colour(s["colour"]) == _colour(colour))), None)

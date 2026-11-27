@@ -30,7 +30,8 @@ def test_remaining_time_uses_the_sensor_unit(hub):
 
 def test_tray_gets_spool_id(hub):
     hub.setup_printers()
-    spool = hub.app.spools.add(type="PETG", colour="ADB1B2", grams_left=900, printer=SERIAL, unit=0, slot=0)
+    spool = hub.cloud_spool(type="PETG", colour="ADB1B2", grams_left=900, printer=SERIAL, unit=0, slot=0)
+    hub.req("GET", "/api/spools", user=ADMIN)  # the printer list only reads a library that was fetched
     tray = hub.req("GET", "/api/printers", user=ADMIN)[1][0]["ams"][0]["trays"][0]
     assert tray["spool_id"] == spool["id"]
 

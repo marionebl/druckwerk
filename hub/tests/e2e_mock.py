@@ -107,6 +107,14 @@ def bridge_ams(trays):
                                                   "tray_sub_brands": t[2]} if t else {"id": str(i)} for i, t in enumerate(trays)]}]}, "vt_tray": {}}
 
 
+SPOOLS = [{"id": str(5000 + i), "brand": n.split()[0], "type": t, "name": n, "colour": c, "grams_left": left, "grams_total": 1000,
+           "printer": pr, "unit": u, "slot": s, "in_printer": pr is not None, "rfid": None, "account": "acc1"}
+          for i, (t, c, n, left, pr, u, s) in enumerate([
+              ("PLA", "F2F2F2", "Acme PLA White", 880, H2S, 0, 0), ("PETG", "1F6FEB", "Prusament PETG Blue", 610, H2S, 0, 1),
+              ("PLA", "E4572E", "Sunlu PLA Red", 140, H2S, 0, 2), ("TPU", "222222", "TPU 95A Black", 730, H2S, 1, 0),
+              ("PLA", "2E2E2E", "Generic PLA Black", 950, None, None, None)])]
+
+
 class H(BaseHTTPRequestHandler):
     def reply(self, code, body, ctype="application/json"):
         data = body if isinstance(body, bytes) else json.dumps(body).encode()
@@ -124,6 +132,8 @@ class H(BaseHTTPRequestHandler):
         if p == "/api/printers":
             return self.reply(200, [{"dev_id": s, "serial": s, "name": n, "dev_product_name": m, "account": "acc1", "live": {"ok": 1}}
                                     for s, (n, m) in NAMES.items()])
+        if p == "/api/filament":
+            return self.reply(200, SPOOLS)
         if p.startswith("/api/ams/"):
             serial = p.rsplit("/", 1)[1]
             return self.reply(200, bridge_ams(UNITS[0] if serial == H2S else P1S_TRAYS))

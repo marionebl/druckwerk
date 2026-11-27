@@ -16,7 +16,7 @@ import sys
 import threading
 import time
 import zipfile
-from urllib.parse import parse_qs, unquote, urlsplit
+from urllib.parse import parse_qs, quote, unquote, urlsplit
 
 import actions
 import externals
@@ -54,6 +54,7 @@ MEDIA_ROOTS = ("/media", "/share")  # where a queue file may be named by absolut
 MEDIA_DIR = "/media/druckwerk"  # snapshots and plate images of the actions
 SLICED = re.compile(r"Metadata/plate_\d+\.gcode")
 TASKS_TTL = 60  # seconds a printer's cloud task list is reused
+SPOOLS_TTL = 30  # seconds an account's cloud filament library is reused
 DOMAIN_DEFAULTS = "schedule,input_boolean,binary_sensor,person"
 
 
@@ -125,7 +126,7 @@ class App:
         self.data_dir, self.ui_dir = data_dir, ui_dir
         os.makedirs(os.path.join(data_dir, "plates"), exist_ok=True)
         self.registry = Registry(data_dir)
-        self.spools = filament.Spools(data_dir)
+        self.prices = filament.Prices(data_dir)
         self.grants = Grants(self.registry, data_dir, self._grant_state, clock)
         self.access = Access(self.registry, self.grants, self.get_user)
         self.queue = Queue(self.registry, data_dir, ha.state, self._call_service, self.get_trays, clock=clock,
@@ -135,7 +136,6 @@ class App:
         self.sender, self.watchdog, self.notifier, self.integration = Sender(self), Watchdog(self), Notifier(self), Integration(self)
         self.secret = self._load_secret()
         self._auto_at = None
-        self._track_at = None
         self._cache = {}
         self._cache_lock = threading.Lock()
         # Events: seq starts at the boot time so it keeps growing across restarts (pollers hold the last seq they saw).
@@ -251,7 +251,7 @@ class App:
                 a = st.get("attributes", {})
                 slot = int(tm.group(1)) - 1
                 empty = a.get("empty") or st["state"] in ("unknown", "unavailable", "Empty", "")
-                spool = self.spools.in_tray(serial, unit, slot)
+                spool = filament.in_tray(self.library((self.registry.get(serial) or {}).get("account"), fetch=False), serial, unit, slot)
                 remain = a.get("remain")
                 tray_uid = next((x for x in (a.get("tag_uid"), a.get("tray_uuid")) if x and set(str(x)) - {"0"}), "")
                 trays.append({"slot": slot, "type": "" if empty else a.get("type") or "",
@@ -479,11 +479,14 @@ class App:
         grams = job.get("filament_grams") or []
         hint = tuple(job["slice_tray"]) if job.get("slice_tray") and len(job["filaments"]) == 1 else None
         prices, used = [], []
+        library = self.printer_spools(serial)
         for f, g in zip(job["filaments"], grams):
-            sp = self.spools.match(serial, f["type"], f["colour"], hint)
-            prices.append((sp["price_per_kg"] or 0) if sp else 0)
+            sp = filament.match(library, serial, f["type"], f["colour"], hint)
+            prices.append((self.prices.get(sp["id"]) or 0) if sp else 0)
             if sp and g:
-                self.spools.consume(sp, g)
+                if sp["grams_left"] is not None:
+                    sp["grams_left"] = max(0, sp["grams_left"] - g)  # a second filament on this spool starts from here
+                    self.update_cloud_spool(sp["account"], sp["id"], {"grams_left": sp["grams_left"]})
                 used.append({"spool_id": sp["id"], "grams": g})
         job["spools_used"] = used
         job["cost"] = filament.job_cost(grams, prices, job.get("print_seconds") or 0, printer.get("model"),
@@ -522,28 +525,12 @@ class App:
         except Exception as e:  # noqa: BLE001 - bridge and HA errors must not stop the ticker
             log("auto register: %s" % e)
 
-    def try_track_filament(self, every=60):
-        """Record the filament in the AMS trays as spools; throttled like auto_register."""
-        now = self.clock()
-        if self._track_at is not None and now - self._track_at < every:
-            return
-        self._track_at = now
-        try:
-            states = self.ha.states(max_age=0)
-            for p in self.registry.all():
-                for unit in self.ams(p["serial"], states, raw=True):
-                    for t in unit["trays"]:
-                        self.spools.see(p["serial"], unit["unit"], t["slot"], t, now)
-        except Exception as e:  # noqa: BLE001 - HA may be down; the next try follows
-            log("track filament: %s" % e)
-
     def tick_all(self):
         try:
             self.watchdog.tick()
         except Exception as e:  # noqa: BLE001 - HA may be down; the next tick follows
             log("watchdog: %s" % e)
         self.try_auto_register()
-        self.try_track_filament()
         for p in self.registry.all():
             try:
                 self.queue.tick(p["serial"])
@@ -808,10 +795,10 @@ class App:
         use = filament.slice_usage(job["result"])
         tray = (job.get("settings") or {}).get("tray")
         hint = (int(tray["ams"]), int(tray["id"])) if tray and len(use["filaments"]) == 1 else None
-        prices = []
+        prices, library = [], self.printer_spools(serial)
         for f in use["filaments"]:
-            sp = self.spools.match(serial, f["type"], f["colour"], hint)
-            prices.append((sp["price_per_kg"] or 0) if sp else 0)
+            sp = filament.match(library, serial, f["type"], f["colour"], hint)
+            prices.append((self.prices.get(sp["id"]) or 0) if sp else 0)
         return filament.job_cost([f["grams"] for f in use["filaments"]], prices, use["seconds"], printer.get("model"),
                                  printer.get("electricity_kwh_price") or 0)
 
@@ -983,42 +970,116 @@ class App:
         except OSError:
             raise NotFound("no plate image")
 
-    # -- spools --
-    def spool_admin(self, c, spool):
-        """HA admins manage all spools; the admin or owner of a printer manages the spools assigned to it."""
-        if spool.get("printer") and self.access.role(c, spool["printer"]) == "admin":
-            return
-        if not self.access.is_global_admin(c):
+    # -- spools (the Bambu Cloud filament library, read and written through the bridge) --
+    def library(self, account, fetch=True):
+        """An account's spools, reused for SPOOLS_TTL. fetch=False only reads what is cached, however old."""
+        key = "lib:%s" % account
+        with self._cache_lock:
+            at, val = self._cache.get(key, (0, None))
+        if val is not None and (not fetch or self.clock() - at < SPOOLS_TTL):
+            return val
+        if not fetch or not account:
+            return []
+        try:
+            val = self.bridge_ok("GET", "/api/filament?account=" + quote(account), timeout=30)
+        except HttpError as e:  # no stale copy: the person must see that the cloud did not answer
+            raise HttpError(e.status, "Bambu Cloud filament library: %s" % e)
+        with self._cache_lock:
+            self._cache[key] = (self.clock(), val)
+        return val
+
+    def printer_spools(self, serial):
+        """Copies of the spools of the printer's account; empty when the cloud does not answer, so a print still settles."""
+        account = (self.registry.get(serial) or {}).get("account")
+        try:
+            return [dict(s) for s in self.library(account)] if account else []
+        except HttpError as e:
+            log("filament library: %s" % e)
+            return []
+
+    def update_cloud_spool(self, account, spool_id, fields):
+        try:
+            self.bridge_ok("PUT", "/api/filament/%s?account=%s" % (spool_id, quote(account)), fields, timeout=30)
+        except HttpError as e:
+            log("spool %s not updated in the cloud: %s" % (spool_id, e))
+        self._cache.pop("lib:%s" % account, None)
+
+    def library_accounts(self, c):
+        """Cloud accounts whose library the caller sees: all for HA admins, else those that own a printer the caller sees."""
+        if self.access.is_global_admin(c):
+            found = self._cached("accounts", 60, lambda: {p["account"] for p in self.bridge_ok("GET", "/api/printers", timeout=20) if p.get("account")})
+        else:
+            found = {p.get("account") for p in self.registry.all() if self.access.role(c, p["serial"])} - {None}
+        if not found:
+            raise HttpError(409, "No Bambu Cloud account is linked for your printers; link one in the bridge setup.")
+        return sorted(found)
+
+    def visible_spools(self, c):
+        out = []
+        for acc in self.library_accounts(c):
+            # Spools loaded in a printer the caller cannot see stay hidden from non-admins.
+            out += [dict(s, price_per_kg=self.prices.get(s["id"])) for s in self.library(acc)
+                    if self.access.is_global_admin(c) or not s["printer"] or self.access.role(c, s["printer"])]
+        return out
+
+    def spool_admin(self, c, account):
+        """HA admins and the admin or owner of one of the account's printers manage its spools."""
+        if not (self.access.is_global_admin(c) or any(p.get("account") == account and self.access.role(c, p["serial"]) == "admin"
+                                                      for p in self.registry.all())):
             raise Forbidden("rule: only an admin of the spool's printer (or a Home Assistant admin) manages spools")
 
+    def find_spool(self, c, spool_id):
+        spool = next((s for s in self.visible_spools(c) if s["id"] == spool_id), None)
+        if not spool:
+            raise NotFound("no such spool")
+        self.spool_admin(c, spool["account"])
+        return spool
+
+    def split_price(self, b):
+        """(cloud fields, price) of a request body; the price stays in the hub."""
+        b = dict(b)
+        price = b.pop("price_per_kg", "keep")
+        if price not in (None, "keep") and (isinstance(price, bool) or not isinstance(price, (int, float)) or price < 0):
+            raise ValueError("price_per_kg must be a number >= 0")
+        return b, price
+
     def get_spools(self, h, m, q, c):
-        return [s for s in self.spools.items
-                if (self.access.role(c, s["printer"]) if s["printer"] else self.access.is_global_admin(c))]
+        return self.visible_spools(c)
 
     def post_spool(self, h, m, q, c):
-        b = h.json()
-        self.spool_admin(c, {"printer": b.get("printer")})
-        if b.get("printer") and not self.registry.get(b["printer"]):
-            raise ValueError("unknown printer")
-        return self.spools.add(**b)
+        fields, price = self.split_price(h.json())
+        account = fields.pop("account", None)
+        if not account:
+            accounts = self.library_accounts(c)
+            if len(accounts) != 1:
+                raise ValueError("account is required: " + ", ".join(accounts))
+            account = accounts[0]
+        if account not in self.library_accounts(c):
+            raise Forbidden("rule: this Bambu Cloud account is not one of yours")
+        self.spool_admin(c, account)
+        made = self.bridge_ok("POST", "/api/filament?account=" + quote(account), fields)
+        self._cache.pop("lib:%s" % account, None)
+        if made.get("id") is not None and price not in (None, "keep"):
+            self.prices.set(made["id"], price)
+        return dict(made, price_per_kg=self.prices.get(made.get("id")))
 
     def put_spool(self, h, m, q, c):
-        s = self.spools.get(m.group(1))
-        if not s:
-            raise NotFound("no such spool")
-        self.spool_admin(c, s)
-        b = h.json()
-        if b.get("printer"):  # unlinking is fine; linking needs admin of the target printer too
-            self.spool_admin(c, {"printer": b["printer"]})
-        return self.spools.update(m.group(1), **b)
+        old = self.find_spool(c, m.group(1))
+        fields, price = self.split_price(h.json())
+        made = {}
+        if fields:
+            made = self.bridge_ok("PUT", "/api/filament/%s?account=%s" % (old["id"], quote(old["account"])), fields)
+            self._cache.pop("lib:%s" % old["account"], None)
+        if price != "keep":
+            self.prices.set(old["id"], price)
+        return {**old, **fields, **made, "price_per_kg": self.prices.get(old["id"])}
 
     def delete_spool(self, h, m, q, c):
-        s = self.spools.get(m.group(1))
-        if not s:
-            raise NotFound("no such spool")
-        self.spool_admin(c, s)
-        self.spools.remove(m.group(1))
-        return {"removed": m.group(1)}
+        old = self.find_spool(c, m.group(1))
+        self.bridge_ok("DELETE", "/api/filament/%s?account=%s" % (old["id"], quote(old["account"])))
+        self._cache.pop("lib:%s" % old["account"], None)
+        self.prices.set(old["id"], None)
+        return {"removed": old["id"]}
 
     # -- HA lookups, events --
     def get_ha_users(self, h, m, q, c):
@@ -1222,8 +1283,8 @@ class App:
             ("GET", r"/api/history", w(self.get_history)),
             ("GET", r"/api/spools", w(self.get_spools)),
             ("POST", r"/api/spools", w(self.post_spool)),
-            ("PUT", r"/api/spools/([0-9a-f]{12})", w(self.put_spool)),
-            ("DELETE", r"/api/spools/([0-9a-f]{12})", w(self.delete_spool)),
+            ("PUT", r"/api/spools/(\d{1,19})", w(self.put_spool)),
+            ("DELETE", r"/api/spools/(\d{1,19})", w(self.delete_spool)),
             ("GET", r"/api/ha/users", w(self.get_ha_users, "ha_admin")),
             ("GET", r"/api/ha/entities", w(self.get_ha_entities, "ha_admin")),
             ("POST", r"/api/ha/switches", w(self.create_switch, "ha_admin")),

@@ -36,6 +36,19 @@ def TASKS(serial, email):
          "cover": "", "plateIndex": 1, "mode": "cloud_file"}]
 
 
+FILAMENT = "/v1/design-user-service/my/filament/v2"
+
+
+def SPOOLS(email):
+    """The account's filament library: 60 spools, more than the bridge's page of 50, so paging is exercised."""
+    tag = re.sub(r"\W", "", email)
+    out = [{"id": 9000 + i, "filamentVendor": "Acme", "filamentType": "PLA", "filamentName": "PLA Basic " + tag, "filamentId": "GFA00",
+            "color": "FF000000" if i == 0 else "00FF00", "colorType": 2, "netWeight": 500 + i, "totalNetWeight": 1000,
+            "devId": None, "amsId": None, "slotId": "", "inPrinter": False, "createType": "manual"} for i in range(60)]
+    out[1].update(devId="SERIAL001", amsId=0, slotId="2", inPrinter=True, createType="ams", RFID="RF1", netWeight=None, totalNetWeight=None)
+    return out
+
+
 def devices(email):
     return DEVICES.get(email, [{"dev_id": "SER-" + re.sub(r"\W", "", email), "name": "Default"}])
 
@@ -72,6 +85,13 @@ class Handler(BaseHTTPRequestHandler):
                     return self.reply(200, {"tfaKey": "tfa-key-" + acct})
                 return self.reply(200, {"loginType": "verifyCode"})
             return self.issue(acct) if body.get("code") == "123456" else self.reply(400, {"error": "bad code"})
+        if self.path == FILAMENT:
+            email = self.server.owner.get(self.headers.get("Authorization", "")[7:])
+            if not email:
+                return self.reply(401, {})
+            rec = dict(body, id=9100 + len(self.server.filaments.setdefault(email, SPOOLS(email))))
+            self.server.filaments[email].append(rec)
+            return self.reply(200, rec)
         if self.path == "/v1/user-service/user/sendemail/code":
             # The real cloud answers 200 with an empty body here (seen live on 2026-11-21).
             self.send_response(200)
@@ -93,6 +113,13 @@ class Handler(BaseHTTPRequestHandler):
             return self.reply(200, {"uid": 4242, "name": "Tester"})
         if self.path == "/v1/iot-service/api/user/bind":
             return self.reply(200, {"devices": devices(email)})
+        if urlsplit(self.path).path == FILAMENT:
+            self.server.filament_calls.append((self.path, email))
+            q = parse_qs(urlsplit(self.path).query)
+            lib = self.server.filaments.setdefault(email, SPOOLS(email))
+            page = lib[int(q["offset"][0]):int(q["offset"][0]) + int(q["limit"][0])]
+            shape = self.server.list_shape
+            return self.reply(200, page if shape == "array" else {"data": {"hits": page}} if shape == "data" else {"hits": page, "total": len(lib)})
         if self.path.startswith("/v1/user-service/my/tasks?"):
             self.server.task_calls.append((self.path, email))
             q = parse_qs(urlsplit(self.path).query)
@@ -102,6 +129,32 @@ class Handler(BaseHTTPRequestHandler):
             return self.reply(200, {"total": 3, "hits": TASKS(serial, email)[:limit]})
         self.reply(404, {})
 
+    def do_PUT(self):
+        body = json.loads(self.rfile.read(int(self.headers.get("Content-Length") or 0)) or b"{}")
+        email = self.server.owner.get(self.headers.get("Authorization", "")[7:])
+        self.server.calls.append((self.path, body, "PUT"))
+        if not email:
+            return self.reply(401, {})
+        if self.path != FILAMENT:  # the id belongs in the body
+            return self.reply(404, {})
+        rec = next((r for r in self.server.filaments.get(email, []) if r["id"] == body.get("id")), None)
+        if not rec:
+            return self.reply(404, {})
+        rec.update(body)
+        self.reply(200, rec)
+
+    def do_DELETE(self):
+        body = json.loads(self.rfile.read(int(self.headers.get("Content-Length") or 0)) or b"{}")
+        email = self.server.owner.get(self.headers.get("Authorization", "")[7:])
+        self.server.calls.append((self.path, body, "DELETE"))
+        if not email:
+            return self.reply(401, {})
+        if self.path != FILAMENT + "/batch":
+            return self.reply(404, {})
+        lib = self.server.filaments.setdefault(email, SPOOLS(email))
+        lib[:] = [r for r in lib if r["id"] not in body.get("ids", [])]
+        self.reply(200, {})
+
     def log_message(self, *a):
         pass
 
@@ -109,6 +162,6 @@ class Handler(BaseHTTPRequestHandler):
 def start():
     server = ThreadingHTTPServer(("127.0.0.1", 0), Handler)
     server.calls, server.issued, server.tokens, server.owner = [], [], {}, {}
-    server.task_calls = []
+    server.task_calls, server.filament_calls, server.filaments, server.list_shape = [], [], {}, "hits"
     threading.Thread(target=server.serve_forever, daemon=True).start()
     return server

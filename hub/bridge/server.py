@@ -4,6 +4,7 @@
 One boocloud-bridge daemon per cloud account (the plugin holds one login per process).
 Routes: GET /, GET /api/health, POST /api/login/start, POST /api/login/code, DELETE /api/accounts/<id>,
 GET /api/printers, GET /api/status/<serial>, GET /api/ams/<serial>, GET /api/camera/<serial>/live, GET /api/tasks?serial=<serial>&limit=<n>, POST /api/print,
+GET|POST /api/filament?account=<id>, PUT|DELETE /api/filament/<id>?account=<id> (the account's cloud filament library),
 GET /api/drying/<serial>, POST /api/ams/<serial>/drying, POST /api/ams/<serial>/drying/stop.
 """
 import base64
@@ -396,6 +397,132 @@ def get_tasks(h, m, body):
     if not isinstance(hits, list):
         raise Upstream("%s cloud sent no task list" % externals.CLOUD_NAME)
     h.send(200, [normalize_task(t, serial) for t in hits if isinstance(t, dict)])
+
+
+# ---- filament library (the cloud's "Filament Manager" spool list) ----
+
+FILAMENT = "/v1/design-user-service/my/filament/v2"
+FILAMENT_PAGE, FILAMENT_PAGES = 50, 20
+# hub field -> cloud field; the cloud's names are camelCase (vendor slicer, wgtFilaManagerCloudSync).
+SPOOL_FIELDS = {"brand": "filamentVendor", "type": "filamentType", "name": "filamentName",
+                "grams_left": "netWeight", "grams_total": "totalNetWeight"}
+
+
+def spool_list(data):
+    """The spool array of a list answer; the vendor slicer accepts all of these shapes."""
+    if isinstance(data, dict):
+        for key in ("hits", "data", "filaments"):
+            if key in data:
+                return spool_list(data[key])
+    return data if isinstance(data, list) else None
+
+
+def normalize_spool(r, account):
+    colour = r.get("color") or next(iter(r.get("colors") or []), "")
+    unit, slot = r.get("amsId"), str(r.get("slotId") or "")
+    # devId can outlive the spool's time in the printer, so only a spool that is in a printer counts as loaded.
+    loaded = bool(r.get("devId")) and r.get("inPrinter") is not False
+    return {"id": str(r.get("id")), "brand": r.get("filamentVendor") or "", "type": r.get("filamentType") or "",
+            "name": r.get("filamentName") or "", "colour": re.sub(r"[^0-9A-Fa-f]", "", str(colour))[:6].upper(),
+            "grams_left": number(r.get("netWeight")), "grams_total": number(r.get("totalNetWeight")),
+            "printer": r["devId"] if loaded else None, "unit": number(unit) if loaded else None,
+            "slot": int(slot) if loaded and slot.isdigit() else None, "in_printer": bool(r.get("inPrinter")),
+            "rfid": r.get("RFID") or None, "account": account}
+
+
+def spool_body(b, create):
+    """Cloud request fields from the hub's spool fields; ValueError names what is wrong."""
+    if not isinstance(b, dict):
+        raise ValueError("Body must be a JSON object.")
+    unknown = set(b) - set(SPOOL_FIELDS) - {"colour"}
+    if unknown:
+        raise ValueError("unknown spool fields: " + ", ".join(sorted(unknown)))
+    out = {}
+    for k, cloud_key in SPOOL_FIELDS.items():
+        if k not in b:
+            continue
+        v = b[k]
+        if k.startswith("grams"):
+            if isinstance(v, bool) or not isinstance(v, (int, float)) or v < 0:
+                raise ValueError(k + " must be a number >= 0")
+            v = int(round(v))
+        elif not isinstance(v, str):
+            raise ValueError(k + " must be text")
+        out[cloud_key] = v
+    if "colour" in b:
+        c = str(b["colour"]).lstrip("#")
+        if not re.fullmatch(r"[0-9A-Fa-f]{6}", c):
+            raise ValueError("colour must be 6 hex digits")
+        c = c.upper() + "FF"
+        out.update(color=c, colors=[c], colorType=2)
+    if create:
+        for k in ("name", "colour"):
+            if not b.get(k):
+                raise ValueError(k + " is required")
+        out.update(rolls=1, createType="manual", isSupport=False)
+    return out
+
+
+def filament_token(h):
+    """(account, token) of the account named by ?account=; None after answering 404."""
+    acc = accounts.get((parse_qs(urlsplit(h.path).query).get("account") or [""])[0])
+    if not acc:
+        h.send(404, {"error": "unknown account"})
+        return None
+    token = read_cloud(acc.creds).get("token")
+    if not token:
+        raise Upstream("No cloud login for this account")
+    return acc, token
+
+
+def get_filament(h, m, body):
+    found = filament_token(h)
+    if not found:
+        return
+    acc, token = found
+    out = []
+    for page in range(FILAMENT_PAGES):
+        data = cloud("GET", "%s?offset=%d&limit=%d" % (FILAMENT, page * FILAMENT_PAGE, FILAMENT_PAGE), token=token)
+        hits = spool_list(data)
+        if hits is None:
+            raise Upstream("%s cloud sent no filament list" % externals.CLOUD_NAME)
+        out += [normalize_spool(r, acc.id) for r in hits if isinstance(r, dict)]
+        if len(hits) < FILAMENT_PAGE:
+            break
+    h.send(200, out)
+
+
+def post_filament(h, m, body):
+    fields = spool_body(body, True)
+    found = filament_token(h)
+    if not found:
+        return
+    acc, token = found
+    data = cloud("POST", FILAMENT, fields, token=token)
+    # The create answer's shape is not verified: take a record if there is one, else the id alone.
+    rec = data.get("data", data) if isinstance(data, dict) else {}
+    rec = rec if isinstance(rec, dict) else {}
+    h.send(200, normalize_spool(dict(fields, **rec), acc.id) if rec.get("id") is not None else {"id": None})
+
+
+def put_filament(h, m, body):
+    fields = spool_body(body, False)
+    found = filament_token(h)
+    if not found:
+        return
+    acc, token = found
+    # The vendor API takes the id in the body, not the path.
+    data = cloud("PUT", FILAMENT, dict(fields, id=int(m.group(1))), token=token)
+    rec = data.get("data", data) if isinstance(data, dict) else {}
+    h.send(200, normalize_spool(rec, acc.id) if isinstance(rec, dict) and rec.get("id") is not None else {"id": m.group(1)})
+
+
+def delete_filament(h, m, body):
+    found = filament_token(h)
+    if not found:
+        return
+    cloud("DELETE", FILAMENT + "/batch", {"ids": [int(m.group(1))]}, token=found[1], parse=False)
+    h.send(200, {"removed": m.group(1)})
 
 
 def camera(h, kind, serial):
@@ -1086,6 +1213,10 @@ ROUTES = [
     ("GET", r"/api/camera/" + SER + r"/live", lambda h, m, b: get_live(h, m.group(1)), 0),
     ("GET", r"/api/camera/" + SER + r"/snapshot", lambda h, m, b: camera(h, "snapshot", m.group(1)), 0),
     ("GET", r"/api/tasks", get_tasks, 0),
+    ("GET", r"/api/filament", get_filament, 0),
+    ("POST", r"/api/filament", post_filament, MAX_SMALL_BODY),
+    ("PUT", r"/api/filament/(\d{1,19})", put_filament, MAX_SMALL_BODY),
+    ("DELETE", r"/api/filament/(\d{1,19})", delete_filament, 0),
     ("POST", r"/api/login/start", post_login_start, MAX_SMALL_BODY),
     ("POST", r"/api/login/code", post_login_code, MAX_SMALL_BODY),
     ("DELETE", r"/api/accounts/([a-z0-9_]{1,64})", delete_account, 0),
@@ -1136,6 +1267,9 @@ class Handler(BaseHTTPRequestHandler):
 
     def do_POST(self):
         self.dispatch("POST")
+
+    def do_PUT(self):
+        self.dispatch("PUT")
 
     def do_DELETE(self):
         self.dispatch("DELETE")
