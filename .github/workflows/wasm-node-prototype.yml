@@ -1,0 +1,40 @@
+name: WASM Node prototype
+# Measurement prototype, nothing ships. Runs only on the branch wasm-node-prototype.
+on:
+  push:
+    branches: [wasm-node-prototype]
+  workflow_dispatch:
+permissions:
+  contents: read
+  packages: read
+jobs:
+  measure:
+    name: ${{ matrix.arch }}
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - {arch: aarch64, runner: ubuntu-24.04-arm}
+          - {arch: amd64, runner: ubuntu-24.04}
+    runs-on: ${{ matrix.runner }}
+    timeout-minutes: 90
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '22'
+      - name: Measure
+        env:
+          GH_TOKEN: ${{ github.token }}
+          ARCH: ${{ matrix.arch }}
+        run: |
+          echo "$GH_TOKEN" | docker login ghcr.io -u "${{ github.actor }}" --password-stdin
+          bash hub/tests/node_proto_ci.sh 2>&1 | tee measure.log
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: measure-${{ matrix.arch }}
+          path: |
+            measure.log
+            work/results/**
+          retention-days: 7
