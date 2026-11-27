@@ -55,8 +55,9 @@ RUN git clone --depth 1 --branch n7.1.1 https://github.com/FFmpeg/FFmpeg /src &&
 FROM debian:trixie-slim AS qemu
 RUN apt-get update && apt-get install -y --no-install-recommends qemu-user-static && rm -rf /var/lib/apt/lists/*
 
+# libunistring5: the slicer's runtime links it but does not ship it; it used to arrive with the ffmpeg package.
 FROM debian:trixie-slim AS base
-RUN apt-get update && apt-get install -y --no-install-recommends python3 ca-certificates && rm -rf /var/lib/apt/lists/*
+RUN apt-get update && apt-get install -y --no-install-recommends python3 ca-certificates libunistring5 && rm -rf /var/lib/apt/lists/*
 COPY --from=ffmpeg /out/bin/ffmpeg /usr/local/bin/ffmpeg
 
 # aarch64: run the x86_64 bridge and plugin under qemu in an x86_64 rootfs (COPY only, the Pi has no amd64 binfmt).

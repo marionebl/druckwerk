@@ -31,6 +31,10 @@ for _ in $(seq 300); do curl -fs $BRIDGE/api/health | grep -q '"state": "ready"'
 echo "bridge health: $(curl -fsS $BRIDGE/api/health)"
 curl -fsS $BRIDGE/api/health | python3 -c 'import json,sys;d=json.load(sys.stdin);assert d["plugin"]["state"]=="ready" and d["plugin"]["error"] is None,d'
 docker exec $IMG /opt/bridge/bridge.sh --check
+# Every library the slicer links must be in the image: list all that are missing, not only the first the loader hits.
+MISSING=$(docker exec $IMG sh -c 'cd /opt/bs; LD=$(ls runtime/lib/ld-linux-*.so.[0-9] | head -1); L=$(ls -d runtime/lib/*-linux-gnu | head -1); $LD --library-path app/lib:$L:runtime/lib --list app/bin/bambu-studio' | grep 'not found' || true)
+[ -z "$MISSING" ] || { echo "FAIL: slicer libraries missing from the image:" >&2; echo "$MISSING" >&2; exit 1; }
+echo "slicer links: all libraries present"
 # The slim ffmpeg must do what server.py asks of it: H.264 to a JPEG still, H.264 to MPEG-TS (copy), MPEG-TS to a JPEG still.
 SAMPLE=$HERE/fixtures/sample.h264
 docker exec -i $IMG ffmpeg -loglevel error -f h264 -i - -frames:v 1 -f image2 -c:v mjpeg - < "$SAMPLE" | head -c2 | xxd -p | grep -qx ffd8 \
