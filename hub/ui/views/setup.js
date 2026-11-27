@@ -56,7 +56,7 @@ export async function mount(ctx, root) {
       owner: h('select', { 'data-field': 'owner' }, h('option', { value: '' }, 'No owner')),
     };
     // The owner administers this printer; the list is the HA users.
-    api.haUsers().then((us) => f.owner.append(us.map((u) => h('option', { value: u.id, selected: u.id === c.owner }, u.name || u.id)))).catch(() => {});
+    api.haUsers().then((us) => f.owner.append(...us.map((u) => h('option', { value: u.id, selected: u.id === c.owner }, u.name || u.id)))).catch(() => {});
     return h('section', { class: 'card' }, h('div', { class: 'row between' }, h('div', null, h('h2', { style: 'margin:0' }, p.device_name), h('small', null, `${p.model} · ${p.serial.slice(0, 4)}…${p.serial.slice(-3)}`)),
       pill(saved ? 'Configured' : 'New', saved ? 'ok' : 'warn')),
       h('div', { class: 'form', style: 'margin-top:14px' },

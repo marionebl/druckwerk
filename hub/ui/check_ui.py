@@ -231,6 +231,7 @@ def check_inside_ha_panel(page, base, ident):
     fr.locator("nav.tabs a[data-id=queue]").click()
     page.wait_for_function("() => location.hash === '#/queue'", timeout=5000)
     page.unroute(f"{base}/?host=1")
+    fresh(page, f"{base}/?as={ident}")  # back to the app itself for the rest of the walk
 
 
 def check_history_list(page, base, ident, go, shot):
@@ -565,7 +566,7 @@ def main():
                     try:
                         walk(page, ident, base, shot, a.inject_absolute and ident == "admin" and sz == "390x844")
                     except Exception as e:
-                        problems.append(f"walk failed [{where}] at check_ui.py line {traceback.extract_tb(e.__traceback__)[-1].lineno}: {type(e).__name__}: {(str(e).splitlines() or [''])[0]}")
+                        problems.append(f"walk failed [{where}] at check_ui.py line {[f.lineno for f in traceback.extract_tb(e.__traceback__) if f.filename.endswith('check_ui.py')]}: {type(e).__name__}: {(str(e).splitlines() or [''])[0]}")
                     ctx.close()
             br.close()
     finally:
