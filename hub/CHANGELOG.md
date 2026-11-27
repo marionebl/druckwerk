@@ -6,6 +6,8 @@
 - One primary action on a history item: "New print job with the same settings". It queues the stored file again with the print's target and options (`POST /api/history/{id}/queue` is new). When the file is gone it opens New print with the same printer, options, quality, filament and plate; choose the model again. "Print again" is replaced by this button.
 - Prints that were not started in Druckwerk: the bridge now passes `model_id`, `profile_id` and `design_id` of the Bambu cloud task, and `GET /api/tasks/file` asks the cloud for the file URL. The hub fetches the 3MF once into `data/cloud` and reads the same settings. If the cloud gives no file, the detail says so and shows the fields of the cloud record. The cloud file request is not checked against a real account yet.
 
+- History shows how long each print took: under every entry a bar sits on the day's 00:00 to 24:00 axis, as wide as the print ran (start to end; a running print reaches to now). Colour is the status. A print past midnight is cut at 24:00 and marked, very short prints get a minimum width, and prints without times show no bar.
+
 ## 3.2.1 (unreleased)
 
 - Deep links work in the Home Assistant panel. The app now uses the panel's own route messages (`home-assistant/subscribe-properties`, `home-assistant/properties`, `home-assistant/navigate`), so the HA address bar shows `/app/<slug>/history/123` and that URL opens the history item. The HA back button moves between app screens. Before, the app wrote its route into the hash of the HA page, which the panel does not keep.

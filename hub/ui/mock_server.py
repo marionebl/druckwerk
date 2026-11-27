@@ -148,7 +148,14 @@ HISTORY[3].pop("printer", None)
 TASK_JOB = {5: "b00000000001", 4: "b00000000002", 3: "b00000000003", 8: "b00000000005"}
 SLOW = {}  # test hook: path fragment -> seconds to wait before answering
 # Cloud tasks: (id, title, printer, hours ago, status, minutes, grams, user id or None for "not started here", cost)
+def _yesterday_at(hour):  # fixed local clock times, so the two timeline prints never cross midnight whenever the check runs
+    t = time.localtime()
+    return NOW() - time.mktime((t.tm_year, t.tm_mon, t.tm_mday - 1, hour, 0, 0, 0, 0, -1))
+
+
 TASKS = [
+    (11, "Timeline one hour", H2S, _yesterday_at(8) / 3600, "finished", 60, 20.0, "u-lena", 0.4),
+    (12, "Timeline three hours", H2S, _yesterday_at(13) / 3600, "finished", 180, 50.0, "u-lena", 1.0),
     (9, "gridfinity_bin_4x2", H2S, 0.9, "running", 0, 0, "u-alex", None),
     (8, "cable_clip_set", H2S, 3.5, "finished", 42, 12.5, "u-lena", 0.31),
     (7, "Slicer plate 1", P1S, 5, "finished", 95, 61.0, None, None),

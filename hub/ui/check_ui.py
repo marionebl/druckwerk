@@ -265,9 +265,21 @@ def check_history_list(page, base, ident, go, shot):
         b1, b2 = box.bounding_box(), ref.bounding_box()
         assert (b1["width"], b1["height"]) == (b2["width"], b2["height"]) == (56, 56), f"placeholder box keeps its size: {b1} {b2}"
         assert cloud.locator(".thumb img").count() == 0 and "ph" in box.get_attribute("class")
+    check_history_spans(page)
     page.locator("nav.tabs a[data-id=queue]").click()
     page.wait_for_selector(".page-head h1:has-text('Queue')")
     assert page.get_by_role("button", name="History").count() == 0 and page.locator(".seg").count() == 0, "the queue has no History segment"
+
+
+def check_history_spans(page):
+    """A print's bar is as long as the print took on the day's 24 h axis; a print without times has no bar."""
+    one = page.locator(".tl-item", has_text="Timeline one hour").locator(".tl-bar")
+    three = page.locator(".tl-item", has_text="Timeline three hours").locator(".tl-bar")
+    assert one.count() == 1 and three.count() == 1, "prints with times get a bar"
+    w1, w3 = one.bounding_box()["width"], three.bounding_box()["width"]
+    assert 2.7 < w3 / w1 < 3.3, f"1 h and 3 h bars are about 1:3 wide, got {w1:.1f}px and {w3:.1f}px"
+    assert page.locator(".tl-item", has_text="wall_hook_test").locator(".tl-bar").count() == 0, "a print with no times has no bar"
+    assert page.evaluate("document.documentElement.scrollWidth <= window.innerWidth"), "no horizontal page scroll"
 
 
 def check_reslice_lands(page):

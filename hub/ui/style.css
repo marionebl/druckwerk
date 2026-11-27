@@ -297,6 +297,18 @@ details.adv .form { margin-top: 12px; }
 .detail-img img { object-fit: contain; }
 .detail-top { display: grid; gap: var(--gap); grid-template-columns: 1fr; align-items: start; }
 @media (min-width: 720px) { .detail-top { grid-template-columns: 360px 1fr; } }
+/* Time axis: every day is 00:00 to 24:00, so bar lengths compare across days. */
+.tl-day { --bar-min: 4px; }
+.tl-axis { position: relative; height: 16px; margin: -4px 0 6px 24px; font-size: 11px; color: var(--muted); font-variant-numeric: tabular-nums; }
+.tl-axis span { position: absolute; top: 0; transform: translateX(-50%); }
+.tl-axis span:first-child { transform: none; } .tl-axis span:last-child { transform: translateX(-100%); }
+.tl-span { position: relative; height: 6px; margin-top: 4px; border-radius: 3px; background: var(--soft); overflow: hidden;
+  background-image: repeating-linear-gradient(90deg, var(--line) 0 1px, transparent 1px 25%); }
+.tl-bar { position: absolute; top: 0; bottom: 0; min-width: var(--bar-min); border-radius: 3px; background: var(--muted); }
+.tl-bar.st-finished, .tl-bar.st-running { background: var(--accent); }
+.tl-bar.st-failed, .tl-bar.st-stopped { background: var(--err); }
+.tl-bar.st-running { background-image: repeating-linear-gradient(135deg, rgba(255, 255, 255, .35) 0 4px, transparent 4px 8px); }
+.tl-bar.cut { border-top-right-radius: 0; border-bottom-right-radius: 0; box-shadow: inset -3px 0 0 var(--card); }
 .tl-card { color: inherit; text-decoration: none; } a.tl-card:hover, .job .title a:hover { border-color: var(--accent); }
 .job .title a { color: inherit; text-decoration: none; } .job { cursor: pointer; }
 .spoolprint { display: flex; justify-content: space-between; gap: 12px; padding: 8px 0; border-top: 1px solid var(--line); color: inherit; text-decoration: none; }
