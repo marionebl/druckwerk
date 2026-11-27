@@ -95,6 +95,7 @@ export const api = {
   // The person confirmed in the UI: the plate is clear (prints) or the drying may start (drying jobs).
   startNext: (serial) => post(`api/printers/${q(serial)}/start-next`, { plate_clear: true, confirmed: true }),
   startJob: (serial, job_id) => post(`api/printers/${q(serial)}/start`, { job_id, plate_clear: true, confirmed: true }),
+  setLight: (serial, on) => post(`api/printers/${q(serial)}/light`, { on }),
   dryNow: (serial, body) => post(`api/printers/${q(serial)}/drying`, { ...body, confirmed: true }),
   stopDrying: (serial, ams_id) => post(`api/printers/${q(serial)}/drying/stop`, { ams_id }),
   queueDry: (body) => post('api/queue', { ...body, kind: 'dry' }),
@@ -106,6 +107,11 @@ export const api = {
   upload: (file) => call('POST', 'api/jobs?name=' + q(file.name), file, true),
   slice: (id, body) => post(`api/jobs/${q(id)}/slice`, body),
   job: (id) => get(`api/jobs/${q(id)}`),
+  jobModel: async (id) => {
+    const r = await fetch(`api/jobs/${q(id)}/model`);
+    if (!r.ok) throw new ApiError(r.status, 'The model is no longer stored');
+    return r.blob();
+  },
   plateUrl: (id) => `api/jobs/${q(id)}/plate.png`,
   gcode: async (id) => {
     const r = await fetch(`api/jobs/${q(id)}/plate.gcode`);
@@ -113,7 +119,8 @@ export const api = {
     return r.text();
   },
   // slicing in the browser: the filament preset for a tray, and the G-code the browser made (the app packs and stores it)
-  engineFilament: (serial, tray) => get(`api/engine/filament?serial=${q(serial)}&tray=${q(tray)}`),
+  // fil: {tray} of an AMS tray, or {type, brand, name, colour, spool} of a library spool
+  engineFilament: (serial, fil) => get('api/engine/filament?' + new URLSearchParams({ serial, ...fil })),
   uploadGcode: (id, params, gcode) => call('POST', `api/jobs/${q(id)}/gcode?` + params, gcode, true),
   queueJob: (id, body) => post(`api/jobs/${q(id)}/queue`, body),
   // filament

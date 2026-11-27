@@ -36,6 +36,7 @@ PRESETS = {"model": "H2S", "machine": {"name": "Bambu Lab H2S 0.4 nozzle", "prin
            "process": {q: {"name": "proc " + q} for q in ("good", "better", "best")},
            "filaments": [{"name": "Generic PETG", "id": "GFG99", "type": "PETG", "n": 9, "config": {"name": "Generic PETG"}},
                          {"name": "Acme PETG HF @BBL H2S", "id": "GFG02", "type": "PETG", "n": 1, "config": {"name": "Acme PETG HF"}},
+                         {"name": "Acme PLA Matte @BBL H2S", "id": "GFX01", "type": "PLA", "n": 1, "config": {"name": "Acme PLA Matte"}},
                          {"name": "Generic PLA", "id": "GFL99", "type": "PLA", "n": 9, "config": {"name": "Generic PLA"}}]}
 
 
@@ -106,6 +107,8 @@ def test_upload_slice_preview_print(app):
     status, raw = call(base, "POST", "/api/jobs?name=Fan%20test.stl", raw=b"solid x\nendsolid x\n")
     assert status == 200, raw
     jid = json.loads(raw)["id"]
+    assert call(base, "GET", "/api/jobs/%s/model" % jid) == (200, b"solid x\nendsolid x\n")  # Reslice downloads it again
+    assert call(base, "GET", "/api/jobs/000000000000/model")[0] == 404
     status, raw = call(base, "POST", "/api/jobs/%s/slice" % jid, {"serial": "H2S0001", "quality": "best", "tray": "0:0"})
     assert status == 202, raw
     job = wait_done(base, jid)
@@ -185,6 +188,22 @@ def test_filament_follows_the_trays_profile_id_else_generic(app):
     assert json.loads(call(base, "GET", "/api/engine/filament?serial=H2S0001&tray=0:0")[1]) == {"filament": "Acme PETG HF @BBL H2S"}
     assert json.loads(call(base, "GET", "/api/engine/filament?serial=H2S0001&tray=0:1")[1]) == {"filament": "Generic PLA"}  # idx unknown
     assert call(base, "GET", "/api/engine/filament?serial=H2S0001&tray=0:2")[0] == 400
+
+
+def test_library_spool_slices_with_a_preset_named_like_it(app):
+    base, _, tmp, _ = app
+    spool = "type=PLA&brand=Acme&name=PLA%20Matte&colour=112233&spool=777"
+    assert json.loads(call(base, "GET", "/api/engine/filament?serial=H2S0001&" + spool)[1]) == {"filament": "Acme PLA Matte @BBL H2S"}
+    other = "type=PLA&brand=Nobody&name=Silk&colour=112233"
+    assert json.loads(call(base, "GET", "/api/engine/filament?serial=H2S0001&" + other)[1]) == {"filament": "Generic PLA"}
+    assert call(base, "GET", "/api/engine/filament?serial=H2S0001")[0] == 400  # neither tray nor spool
+    jid = json.loads(call(base, "POST", "/api/jobs?name=Fan.stl", raw=b"solid x")[1])["id"]
+    q = gcode_query(filament="Acme PLA Matte @BBL H2S").replace("tray=0:0", spool)
+    status, raw = call(base, "POST", "/api/jobs/%s/gcode?%s" % (jid, q), raw=b"G1 X1\n")
+    assert status == 200, raw
+    s = json.loads(raw)["settings"]
+    assert s["tray"]["ams"] is None and s["tray"]["colour"] == "#112233" and s["tray"]["spool_id"] == "777"
+    assert s["filament"] == "Acme PLA Matte @BBL H2S"
 
 
 def test_engine_files_and_isolation_headers(app):

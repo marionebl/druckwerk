@@ -1,6 +1,6 @@
 # Changelog
 
-## 3.1.0 (unreleased)
+## 3.2.0 (unreleased)
 
 - One History. The History tab lists the Bambu Cloud tasks with the Druckwerk job merged in (name, owner, cost, options, slice). A finished job that no cloud task explains (never sent, cancelled before the start) is listed too and marked "Druckwerk only". The Queue no longer has a History segment. `GET /api/history` items gain `job`, `when` and `printer_owner`; `source` can be `job`.
 - Every screen has a URL: `#/queue`, `#/history`, `#/history/<id>`, `#/queue/<job id>`, `#/filament`, `#/filament/<spool id>`, `#/printers/<serial>`, `#/new`, `#/access`. Reload opens the same view. Inside Home Assistant the app mirrors its route into the panel's URL hash and reads it back on load, so `<panel URL>#/history/123` is a link you can share.
@@ -9,6 +9,14 @@
 - Filament detail (`#/filament/<id>`): the spool and the prints done with it, linked to History. `GET /api/spools/{id}/prints` is new.
 - Lists show "Loading…" until the first answer and "No x yet" only after an empty answer; a failure shows the error. Printers, filament, queue and history show the last answer from a per-user localStorage cache at once and replace it when the network answers; a change drops the cached list. Storage that is empty or blocked changes nothing.
 - Ownership is a property of the printer: `PUT /api/setup/printers/{serial}` takes `owner` (an HA user), the Setup wizard has an Owner field. The `owner` role is gone from grants; at start owner grants move into the printer's `owner` and are dropped (see API.md). The owner is an admin of the printer, gets load requests and approval notifications, and is named in the History for prints nobody started here ("Not started here" stays when there is no owner).
+
+## 3.1.1 (unreleased)
+
+- No broken images on the printer cards and the printer page: the camera image stays hidden until a frame has loaded, and the placeholder says "Loading camera image…" or "No camera image". Before, the `<img>` had no source until the first snapshot arrived (10 to 60 s through the bridge, or never when the snapshot fails), so it showed its alt text. The plate image on New print is removed when it fails to load.
+- An AMS whose slots are all empty has no tray row on the printer card and the printer page; they say "AMS empty". Units with at least one spool still show all their slots.
+- New print, Filament: choose from the AMS trays ("In the AMS", the first loaded tray is selected) or from the spools of the printer's cloud account that are in no printer ("From your library"). With an empty AMS the library is the list and the page says "The AMS is empty." A library spool is sliced with the preset named like its brand and name, else Generic of its type. It is not loaded, so the page says so and offers "Ask to load" (load request). The queue job records the choice as `slice_spool`.
+- `GET /api/engine/filament`, `POST /api/jobs/{id}/slice` and `POST /api/jobs/{id}/gcode` take `type`, `brand`, `name`, `colour`, `spool` instead of `tray`. `GET /api/printers` adds `light` (chamber light on, off, or null) and `account`.
+- Chamber light switch on the printer card and the printer page: `POST /api/printers/{serial}/light` `{on}` (admin of the printer, as the other controls).
 
 ## 3.0.1 (unreleased)
 

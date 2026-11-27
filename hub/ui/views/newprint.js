@@ -11,8 +11,10 @@ const BED_TYPES = [['auto', 'Auto'], ['cool_plate', 'Cool Plate'], ['eng_plate',
 const ACCEPT = /\.(stl|3mf|step|stp|obj)$/i;
 
 export async function mount(ctx, root) {
-  const [printers, spools] = await Promise.all([api.printers(), api.spools().catch(() => [])]);
-  const S = { file: null, target: null, tray: null, bed: BEDS[0], variants: null, pick: null,
+  let libErr = '';
+  const [printers, spools, requests] = await Promise.all([api.printers(), api.spools().catch((e) => { libErr = e.message; return []; }), api.loadRequests().catch(() => [])]);
+  // tray: "unit:slot" of a loaded AMS tray; spool: id of a library spool. At most one of them is set.
+  const S = { file: null, target: null, tray: null, spool: null, bed: BEDS[0], variants: null, pick: null,
     options: { timelapse: false, bed_leveling: true, use_ams: true, flow_cali: true, vibration_cali: true, layer_inspect: false, nozzle_offset_cali: false, bed_type: 'auto', ext_change_assist: false },
     name: '', busy: false,
     // Threads need a cross-origin isolated page; without it the Pi is quicker, so it is the default there.
@@ -29,6 +31,21 @@ export async function mount(ctx, root) {
   const trays = () => (refPrinter()?.ams || []).flatMap((u) => u.trays.filter((t) => t.type).map((t) => ({ ...t, unit: u.unit })));
   const trayKey = (t) => `${t.unit}:${t.slot}`;
   const spoolOf = (t) => spools.find((s) => s.id === t.spool_id);
+  const spoolById = (id) => spools.find((s) => s.id === id);
+  // Spools of the printer's cloud account that sit in no printer; those in the AMS are listed as trays.
+  const library = () => { const acc = refPrinter()?.account; return spools.filter((s) => !s.printer && (!acc || s.account === acc)); };
+  // What the slicer is told: the AMS tray, or the spool's type, brand and name for the matching preset.
+  const filChoice = () => {
+    if (S.tray) return { tray: S.tray };
+    const s = S.spool && spoolById(S.spool);
+    return s ? { type: s.type, brand: s.brand, name: s.name, colour: s.colour, spool: s.id } : null;
+  };
+  // The first loaded tray is the default; the file carries no filament to match it against.
+  function defaultFil() {
+    const t = !S.tray && !S.spool && S.target && trays()[0];
+    if (t) S.tray = trayKey(t);
+  }
+  const pickFil = (tray, spool) => () => { S.tray = tray; S.spool = spool; S.variants = null; draw(); };
 
   // The browser slices STL only; other models slice on the Pi.
   const where = () => (S.slice_on === 'device' && (!S.file || /\.stl$/i.test(S.file.name)) ? 'device' : 'pi');
@@ -65,17 +82,13 @@ export async function mount(ctx, root) {
   function printerCard() {
     const opts = [...models.map((m) => ['any:' + m, `Any compatible ${m}`, (n => n + (n === 1 ? ' printer' : ' printers'))(printers.filter((p) => p.model === m).length)]),
       ...printers.map((p) => [p.serial, p.name, p.model + (p.online ? '' : ' · offline')])];
-    const tr = trays();
+    defaultFil();
     return h('section', { class: 'card stack' }, h('h2', { style: 'margin:0' }, '2 · Printer and filament'),
       h('div', null, h('div', { class: 'tag', style: 'margin-bottom:6px' }, 'Target'),
         h('div', { class: 'chips' }, opts.map(([v, l, sub]) =>
-          h('button', { class: 'chip', 'aria-pressed': String(S.target === v), onclick: () => { S.target = v; S.tray = null; S.variants = null; draw(); } },
+          h('button', { class: 'chip', 'aria-pressed': String(S.target === v), onclick: () => { S.target = v; S.tray = null; S.spool = null; S.variants = null; draw(); } },
             l, h('small', null, sub))))),
-      S.target && h('div', null, h('div', { class: 'tag', style: 'margin-bottom:6px' }, 'Filament tray'),
-        tr.length ? h('div', { class: 'chips' }, tr.map((t) => h('button', { class: 'chip', 'aria-pressed': String(S.tray === trayKey(t)),
-          onclick: () => { S.tray = trayKey(t); S.variants = null; draw(); } },
-          swatch(t.colour, 22), `AMS ${t.unit + 1}·${t.slot + 1} ${t.type}`, h('small', null, t.name))))
-          : h('p', { class: 'muted', style: 'margin:0' }, 'No AMS trays reported for this printer.')),
+      S.target && filamentPicker(),
       S.target && h('div', null, h('div', { class: 'tag', style: 'margin-bottom:6px' }, 'Slice on'), h('div', { class: 'chips', id: 'where' },
         [['device', 'This device'], ['pi', 'Pi (Bambu Studio)']].map(([v, l]) => h('button', { class: 'chip', 'aria-pressed': String(where() === v),
           disabled: v === 'device' && S.file && !/\.stl$/i.test(S.file.name),
@@ -83,7 +96,27 @@ export async function mount(ctx, root) {
         h('small', { class: 'muted' }, S.file && !/\.stl$/i.test(S.file.name) ? 'Slicing on this device needs an STL; this file slices on the Pi.' : engineNote())),
       S.target && field('Build plate', h('select', { onchange: (e) => (S.bed = e.target.value) }, BEDS.map((b) => h('option', { selected: b === S.bed }, b)))),
       btn(S.busy ? [h('span', { class: 'spin' }), ' Slicing three variants…'] : 'Slice good, better and best', sliceAll, 'primary',
-        { disabled: !(S.file && S.target && S.tray) || S.busy }));
+        { disabled: !(S.file && S.target && (S.tray || S.spool)) || S.busy }));
+  }
+
+  function filamentPicker() {
+    const ref = refPrinter(), tr = trays(), lib = library(), sp = S.spool && spoolById(S.spool);
+    const hasAms = !!ref?.ams?.length;
+    const asked = sp && requests.some((r) => r.spool_id === sp.id && r.printer === ref.serial);
+    const msg = !tr.length && h('p', { class: 'muted', id: 'fil-note', style: 'margin:0' }, hasAms ? 'The AMS is empty.' : 'This printer reports no AMS.',
+      lib.length ? ' Choose a spool from your filament library.' : libErr ? ` Your filament library could not be read: ${libErr}` : ' There are no spools in your filament library.');
+    return h('div', { class: 'stack', style: 'gap:10px' }, h('div', { class: 'tag' }, 'Filament'),
+      msg,
+      tr.length > 0 && h('div', null, h('small', { class: 'muted' }, 'In the AMS'),
+        h('div', { class: 'chips', id: 'fil-ams' }, tr.map((t) => h('button', { class: 'chip', 'aria-pressed': String(S.tray === trayKey(t)), onclick: pickFil(trayKey(t), null) },
+          swatch(t.colour, 22), `AMS ${t.unit + 1}·${t.slot + 1} ${t.type}`, h('small', null, t.name))))),
+      lib.length > 0 && h('div', null, h('small', { class: 'muted' }, 'From your library'),
+        h('div', { class: 'chips', id: 'fil-library' }, lib.map((x) => h('button', { class: 'chip', 'data-spool': x.id, 'aria-pressed': String(S.spool === x.id), onclick: pickFil(null, x.id) },
+          swatch(x.colour, 22), `${x.brand} ${x.type}`.trim(), h('small', null, x.name + (x.grams_left != null ? ` · ${Math.round(x.grams_left)} g` : '')))))),
+      sp && h('div', { class: 'row', id: 'load-note', style: 'gap:8px;flex-wrap:wrap;align-items:center' },
+        h('small', { class: 'muted' }, hasAms ? `This spool is not in the AMS of ${ref.name}. It has to be loaded before the print starts.` : 'This spool is not loaded. Put it on the printer before the print starts.'),
+        hasAms && (asked ? pill('load requested', 'warn')
+          : btn('Ask to load', async () => { const r = await attempt(() => api.askLoad(sp.id, ref.serial, ''), 'Request sent'); if (r) { requests.push(r); draw(); } }, 'sm'))));
   }
 
   function engineNote() {
@@ -109,7 +142,7 @@ export async function mount(ctx, root) {
       for (const v of S.variants) {
         v.state = 'slicing'; v.elapsed = 0;
         const t0 = performance.now(), ticker = setInterval(() => { v.elapsed = Math.round((performance.now() - t0) / 1000); draw(); }, 1000);
-        const opts = { file: S.file, jobId: v.id, model: ref.model, serial: ref.serial, tray: S.tray, bed: S.bed, quality: v.q };
+        const opts = { file: S.file, jobId: v.id, model: ref.model, serial: ref.serial, fil: filChoice(), bed: S.bed, quality: v.q };
         try {
           let r;
           for (let attempt = 0; ; attempt++) {  // a fresh engine after an error: its memory may be spent
@@ -123,7 +156,7 @@ export async function mount(ctx, root) {
     } catch (e) { fail(e); S.variants = null; }
     S.busy = false;
     dropEngine(); startEngine();  // a fresh worker for the next slice, started now so it is ready
-    const ok = S.variants?.find((v) => v.q === 'better' && v.state === 'done');
+    const ok = S.variants?.find((v) => v.q === (S.prefQ || 'better') && v.state === 'done') || S.variants?.find((v) => v.q === 'better' && v.state === 'done');
     if (ok && !S.pick) S.pick = ok.q;
     draw();
   }
@@ -138,7 +171,7 @@ export async function mount(ctx, root) {
       await Promise.all(S.variants.map(async (v) => {
         const job = await api.upload(S.file);
         v.id = job.id;
-        await api.slice(job.id, { serial: ref.serial, quality: v.q, tray: S.tray, bed: S.bed });
+        await api.slice(job.id, { serial: ref.serial, quality: v.q, ...filChoice(), bed: S.bed });
       }));
     } catch (e) { fail(e); S.busy = false; S.variants = null; draw(); return; }
     const tick = async () => {
@@ -147,14 +180,14 @@ export async function mount(ctx, root) {
       S.busy = S.variants.some((v) => v.state === 'queued' || v.state === 'slicing');
       draw();
       if (S.busy) setTimeout(tick, 1500);
-      else if (!S.pick) { const ok = S.variants.find((v) => v.q === 'better' && v.state === 'done'); if (ok) { S.pick = ok.q; draw(); } }
+      else if (!S.pick) { const ok = S.variants.find((v) => v.q === (S.prefQ || 'better') && v.state === 'done') || S.variants.find((v) => v.q === 'better' && v.state === 'done'); if (ok) { S.pick = ok.q; draw(); } }
     };
     tick();
   }
 
   const costOf = (v) => {
     if (v.info?.cost != null) return [v.info.cost, false];
-    const sp = spoolOf(trays().find((t) => trayKey(t) === S.tray) || {});
+    const sp = S.spool ? spoolById(S.spool) : spoolOf(trays().find((t) => trayKey(t) === S.tray) || {});
     return sp?.price_per_kg ? [(v.info.grams * sp.price_per_kg) / 1000, true] : [null, false];
   };
 
@@ -206,7 +239,7 @@ export async function mount(ctx, root) {
       h('small', null, 'Not every printer supports every option. The printer ignores what it cannot do.'));
     return h('section', { class: 'card stack' }, h('h2', { style: 'margin:0' }, '4 · Preview and queue'),
       warn.map((w) => h('div', { class: 'hms warn' }, icon('alert', 20), h('div', { class: 'txt' }, w))),
-      h('div', { class: 'preview' }, v.info.has_png ? h('img', { src: api.plateUrl(v.id) + '?v=' + v.id, alt: 'Plate preview' }) : null, prev),
+      h('div', { class: 'preview' }, v.info.has_png ? h('img', { src: api.plateUrl(v.id) + '?v=' + v.id, alt: 'Plate preview', onerror: (e) => e.target.remove() }) : null, prev),
       field('Name of the print', h('input', { type: 'text', maxlength: 80, placeholder: S.file ? S.file.name.replace(/\.[^.]+$/, '') : '', value: S.name,
         oninput: (e) => (S.name = e.target.value) }), 'Shown in the queue and on the phone. Optional.'),
       h('div', { class: 'form two' },
@@ -226,6 +259,23 @@ export async function mount(ctx, root) {
     const step = S.pick ? 4 : S.variants ? 3 : S.file ? 2 : 1;
     if (!printers.length) return clear(box, empty('You have no printer access yet. Ask an admin for a grant.'));
     clear(box, stepper(step), fileCard(), S.file && printerCard(), S.variants && compareCard(), S.pick && queueCard());
+  }
+  // Reslice (from a history or queue detail) hands over what the old print had; it is used once.
+  const rs = ctx.reslice;
+  ctx.reslice = null;
+  if (rs) {
+    S.name = rs.name || '';
+    Object.assign(S.options, rs.options || {});
+    if (BEDS.includes(rs.bed)) S.bed = rs.bed;
+    S.prefQ = rs.quality;
+    const any = rs.target === 'any' ? 'any:' + rs.printer_model : null;
+    S.target = any && models.includes(rs.printer_model) ? any : printers.some((p) => p.serial === rs.target) ? rs.target : null;
+    // The old filament: a library spool, or an AMS tray if it is still loaded; otherwise the default tray stays.
+    const t = rs.tray || {};
+    if (S.target && t.ams == null && t.spool_id != null && spoolById(String(t.spool_id))) S.spool = String(t.spool_id);
+    else if (S.target && t.ams != null && trays().some((x) => trayKey(x) === `${t.ams}:${t.id}`)) S.tray = `${t.ams}:${t.id}`;
+    api.jobModel(rs.slice_job).then((blob) => { S.file = new File([blob], rs.model || 'model.stl'); S.variants = null; S.pick = null; draw(); },
+      () => toast('The model is no longer stored. Choose it again.', 'error'));
   }
   if (where() === 'device') startEngine();
   draw();

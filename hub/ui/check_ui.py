@@ -257,19 +257,40 @@ def check_history_list(page, base, ident, go, shot):
     assert page.get_by_role("button", name="History").count() == 0 and page.locator(".seg").count() == 0, "the queue has no History segment"
 
 
+def check_reslice_lands(page):
+    # New print opens with what the old print had: model, name, target, filament (AMS 1·1), build plate
+    page.wait_for_selector(".drop b:has-text('cable_clip_set.stl')", timeout=8000)
+    assert page.locator(".chip[aria-pressed=true]", has_text="AMS 1·1").count() == 1, "the old filament is preselected"
+    assert page.locator(".chip[aria-pressed=true]", has_text="Workshop H2S").count() == 1, "the old printer is preselected"
+    assert page.locator("select option:checked", has_text="Textured PEI Plate").count() >= 1
+    page.get_by_role("button", name="Slice good, better and best").click()
+    page.wait_for_selector(".variant[aria-pressed=true]", timeout=SLICE_TIMEOUT)
+    assert page.locator(".variant[aria-pressed=true]", has_text="Best").count() == 1, "the old quality is the pick"
+    assert page.locator("input[type=text][maxlength='80']").input_value() == "Cable clip set (desk)", "the old name is filled in"
+
+
+def check_reslice(page, base, ident):
+    fresh(page, f"{base}/?as={ident}#/history/{TASK_CLIPS}")
+    page.wait_for_selector(".detail")
+    page.get_by_role("button", name="Reslice").click()
+    hash_is(page, "#/new")
+    check_reslice_lands(page)
+
+
 def check_history_details(page, base, ident, go, shot):
     go("#/history", ".tl-card")
     page.locator(".tl-card", has_text="Cable clip set (desk)").click()
     hash_is(page, f"#/history/{TASK_CLIPS}")
     page.wait_for_selector(".detail")
     body = page.locator(".detail").text_content()
-    for want in ("Print options", "Timelapse", "Slice", "Better", "0.20mm Standard", "Bambu PLA Basic", "Spools used", "Cloud title: cable_clip_set"):
+    for want in ("Print options", "Timelapse", "Slice", "Best", "0.20mm Standard", "Bambu PLA Basic", "Spools used", "Cloud title: cable_clip_set"):
         assert want in body, f"history detail shows {want!r}"
     assert page.locator("a.spoolprint[href='#/filament/5000']").count() == 1, "the spool links to the filament detail"
     page.wait_for_selector(".preview3d", timeout=8000)  # the slice is still stored: the 3D preview
     shot("history-detail")
     page.get_by_role("button", name="Reslice").click()
     hash_is(page, "#/new")
+    check_reslice_lands(page)
     fresh(page, f"{base}/?as={ident}#/history/{JOB_ONLY}")
     page.wait_for_selector(".detail")
     body = page.locator(".detail").text_content()
@@ -386,6 +407,89 @@ def check_loading(page, go):
         assert "Loading" in txt and "No " not in txt and "empty" not in txt and page.locator(".empty").count() == 0, f"{tab} while loading: {txt!r}"
         page.wait_for_selector(sel, timeout=8000)
         page.evaluate("fetch('api/_mock/slow')")
+P1S = "FAKE-P1S-0002"
+# Images that are on screen but show nothing: a broken image, or alt text where a picture should be.
+BROKEN = """() => [...document.images].filter((i) => i.complete && i.naturalWidth === 0 && i.getClientRects().length
+  && getComputedStyle(i).display !== 'none' && getComputedStyle(i).visibility !== 'hidden').map((i) => i.alt || i.src)"""
+
+
+def hook(page, what, serial, on):
+    page.evaluate("([w, s, o]) => fetch(`api/_mock/hook?set=${w}&serial=${s}&on=${o}`).then((r) => r.text())", [what, serial, on])
+
+
+def must(page, selector, msg, timeout=6000):
+    try:
+        page.wait_for_selector(selector, timeout=timeout)
+    except Exception:
+        raise AssertionError(msg + " (broken images: %s)" % page.evaluate(BROKEN))
+
+
+def check_printer_card(page, base, ident, go, shot):
+    """A printer whose camera fails and whose AMS slots are all empty: a placeholder, no broken image, no tray row;
+    the chamber light switch sends the command and shows the state."""
+    ALLOW_502.append("/camera")
+    hook(page, "camera_down", P1S, 1)
+    hook(page, "empty_ams", P1S, 1)
+    page.goto(f"{base}/?as={ident}")  # a fresh page: no earlier camera frame is kept
+    go("#/printers", ".pcard")
+    must(page, ".pcard:has-text('Office P1S') .off:has-text('No camera image')", "a failing camera shows a placeholder")
+    assert page.evaluate(BROKEN) == [], "broken images on the printer grid: %s" % page.evaluate(BROKEN)
+    p1s = page.locator(".pcard", has_text="Office P1S")
+    assert p1s.locator(".tray").count() == 0, "an all-empty AMS has no tray row"
+    assert "AMS empty" in p1s.text_content(), "the card says the AMS is empty"
+    assert page.locator(".pcard", has_text="Workshop H2S").locator(".tray").count() > 0, "a loaded AMS keeps its trays"
+    shot("printer-card-empty-ams")
+    go("#/printers/" + P1S, ".cam.big")
+    must(page, ".cam.big .off:has-text('No camera image')", "a failing camera shows a placeholder on the printer page")
+    assert page.evaluate(BROKEN) == [], "broken images on the printer page"
+    assert page.locator(".tray").count() == 0 and page.locator("section.card", has_text="Filament").get_by_text("AMS empty").count() == 1
+    hook(page, "camera_down", P1S, 0)
+    hook(page, "empty_ams", P1S, 0)
+    # the light: admins switch it, a plain user sees the state only
+    go("#/printers", ".pcard")
+    sw = page.locator(".pcard", has_text="Workshop H2S").get_by_role("switch", name="Chamber light")
+    sw.wait_for()
+    if ident == "admin":
+        sw.click()
+        page.wait_for_selector(".pcard:has-text('Workshop H2S') [role=switch][aria-checked=true]")
+        assert page.evaluate("fetch('api/_mock/light').then((r) => r.json())")[-1] == {"serial": H2S, "on": True}, "the light command was sent"
+        go("#/printers/" + H2S, ".cam.big")
+        detail = page.locator("section.card", has_text="Temperatures").get_by_role("switch", name="Chamber light")
+        assert detail.get_attribute("aria-checked") == "true", "the page shows the new state"
+        detail.click()
+        page.wait_for_function("document.querySelector(\"section.card [role=switch]\").getAttribute('aria-checked') === 'false'")
+        assert page.evaluate("fetch('api/_mock/light').then((r) => r.json())")[-1]["on"] is False
+    else:
+        assert sw.is_disabled(), "a user without admin rights cannot switch the light"
+    ALLOW_502.clear()
+    page.goto(f"{base}/?as={ident}")
+
+
+def check_library_pick(page, go, shot):
+    """New print for a printer with an empty AMS: the library is the list, and the chosen spool goes to the slicer."""
+    hook(page, "empty_ams", P1S, 1)
+    go("#/new", ".drop")
+    page.set_input_files("input[type=file]", files=[MODEL])
+    page.get_by_role("button", name="Office P1S").click()
+    page.wait_for_selector("#fil-note")
+    assert page.get_by_text("No AMS trays reported").count() == 0
+    assert "AMS is empty" in page.locator("#fil-note").text_content()
+    assert page.locator("#fil-ams").count() == 0 and page.locator("#fil-library .chip").count() == 1, "only the library spool that is in no printer"
+    slice_btn = page.get_by_role("button", name="Slice good, better and best")
+    assert slice_btn.is_disabled(), "nothing is chosen yet"
+    page.locator("#fil-library .chip").click()
+    assert "not in the AMS" in page.locator("#load-note").text_content()
+    assert page.locator("#load-note").get_by_role("button", name="Ask to load").count() == 1
+    assert not slice_btn.is_disabled()
+    shot("newprint-filament-pick")
+    if SLICE_ON:
+        page.locator("#where").get_by_role("button", name=SLICE_ON).click()
+    slice_btn.click()
+    page.wait_for_selector(".variant[aria-pressed=true]", timeout=SLICE_TIMEOUT)
+    sent = page.evaluate("fetch('api/_mock/slices').then((r) => r.json())")[-3:]
+    want = {"type": "PLA", "brand": "Bambu Lab", "name": "PLA Matte Charcoal", "colour": "2E2E2E", "spool": "5004"}
+    assert len(sent) == 3 and all({k: b.get(k) for k in want} == want and "tray" not in b for b in sent), "the slice request names the spool: %s" % sent
+    hook(page, "empty_ams", P1S, 0)
 
 
 def walk(page, ident, base, shot, inject):
@@ -414,6 +518,9 @@ def walk(page, ident, base, shot, inject):
                 page.wait_for_function("[...document.querySelectorAll('input')].some(i => i.value === 'Workshop H2S (renamed)')", timeout=5000)
                 page.wait_for_function("[...document.querySelectorAll('select[data-field=owner]')].some(s => s.value === 'u-lena')", timeout=5000)  # the owner is stored
         return
+    if ONLY == "reslice":
+        check_reslice(page, base, ident)
+        return
     if ONLY == "cache":
         check_cache(page, base, ident)
         return
@@ -436,6 +543,8 @@ def walk(page, ident, base, shot, inject):
         go("#/printers/FAKE-X1C-0003", ".hms")
         assert page.locator("section.card h2", has_text="Start next").count() == 0, "empty queue: no start card"
         shot("printer-offline-hms")
+    if MOCKED:
+        check_printer_card(page, base, ident, go, shot)
     go("#/queue", ".job")
     shot("queue")
     if MOCKED:
@@ -464,6 +573,8 @@ def walk(page, ident, base, shot, inject):
     page.get_by_role("button", name="Add Better to queue").click()
     page.wait_for_selector(".job")
     shot("queue-after-add")
+    if MOCKED:
+        check_library_pick(page, go, shot)
     go("#/filament", ".spool")
     shot("filament")
     assert page.locator(".spool").count() == 5, "the cloud library lists five spools: %d" % page.locator(".spool").count()
@@ -505,7 +616,7 @@ def walk(page, ident, base, shot, inject):
 def main():
     ap = argparse.ArgumentParser()
     ap.add_argument("--shots")
-    ap.add_argument("--only", choices=["cache"], help="run one check only")
+    ap.add_argument("--only", choices=["cache", "reslice"], help="run one check only")
     ap.add_argument("--port", type=int, default=18099, help="port of the mock server")
     ap.add_argument("--inject-absolute", action="store_true")
     ap.add_argument("--base-url")

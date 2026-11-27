@@ -152,7 +152,7 @@ def run_slice(jid, printer, quality, tray, bed):
         try:
             preset = cfg["preset"]
             fil = subprocess.run([sys.executable, "-I", BS, "filament-for", PROFILES, preset,
-                                  tray["idx"], tray["type"]], capture_output=True, text=True, timeout=120)
+                                  tray["idx"], tray["type"], want(tray)], capture_output=True, text=True, timeout=120)
             if fil.returncode:
                 raise RuntimeError(fil.stderr.strip() or fil.stdout.strip())
             filament = fil.stdout.strip()
@@ -257,10 +257,23 @@ def pick(h, body):
     quality, bed = body.get("quality"), body.get("bed") or printer["bed"]
     if quality not in PRINTERS[printer["model"]]["quality"] or bed not in BEDS:
         return h.send(400, {"error": "Unknown quality or plate."})
-    tray = next((t for t in printer["trays"] if t["ams"] + ":" + t["id"] == body.get("tray")), None)
+    tray = tray_of(printer, body)
     if not tray:
-        return h.send(400, {"error": "Pick a loaded AMS tray."})
+        return h.send(400, {"error": "Pick a loaded AMS tray or a spool from the library."})
     return printer, quality, bed, tray
+
+
+def tray_of(printer, body):
+    """A loaded AMS tray (tray=ams:id), else a library spool named by type/brand/name/colour (not loaded, so no ams/id)."""
+    if body.get("tray"):
+        return next((t for t in printer["trays"] if t["ams"] + ":" + t["id"] == body["tray"]), None)
+    typ = str(body.get("type") or "").strip()
+    if not typ:
+        return None
+    colour = re.sub(r"[^0-9A-Fa-f]", "", str(body.get("colour") or ""))[:6]
+    brand, name = str(body.get("brand") or "").strip(), str(body.get("name") or "").strip()
+    return {"ams": None, "id": None, "type": typ, "idx": "", "brand": brand, "name": name or typ,
+            "colour": "#" + (colour if len(colour) == 6 else "C8C8C8"), "spool_id": str(body.get("spool") or "") or None}
 
 
 def post_slice(h, m, q):
@@ -285,10 +298,23 @@ def presets_of(model):
         return json.load(f)
 
 
+def want(tray):
+    """First word of the brand ("Bambu Lab" is "Bambu" in preset names) and the name of a library spool, for the preset
+    match; empty for an AMS tray (it has a filament id)."""
+    brand = (tray.get("brand") or "").split()[:1]
+    return " ".join(brand + [tray.get("name") or ""]).strip() if tray.get("ams") is None else ""
+
+
 def choose_filament(filaments, tray):
-    """Same rule as bs.py filament-for: the tray's filament id, else Generic of its type; fewest printers first."""
+    """Same rule as bs.py filament-for: the tray's filament id, else a preset named like brand and name (library spools),
+    else Generic of its type; fewest printers first."""
+    words = want(tray).lower().split()
+    def named(f):
+        n = f["name"].lower().split(" @")[0]
+        return f["type"] == tray["type"] and bool(words) and all(w in n for w in words)
     def rank(f):
-        return 0 if tray["idx"] and f["id"] == tray["idx"] else 1 if f["name"].startswith("Generic ") and f["type"] == tray["type"] else 9
+        return (0 if tray["idx"] and f["id"] == tray["idx"] else 1 if named(f)
+                else 2 if f["name"].startswith("Generic ") and f["type"] == tray["type"] else 9)
     ok = sorted((f for f in filaments if rank(f) < 9), key=lambda f: (rank(f), f["n"], f["name"]))
     return ok[0] if ok else None
 
@@ -298,10 +324,12 @@ def get_filament(h, m, q):
     arg = {k: v[0] for k, v in q.items()}
     try:
         printer = next(p for p in printers() if p["serial"] == arg.get("serial"))
-        tray = next(t for t in printer["trays"] if t["ams"] + ":" + t["id"] == arg.get("tray"))
+        tray = tray_of(printer, arg)
+        if not tray:
+            raise StopIteration
         f = choose_filament(presets_of(printer["model"])["filaments"], tray)
     except StopIteration:
-        return h.send(400, {"error": "Pick a printer and a loaded AMS tray."})
+        return h.send(400, {"error": "Pick a printer and a loaded AMS tray or a library spool."})
     except (OSError, RuntimeError) as e:
         return h.send(502, {"error": str(e)})
     if not f:
@@ -362,6 +390,15 @@ def get_file(h, m, q):
     h.send(200, data, "image/png" if member.endswith("png") else "text/plain; charset=utf-8")
 
 
+def get_model(h, m, q):
+    """The uploaded model, so New print can slice it again (Reslice)."""
+    job = jobs.get(m.group(1))
+    if not job or not os.path.isfile(job.get("model") or ""):
+        return h.send(404, {"error": "no model"})
+    with open(job["model"], "rb") as f:
+        h.send(200, f.read(), "application/octet-stream")
+
+
 def post_print(h, m, q):
     job = jobs.get(m.group(1))
     if not job or job.get("state") != "done":
@@ -403,6 +440,7 @@ ROUTES = [
     ("POST", r"/api/jobs/" + JOB_ID + r"/slice", post_slice),
     ("POST", r"/api/jobs/" + JOB_ID + r"/gcode", post_gcode),
     ("GET", r"/api/jobs/" + JOB_ID + r"/(plate\.png|plate\.gcode)", get_file),
+    ("GET", r"/api/jobs/" + JOB_ID + r"/model", get_model),
     ("POST", r"/api/jobs/" + JOB_ID + r"/print", post_print),
 ]
 
