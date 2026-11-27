@@ -40,6 +40,27 @@ curl -fsS -X PUT --data-binary @plate.gcode.3mf \
 
 The integration needs the Druckwerk app (bridge API on port 8098).
 
+## For agents and automations
+
+Agents (an MCP server for Home Assistant, Claude through Assist) and automations print, observe and manage the queue through Home Assistant actions and an LLM API. Every call runs as the calling HA user: the integration sends the user's id to the app (`X-Druckwerk-Act-As`, see `hub/API.md`), so the app's access rules apply. HA admins and printer owners are admins of their printers; users add jobs on printers they have a grant for, cancel their own jobs and reorder within their own slots. A call without a user (automation, voice satellite) is admin. It needs the hub secret (see above).
+
+Actions (reads answer with `return_response` only, writes may):
+
+- `druckwerk.get_printers`: status, progress, remaining time, layer, temperatures, AMS trays, HMS errors, current job, queue length. `druckwerk.get_queue`: waiting jobs per printer and `any`, pending approvals, history.
+- `druckwerk.slice`: slices a model under `/share` or `/media` as good, better and best, and returns time, grams, cost and a slice job id for each. It takes 3 to 15 minutes (one slice at a time); `wait: false` returns the ids at once, `druckwerk.get_slice` reads them later.
+- `druckwerk.add_to_queue` (a sliced file in the share, or a slice job id), `cancel_job`, `reorder_job`, `move_job`, `skip_job`, `approve_job`, `reject_job`, `retry_job`.
+- `druckwerk.start_next` and `druckwerk.start_job` need `plate_clear: true` and `confirmed_by_person: true` and are refused otherwise. Agents must show the person the sliced plate review and a current `druckwerk.camera_snapshot` first and get an explicit yes.
+- `druckwerk.camera_snapshot`: saves `/media/druckwerk/<serial>-<time>.jpg` and returns the path.
+
+The LLM API "Druckwerk" (`llm.async_register_api`) offers the same operations as tools (`druckwerk_get_printers` and so on) with a prompt that explains the rules. HA's MCP server lists it among its APIs (admin users only); Assist can use it as an LLM API.
+
+Example with `ha_call_service` (or any REST client: `POST /api/services/druckwerk/add_to_queue?return_response`):
+
+```json
+{"domain": "druckwerk", "service": "add_to_queue",
+ "data": {"slice_job_id": "a1b2c3d4e5f6", "target": "any", "model": "H2S", "options": {"timelapse": true}}}
+```
+
 ## Print guard
 
 Before anything is sent, `druckwerk.print_file` and the Start button check the first plate's G-code (`gcode_guard.py`) and refuse the file, listing every problem, if:

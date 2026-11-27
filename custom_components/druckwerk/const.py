@@ -34,3 +34,4 @@ EVENT_INTERVAL = timedelta(seconds=5)
 EVENT_PREFIX = "druckwerk_"
 ACTION_PREFIX = "DRUCKWERK_START_"
 HUB_SECRET_HEADER = "X-Hub-Secret"
+ACT_AS_HEADER = "X-Druckwerk-Act-As"

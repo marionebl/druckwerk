@@ -27,6 +27,8 @@ from .const import (
 from .externals import VENDOR_DOMAIN
 from .coordinator import SenderCoordinator
 from .hub import HubCoordinator
+from . import llm_api
+from .services import async_register_services
 from .upload import UploadView
 from .watchdog import PrintWatchdog
 
@@ -51,6 +53,7 @@ PRINT_FILE_SCHEMA = vol.All(
 
 async def async_setup(hass: HomeAssistant, config: ConfigType) -> bool:
     hass.http.register_view(UploadView())
+    async_register_services(hass)
 
     async def _print_file(call: ServiceCall) -> dict[str, Any]:
         entries = hass.config_entries.async_loaded_entries(DOMAIN)
@@ -116,6 +119,7 @@ async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
         entry.async_on_unload(
             hass.bus.async_listen("mobile_app_notification_action", hub.on_action)
         )
+        entry.async_on_unload(llm_api.async_register(hass))  # tools need the hub
     entry.async_on_unload(entry.add_update_listener(_async_reload))
     await hass.config_entries.async_forward_entry_setups(entry, PLATFORMS)
     return True

@@ -42,9 +42,9 @@ class HubCoordinator(DataUpdateCoordinator[HubData]):
         self.secret: str = entry.data[CONF_HUB_SECRET]
         self.seq: int | None = None  # None until the first poll; its backlog is not replayed
 
-    async def call(self, method: str, path: str, body: Any = None) -> Any:
+    async def call(self, method: str, path: str, body: Any = None, **kwargs: Any) -> Any:
         session = async_get_clientsession(self.hass)
-        return await hub_api.hub_request(session, self.url, self.secret, method, path, body)
+        return await hub_api.hub_request(session, self.url, self.secret, method, path, body, **kwargs)
 
     async def _async_update_data(self) -> HubData:
         try:

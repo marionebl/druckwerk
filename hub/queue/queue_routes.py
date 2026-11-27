@@ -11,12 +11,15 @@ ID = r"([0-9a-f]{12})"
 GRANT_FIELDS = ("user_id", "printer", "role", "until", "condition_entity", "needs_approval")
 
 
-def make_routes(q, access=None, is_internal=lambda h: False):
+def make_routes(q, access=None, is_internal=lambda h: False, caller_of=None):
+    # caller_of(handler) -> Caller lets the app apply X-Druckwerk-Act-As; the default reads the ingress headers.
+    caller_of = caller_of or (lambda h: caller_from_headers(h.headers, is_internal(h)))
+
     def guarded(fn):
         def run(h, m, query):
             try:
                 if access:
-                    api = access.bind(q, caller_from_headers(h.headers, is_internal(h)))
+                    api = access.bind(q, caller_of(h))
                 else:
                     api = q
                 return h.send(200, fn(h, m, api))

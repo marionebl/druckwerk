@@ -5,6 +5,7 @@ Paths are relative to the ingress root. All bodies are JSON. Errors: `{"error": 
 
 Identity comes from the Supervisor ingress headers `X-Remote-User-Id`, `X-Remote-User-Name`, `X-Remote-User-Display-Name`.
 Calls from the integration go to `http://<app hostname>:8099` without ingress and carry `X-Hub-Secret`; they are internal (admin everywhere).
+An internal call may add `X-Druckwerk-Act-As: <HA user id>`. The app then applies that user's rules exactly as for an ingress user (HA admin flag from the HA users list, grants, ownership of slices and jobs), so a non-admin cannot skip, approve, start or cancel other people's jobs. The user must be an active, non-system HA user, else 403 `rule: act-as user <id> is not an active Home Assistant user`. Without the header the internal caller stays admin (automations). The header counts only together with a valid `X-Hub-Secret`; on an ingress request it is ignored. An act-as caller is not internal, so internal-only routes (`/api/events`) answer 403 for it; HA-admin routes work for act-as HA admins. The integration sends the header with `call.context.user_id` for its agent actions and LLM tools.
 The app only trusts the identity headers from the Supervisor ingress gateway (172.30.32.2, env `HUB_INGRESS_IPS`); every route except the web UI's own files (`GET /`, `/index.html`, `/style.css`, `/app.js`, `/api.js`, `/util.js`, `/views/*.js`, served from hub/ui) answers 401 without an identity or the secret.
 The secret reaches the integration through Supervisor discovery: on start the app POSTs `{service: "druckwerk", config: {host: <own hostname>, bridge_port: 8098, hub_port: 8099, secret}}` to `http://supervisor/discovery` (retried every 30 s until it works). `GET /api/integration` shows the same data to HA admins as the fallback.
 
@@ -53,7 +54,7 @@ The secret reaches the integration through Supervisor discovery: on start the ap
 
 ## Slicing
 
-- Existing slicer routes: `POST /api/jobs` (upload), `POST /api/jobs/{id}/slice`, `GET /api/jobs/{id}`, `GET /api/jobs/{id}/(plate.png|plate.gcode)`, `POST /api/jobs/{id}/print` (direct print, admin of the printer only; the queue is the normal path).
+- Existing slicer routes: `POST /api/jobs` (upload), `POST /api/jobs/{id}/slice`, `GET /api/jobs/{id}` (a done slice also carries `cost_estimate`: filament from the matching spool plus electricity, same formula as the final job cost; `null` when it cannot be read), `GET /api/jobs/{id}/(plate.png|plate.gcode)`, `POST /api/jobs/{id}/print` (direct print, admin of the printer only; the queue is the normal path).
   A slice belongs to the user who uploaded it (`owner_user_id`); others get 403, HA admins and the integration may use any. Slicing needs an active grant on the chosen printer.
 - `POST /api/jobs/{id}/queue` `{target: serial|"any", model?, options?}` → queue job (file, grams and plate image taken from the slice). The 3MF is copied into the share under a unique name; the add follows the normal grant rules (403, or `pending_approval`).
 

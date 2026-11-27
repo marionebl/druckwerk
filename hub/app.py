@@ -21,12 +21,13 @@ from urllib.parse import parse_qs, urlsplit
 import externals
 import filament
 from ha import HAError
-from queue_access import Access, Forbidden, Grants, Unauthorized, caller_from_headers
+from queue_access import Access, Caller, Forbidden, Grants, Unauthorized, caller_from_headers
 from queue_engine import WAITING, NotFound, Queue, QueueError
 from queue_registry import Registry
 
 HOP = {"connection", "keep-alive", "transfer-encoding", "content-length", "server", "date"}
 SECRET_HEADER = "X-Hub-Secret"
+ACT_AS_HEADER = "X-Druckwerk-Act-As"
 IDENTITY_HEADERS = ("X-Remote-User-Id", "X-Remote-User-Name", "X-Remote-User-Display-Name")
 JOB_ID = r"([0-9a-f]{12})"
 # Sensor names of the vendor HA integration after the printer prefix (verified against its translations/en.json).
@@ -114,7 +115,15 @@ class App:
         return bool(given) and hmac.compare_digest(given.encode(), self.secret.encode())
 
     def caller(self, h):
-        return caller_from_headers(h.headers, self.is_internal(h))
+        internal = self.is_internal(h)
+        caller = caller_from_headers(h.headers, internal)
+        act_as = (h.headers.get(ACT_AS_HEADER) or "").strip()
+        if not (internal and act_as):
+            return caller  # the header counts only with the secret; without it the caller stays admin (automations)
+        user = self.get_user(act_as)
+        if not user:
+            raise Forbidden("rule: act-as user %s is not an active Home Assistant user" % act_as)
+        return Caller(act_as, user["name"], user["name"])  # not internal: this user's rules apply
 
     def _cached(self, key, ttl, fn):
         """fn() result for ttl seconds; on failure the last good value, else the error."""
@@ -606,6 +615,33 @@ class App:
             return fn(h, m, q)
         return run
 
+    def get_slice(self, h, m, q):
+        """The slicer's job answer plus a cost estimate once the slice is done."""
+        job = self.own(self.caller(h), m.group(1))
+        cap = Capture(h)
+        self.s.get_job(cap, m, q)
+        status, body, ctype = cap.out
+        if status == 200 and body.get("state") == "done" and job.get("result"):
+            try:
+                body["cost_estimate"] = self.estimate_cost(job)
+            except (OSError, KeyError, ValueError, zipfile.BadZipFile):
+                body["cost_estimate"] = None
+        h.send(status, body, ctype)
+
+    def estimate_cost(self, job):
+        """Same formula as settle(): spools matched on the printer, grams and print time from the slice."""
+        serial = job["printer"]["serial"]
+        printer = self.registry.get(serial) or {}
+        use = filament.slice_usage(job["result"])
+        tray = (job.get("settings") or {}).get("tray")
+        hint = (int(tray["ams"]), int(tray["id"])) if tray and len(use["filaments"]) == 1 else None
+        prices = []
+        for f in use["filaments"]:
+            sp = self.spools.match(serial, f["type"], f["colour"], hint)
+            prices.append((sp["price_per_kg"] or 0) if sp else 0)
+        return filament.job_cost([f["grams"] for f in use["filaments"]], prices, use["seconds"], printer.get("model"),
+                                 printer.get("electricity_kwh_price") or 0)
+
     def check_slice(self, h, c, job):
         body = h.json()
         h.json = lambda: body  # the slicer handler reads the body again
@@ -767,7 +803,7 @@ class App:
             ("GET", r"/api/printers/([^/]+)/cover", lambda h, m, q: self.get_cover(h, m, q, self.caller(h))),
             ("GET", r"/api/queue/" + JOB_ID + r"/plate\.png", lambda h, m, q: self.get_plate(h, m, q, self.caller(h))),
             ("POST", r"/api/jobs", self.post_job),
-            ("GET", r"/api/jobs/" + JOB_ID, self.slicer_job(self.s.get_job)),
+            ("GET", r"/api/jobs/" + JOB_ID, self.get_slice),
             ("POST", r"/api/jobs/" + JOB_ID + r"/slice", self.slicer_job(self.s.post_slice, self.check_slice)),
             ("GET", r"/api/jobs/" + JOB_ID + r"/(plate\.png|plate\.gcode)", self.slicer_job(self.s.get_file)),
             ("POST", r"/api/jobs/" + JOB_ID + r"/print", self.slicer_job(self.s.post_print, self.check_print)),
@@ -788,7 +824,7 @@ class App:
         ]
         if self.ui_dir:
             mine += [("GET", "/", self.get_ui), ("GET", "/" + UI_FILES, self.get_ui)]
-        return mine + make_routes(self.queue, self.access, self.is_internal)
+        return mine + make_routes(self.queue, self.access, self.is_internal, self.caller)
 
     def install(self):
         """Replace the slicer's overlapping routes with ours, check identity first, add PUT and DELETE."""

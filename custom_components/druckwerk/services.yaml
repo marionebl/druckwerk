@@ -30,3 +30,196 @@ print_file:
       default: false
       selector:
         boolean:
+
+get_printers:
+  fields:
+    printer:
+      example: "Lab H2S"
+      selector:
+        text: {}
+
+get_queue:
+  fields:
+    history_limit:
+      default: 0
+      selector:
+        number:
+          min: 0
+          max: 50
+          mode: "box"
+
+add_to_queue:
+  fields:
+    file:
+      example: "benchy_better_h2s.gcode.3mf"
+      selector:
+        text: {}
+    slice_job_id:
+      example: "a1b2c3d4e5f6"
+      selector:
+        text: {}
+    target:
+      default: "any"
+      selector:
+        text: {}
+    model:
+      example: "H2S"
+      selector:
+        text: {}
+    options:
+      example:
+        timelapse: true
+      selector:
+        object: {}
+
+slice:
+  fields:
+    model_file:
+      required: true
+      example: "/media/models/cube.stl"
+      selector:
+        text: {}
+    printer:
+      selector:
+        text: {}
+      required: true
+    tray:
+      required: true
+      example: "0:0"
+      selector:
+        text: {}
+    plate:
+      example: "Textured PEI Plate"
+      selector:
+        select:
+          options: ["Cool Plate", "Engineering Plate", "High Temp Plate", "Textured PEI Plate", "Supertack Plate"]
+    wait:
+      default: true
+      selector:
+        boolean: {}
+
+get_slice:
+  fields:
+    slice_job_ids:
+      required: true
+      example: ["a1b2c3d4e5f6"]
+      selector:
+        text:
+          multiple: true
+
+cancel_job:
+  fields:
+    job_id:
+      required: true
+      example: "a1b2c3d4e5f6"
+      selector:
+        text: {}
+
+reorder_job:
+  fields:
+    job_id:
+      required: true
+      example: "a1b2c3d4e5f6"
+      selector:
+        text: {}
+    position:
+      required: true
+      example: 0
+      selector:
+        number:
+          min: 0
+          max: 500
+          mode: "box"
+    printer:
+      selector:
+        text: {}
+
+move_job:
+  fields:
+    job_id:
+      required: true
+      example: "a1b2c3d4e5f6"
+      selector:
+        text: {}
+    target:
+      required: true
+      example: "any"
+      selector:
+        text: {}
+    model:
+      selector:
+        text: {}
+
+skip_job:
+  fields:
+    job_id:
+      required: true
+      example: "a1b2c3d4e5f6"
+      selector:
+        text: {}
+
+approve_job:
+  fields:
+    job_id:
+      required: true
+      example: "a1b2c3d4e5f6"
+      selector:
+        text: {}
+
+reject_job:
+  fields:
+    job_id:
+      required: true
+      example: "a1b2c3d4e5f6"
+      selector:
+        text: {}
+
+retry_job:
+  fields:
+    job_id:
+      required: true
+      example: "a1b2c3d4e5f6"
+      selector:
+        text: {}
+
+start_next:
+  fields:
+    printer:
+      selector:
+        text: {}
+      required: true
+    plate_clear:
+      default: false
+      selector:
+        boolean: {}
+    confirmed_by_person:
+      default: false
+      selector:
+        boolean: {}
+
+start_job:
+  fields:
+    printer:
+      selector:
+        text: {}
+      required: true
+    job_id:
+      required: true
+      example: "a1b2c3d4e5f6"
+      selector:
+        text: {}
+    plate_clear:
+      default: false
+      selector:
+        boolean: {}
+    confirmed_by_person:
+      default: false
+      selector:
+        boolean: {}
+
+camera_snapshot:
+  fields:
+    printer:
+      selector:
+        text: {}
+      required: true
