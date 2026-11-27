@@ -1,0 +1,10 @@
+name: ffmpeg debug
+on:
+  push:
+    branches: [slim-image]
+jobs:
+  ff:
+    runs-on: ubuntu-24.04-arm
+    steps:
+      - uses: actions/checkout@v4
+      - run: docker build --progress=plain --target ffmpeg -f hub/Dockerfile -t ff . 2>&1 | tail -60
