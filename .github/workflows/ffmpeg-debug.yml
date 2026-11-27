@@ -6,5 +6,7 @@ jobs:
   ff:
     runs-on: ubuntu-24.04-arm
     steps:
-      - uses: actions/checkout@v4
-      - run: docker build --progress=plain --target ffmpeg -f hub/Dockerfile -t ff . 2>&1 | tail -60
+      - run: |
+          git clone -q --depth 1 --branch n7.1.1 https://github.com/FFmpeg/FFmpeg /src && cd /src
+          grep -n "aom_film_grain\|h2645_sei\|h264_sei" libavcodec/Makefile
+          grep -n "aom_film_grain\|h2645_sei" configure | head
