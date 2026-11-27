@@ -7,7 +7,8 @@ an update of the app does not. All logic lives in the app (hub/API.md).
 from __future__ import annotations
 
 from homeassistant.config_entries import ConfigEntry
-from homeassistant.core import HomeAssistant
+from homeassistant.core import HomeAssistant, callback
+from homeassistant.helpers.start import async_at_started
 from homeassistant.helpers.typing import ConfigType
 
 from .hub import HubCoordinator
@@ -35,9 +36,15 @@ async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
     entry.async_on_unload(hub.manifest.async_unload)
     if hub.secret:  # without it every call fails
         await hub.manifest.async_load()  # the actions exist before the app answers
-        await hub.async_refresh()  # an app that is down must not block the setup; entities appear when it answers
     entry.async_on_unload(entry.add_update_listener(_async_updated))
     await hass.config_entries.async_forward_entry_setups(entry, PLATFORMS)
+    if hub.secret:  # network work waits until HA has started; entities appear when the app answers
+
+        @callback
+        def _first_poll(_: HomeAssistant) -> None:
+            entry.async_create_background_task(hass, hub.async_refresh(), "druckwerk first poll")
+
+        entry.async_on_unload(async_at_started(hass, _first_poll))
     return True
 
 
