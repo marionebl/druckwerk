@@ -1,7 +1,11 @@
 # Changelog
 
-## 2.7.1 (2026-11-27)
+## 2.8.0 (unreleased)
 
+- Own the actions and the LLM tools of the integration. The integration reads them from `GET /api/integration/manifest`.
+- Add `POST /api/actions/<name>` and `POST /api/tools/<name>`.
+- Add `manifest_revision` to `GET /api/events`.
+- Write camera snapshots and plate images to `/media/druckwerk` from the app. The app maps `media` read-write now.
 - Make the app image about 70 % smaller, so updates download faster.
 - Remove unused slicer files, the full qemu package and the full ffmpeg package.
 

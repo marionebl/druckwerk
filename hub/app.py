@@ -18,6 +18,7 @@ import time
 import zipfile
 from urllib.parse import parse_qs, urlsplit
 
+import actions
 import externals
 import filament
 import history
@@ -42,7 +43,8 @@ UI_FILES = r"(index\.html|style\.css|app\.js|api\.js|util\.js|feedback\.js|views
 # A feedback post carries screenshots; every other route keeps the slicer's 8 KB JSON limit.
 FEEDBACK_MAX = 1500000
 MIME = {"html": "text/html; charset=utf-8", "css": "text/css; charset=utf-8", "js": "text/javascript; charset=utf-8"}
-MEDIA_ROOTS = ("/media", "/share")  # where a queue file may be named by absolute path (config.yaml maps media read-only)
+MEDIA_ROOTS = ("/media", "/share")  # where a queue file may be named by absolute path (config.yaml maps media read-write)
+MEDIA_DIR = "/media/druckwerk"  # snapshots and plate images of the actions
 SLICED = re.compile(r"Metadata/plate_\d+\.gcode")
 TASKS_TTL = 60  # seconds a printer's cloud task list is reused
 DOMAIN_DEFAULTS = "schedule,input_boolean,binary_sensor,person"
@@ -125,6 +127,7 @@ class App:
         self.queue = Queue(self.registry, data_dir, ha.state, self._call_service, self.get_trays, clock=clock,
                            job_allowed=self.access.job_allowed, dry=Drying(self))
         self.media_roots = list(MEDIA_ROOTS)
+        self.media_dir = MEDIA_DIR
         self.secret = self._load_secret()
         self._auto_at = None
         self._track_at = None
@@ -1041,12 +1044,62 @@ class App:
 
     def get_events(self, h, m, q, c):
         self.sync()
+        rev = actions.manifest_revision()
         if "since" not in q:
-            return {"seq": self.seq, "events": []}  # a first poll starts from now, no backlog
+            return {"seq": self.seq, "manifest_revision": rev, "events": []}  # a first poll starts from now, no backlog
         since = num(q["since"][0], int)
         if since is None:
             raise ValueError("since must be an integer")
-        return {"seq": self.seq, "events": [e for e in list(self.events) if e["seq"] > since]}
+        return {"seq": self.seq, "manifest_revision": rev, "events": [e for e in list(self.events) if e["seq"] > since]}
+
+    def internal_caller(self, h):
+        """The integration's routes: the secret is required, the act-as user's rules apply as for the web UI."""
+        if not self.is_internal(h):
+            raise Forbidden("rule: only the Home Assistant integration can do this")
+        return self.caller(h)
+
+    def get_manifest(self, h, m, q):
+        self.internal_caller(h)
+        h.send(200, actions.manifest())
+
+    def post_operation(self, run):
+        def route(h, m, q):
+            self.internal_caller(h)
+            act_as = (h.headers.get(ACT_AS_HEADER) or "").strip()
+            port = h.server.server_address[1]
+
+            def call(method, path, body=None, data=None, binary=False, timeout=30):
+                return self.local_call(port, act_as, method, path, body, data, binary, timeout)
+            try:
+                result = run(m.group(1), h.json(), actions.Ops(call, self.media_roots, self.media_dir))
+            except actions.ActionError as e:
+                raise HttpError(e.status, str(e))
+            h.send(200, {"result": result})
+        return route
+
+    def local_call(self, port, act_as, method, path, body, data, binary, timeout):
+        """Ask this app's own route as the act-as user (none: the admin automation caller)."""
+        headers = {SECRET_HEADER: self.secret}
+        if act_as:
+            headers[ACT_AS_HEADER] = act_as
+        if body is not None:
+            data, headers["Content-Type"] = json.dumps(body).encode(), "application/json"
+        conn = http.client.HTTPConnection("127.0.0.1", port, timeout=timeout)
+        try:
+            conn.request(method, path, data, headers)
+            r = conn.getresponse()
+            raw = r.read()
+        except OSError as e:
+            raise actions.ActionError(502, "the app is not reachable: %s" % e)
+        finally:
+            conn.close()
+        if r.status >= 300:
+            try:
+                text = json.loads(raw)["error"]
+            except (ValueError, KeyError, TypeError):
+                text = raw.decode(errors="replace")[:300]
+            raise actions.ActionError(r.status, text)
+        return raw if binary else json.loads(raw or b"null")
 
     def bridge_route(self, h, m, q):
         self.need(self.caller(h), "ha_admin")
@@ -1090,6 +1143,9 @@ class App:
             ("POST", r"/api/ha/switches", w(self.create_switch, "ha_admin")),
             ("POST", r"/api/feedback", w(self.post_feedback)),
             ("GET", r"/api/events", w(self.get_events, "internal")),
+            ("GET", r"/api/integration/manifest", self.get_manifest),
+            ("POST", r"/api/actions/([a-z_]+)", self.post_operation(actions.run_action)),
+            ("POST", r"/api/tools/([a-z_]+)", self.post_operation(actions.run_tool)),
             ("GET", r"/api/grants", w(self.get_grants)),
             ("POST", r"/api/grants", w(self.post_grants)),
             # The bridge's own page and API (account login), for HA admins only.

@@ -11,7 +11,6 @@ from homeassistant.config_entries import ConfigEntry
 from homeassistant.core import HomeAssistant, ServiceCall, SupportsResponse
 from homeassistant.exceptions import HomeAssistantError, ServiceValidationError
 from homeassistant.helpers import config_validation as cv
-from homeassistant.helpers import device_registry as dr
 from homeassistant.helpers.typing import ConfigType
 
 from . import api, hub_api
@@ -24,17 +23,18 @@ from .const import (
     DOMAIN,
     HUB_PORT,
 )
-from .externals import VENDOR_DOMAIN
+from .externals import serial_from_device
 from .coordinator import SenderCoordinator
 from .hub import HubCoordinator
-from . import llm_api
-from .services import BED_TYPES, TRI, async_register_services
 from .upload import UploadView
 from .watchdog import PrintWatchdog
 
 _LOGGER = logging.getLogger(__name__)
 PLATFORMS = ["select", "switch", "button", "sensor", "camera", "light", "image", "todo"]
 
+# Options of the vendor slicer's print dialog. TRI ones take on, off or "auto"; the others on or off.
+TRI = vol.Any("auto", cv.boolean)
+BED_TYPES = ["auto", "cool_plate", "eng_plate", "hot_plate", "textured_plate", "supertack_plate", "3d_effect_plate"]
 ADVANCED = ("flow_cali", "vibration_cali", "layer_inspect", "nozzle_offset_cali", "bed_type", "ext_change_assist")
 
 PRINT_FILE_SCHEMA = vol.All(
@@ -62,7 +62,6 @@ PRINT_FILE_SCHEMA = vol.All(
 
 async def async_setup(hass: HomeAssistant, config: ConfigType) -> bool:
     hass.http.register_view(UploadView())
-    async_register_services(hass)
 
     async def _print_file(call: ServiceCall) -> dict[str, Any]:
         entries = hass.config_entries.async_loaded_entries(DOMAIN)
@@ -93,11 +92,8 @@ async def async_setup(hass: HomeAssistant, config: ConfigType) -> bool:
 
 
 def _serial_from_device(hass: HomeAssistant, device_id: str) -> str:
-    device = dr.async_get(hass).async_get(device_id)
-    if device:
-        for domain, serial in device.identifiers:
-            if domain == VENDOR_DOMAIN:
-                return serial
+    if serial := serial_from_device(hass, device_id):
+        return serial
     raise ServiceValidationError(f"Device {device_id} is not a supported printer")
 
 
@@ -125,11 +121,12 @@ async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
     if entry.data.get(CONF_HUB_SECRET):
         hub = coordinator.hub = HubCoordinator(hass, entry)
         entry.async_on_unload(hub.async_add_listener(lambda: None))  # keeps the 5 s polling alive
+        entry.async_on_unload(hub.manifest.async_unload)
+        await hub.manifest.async_load()  # the actions exist before the app answers
         await hub.async_refresh()  # a hub that is down must not block the printers
         entry.async_on_unload(
             hass.bus.async_listen("mobile_app_notification_action", hub.on_action)
         )
-        entry.async_on_unload(llm_api.async_register(hass))  # tools need the hub
     entry.async_on_unload(entry.add_update_listener(_async_reload))
     await hass.config_entries.async_forward_entry_setups(entry, PLATFORMS)
     return True

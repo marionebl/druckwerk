@@ -1,6 +1,8 @@
 """Druckwerk app parts: discovery, migration, secret, queue todo, events, notifications."""
 
+import json
 from datetime import timedelta
+from pathlib import Path
 
 import pytest
 from homeassistant.helpers import entity_registry as er
@@ -13,16 +15,18 @@ TODO = "todo.my_h2s_queue"
 HUBHOST = "c9a833d4-druckwerk"
 PERSON = "person.anna"
 ANNA = "anna-user-id"
+MANIFEST = json.loads((Path(__file__).parent / "fixtures" / "manifest.json").read_text())
 
 
 def job(jid, state="queued", target=SERIAL, owner="Anna", file="cube.gcode.3mf"):
     return {"id": jid, "file": file, "state": state, "target": target, "owner_name": owner, "owner_user_id": ANNA}
 
 
-def mock_hub(mock, jobs=None, events=None, seq=1, grants=None, users=None):
+def mock_hub(mock, jobs=None, events=None, seq=1, grants=None, users=None, manifest=MANIFEST):
     # The first matching mock wins, so drop the earlier hub mocks .
     mock._mocks = [m for m in mock._mocks if not (str(m.url).startswith(HUB_URL) and True)]
-    mock.get(f"{HUB_URL}/api/events", json={"seq": seq, "events": events or []})
+    mock.get(f"{HUB_URL}/api/events", json={"seq": seq, "events": events or [], "manifest_revision": manifest["revision"]})
+    mock.get(f"{HUB_URL}/api/integration/manifest", json=manifest)
     mock.get(f"{HUB_URL}/api/queue", json={"jobs": jobs or [], "history": [], "printers": []})
     mock.get(f"{HUB_URL}/api/grants", json=grants if grants is not None else [])
     mock.get(f"{HUB_URL}/api/ha/users", json=users if users is not None else [{"id": ANNA, "name": "Anna", "is_admin": True}])
