@@ -163,7 +163,20 @@ class H(BaseHTTPRequestHandler):
             return self.reply(200, {"result": "sent"})
         if self.path.startswith("/core/services/"):
             return self.reply(200, {"service_response": {"result": "sent"}})
+        if self.path.split("?")[0] == "/api/filament":
+            SPOOLS.append(dict(SPOOLS[-1], **body, id=str(5000 + len(SPOOLS)), printer=None, in_printer=False))
+            return self.reply(200, SPOOLS[-1])
         self.reply(200, {})  # supervisor discovery
+
+    def do_PUT(self):
+        body = json.loads(self.rfile.read(int(self.headers.get("Content-Length") or 0)) or b"{}")
+        CALLS.append({"path": self.path, "body": body})
+        sid = self.path.split("?")[0].rsplit("/", 1)[1]
+        spool = next((s for s in SPOOLS if s["id"] == sid), None)
+        if not spool:
+            return self.reply(404, {"error": "unknown spool"})
+        spool.update(body)
+        self.reply(200, spool)
 
     def do_DELETE(self):
         self.reply(200, {"deleted": self.path.rsplit("/", 1)[1]})
