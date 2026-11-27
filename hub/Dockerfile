@@ -46,7 +46,7 @@ RUN apt-get update && apt-get install -y --no-install-recommends build-essential
 RUN git clone --depth 1 --branch n7.1.1 https://github.com/FFmpeg/FFmpeg /src && cd /src \
  && ./configure --prefix=/out --disable-everything --disable-autodetect --disable-doc --disable-debug --disable-network \
       --disable-ffplay --disable-ffprobe --disable-x86asm --enable-small --enable-static --disable-shared \
-      --enable-protocol=pipe,file --enable-demuxer=h264,mpegts --enable-muxer=mpegts,image2 --enable-parser=h264 \
+      --enable-protocol=pipe,fd,file --enable-demuxer=h264,mpegts --enable-muxer=mpegts,image2 --enable-parser=h264 \
       --enable-decoder=h264,hevc --enable-encoder=mjpeg --enable-bsf=null,h264_mp4toannexb,extract_extradata \
       --enable-filter=buffer,buffersink,scale,format,null,fps \
  && make -j"$(nproc)" install && strip /out/bin/ffmpeg && /out/bin/ffmpeg -hide_banner -version | head -1
