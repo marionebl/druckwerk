@@ -38,7 +38,7 @@ curl -fsS -X PUT --data-binary @plate.gcode.3mf \
 - The file must be a sliced 3MF (it has `Metadata/plate_N.gcode`). The limit is 64 MB. An existing name needs `?overwrite=1`.
 - The answer has the stored name, the size and the SHA-256.
 
-The integration needs the Druckwerk app (bridge API on port 8098).
+The integration needs the Druckwerk app. It reads the state and sends prints and uploads through the app (port 8099) and takes the camera stream from the bridge (port 8098). It also needs the hub secret.
 
 ## For agents and automations
 
@@ -85,8 +85,9 @@ Before anything is sent, `druckwerk.print_file` and the Start button check the f
 - Printers need no setup step either: the app registers every printer that the printer integration in Home Assistant already has. Remove one on the setup page and it stays removed.
 - Options: hub secret (normally delivered by the app through Supervisor discovery, which also keeps URLs and secret current; paste it by hand otherwise), notification recipients as a map `person.<name>: notify.<service>`.
 - Todo list `Queue` per printer: queued and pending jobs (the title is the print's name, the description has the file and the owner). Deleting an item cancels the job, moving it reorders; adding is not supported (a job needs a sliced file).
-- Events: the hub is polled every 5 s and fires `druckwerk_job_done`, `_job_failed`, `_job_started`, `_approval_needed`, `_queue_changed` with the hub's payload.
-- Notifications go to the printer's admins, and only to people whose `person` is `home`. After `job_done` with a next job queued they get "Plate clear? Start next: <job>"; the action starts it (`start-next` with `plate_clear`). `approval_needed` notifies the admins.
+- The integration holds no logic. It shows what the app describes and forwards, so an app update changes entities, actions and tools without a Home Assistant restart. It polls the app's state every 5 s.
+- Events: the app fires `druckwerk_job_done`, `_job_failed`, `_job_started`, `_approval_needed`, `_queue_changed` with its payload.
+- Notifications come from the app. The integration passes it the recipients from its options. They go to the printer's admins, and only to people whose `person` is `home`. After `job_done` with a next job queued they get "Plate clear? Start next: <job>"; the action starts it (`start-next` with `plate_clear`). `approval_needed` notifies the admins.
 
 ## Tests
 
@@ -105,7 +106,7 @@ and the bridge build (done in the image build, `hub/bridge/`). Prebuilt images f
 
 1. In Home Assistant: Settings, Apps, App store, menu, Repositories, add `https://github.com/marionebl/druckwerk`.
 2. Install "Druckwerk" and start it. "Druckwerk" appears in the sidebar: log in to your printer cloud account(s) under setup, slice and print from the main page.
-3. The integration reaches the bridge API at `http://<app hostname>:8098` (see below).
+3. The integration reaches the app at `http://<app hostname>:8099` and the bridge at `http://<app hostname>:8098` (see below).
 
 On amd64 the bridge and the vendor plugin run natively, on aarch64 under `qemu-x86_64`.
 

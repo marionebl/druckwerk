@@ -1,0 +1,92 @@
+{
+  "manifest_revision": "5dbdde582c90",
+  "printers": {
+    "0000TEST0000001": {
+      "name": "Lab",
+      "model": "H2S",
+      "entities": {
+        "print_file": {
+          "options": [
+            "benchy.gcode.3mf",
+            "sub/cube.gcode.3mf"
+          ]
+        },
+        "cloud_sender": {
+          "state": "sent",
+          "attributes": {
+            "account_email": "a@example.invalid",
+            "last_file": "benchy.gcode.3mf",
+            "last_time": "1970-01-01T00:16:40+00:00",
+            "last_error": null
+          }
+        },
+        "cloud_camera": {
+          "online": true,
+          "stream": "/api/camera/0000TEST0000001/live",
+          "transcode": false,
+          "snapshot": "/api/integration/printers/0000TEST0000001/snapshot"
+        },
+        "current_print": {
+          "token": "50bee531fe55",
+          "file_path": "/media/druckwerk/benchy.gcode.3mf",
+          "has_preview": true
+        },
+        "chamber_light": {
+          "on": true
+        },
+        "queue": {
+          "items": [
+            {
+              "uid": "b478f72f93be",
+              "summary": "First",
+              "description": "File: a.gcode.3mf\nOwner: U-ADMIN"
+            },
+            {
+              "uid": "63c23dd124c8",
+              "summary": "c",
+              "description": "File: c.gcode.3mf\nOwner: U-USER (needs approval)"
+            }
+          ]
+        }
+      }
+    },
+    "FAKE0002": {
+      "name": "Other",
+      "model": "P1S",
+      "entities": {
+        "print_file": {
+          "options": [
+            "benchy.gcode.3mf",
+            "sub/cube.gcode.3mf"
+          ]
+        },
+        "cloud_sender": {
+          "state": "idle",
+          "attributes": {
+            "account_email": null,
+            "last_file": null,
+            "last_time": null,
+            "last_error": null
+          }
+        },
+        "cloud_camera": {
+          "online": false,
+          "stream": null,
+          "transcode": true,
+          "snapshot": "/api/integration/printers/FAKE0002/snapshot"
+        },
+        "current_print": {
+          "token": null,
+          "file_path": null,
+          "has_preview": false
+        },
+        "chamber_light": {
+          "on": null
+        },
+        "queue": {
+          "items": []
+        }
+      }
+    }
+  }
+}

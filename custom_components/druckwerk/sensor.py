@@ -4,31 +4,25 @@ from __future__ import annotations
 
 from homeassistant.components.sensor import SensorDeviceClass, SensorEntity
 
-from .entity import SenderEntity
-from .platform_helper import add_per_printer
+from .entity import AppEntity
+from .platform_helper import add_entities
 
 
 async def async_setup_entry(hass, entry, async_add_entities) -> None:
-    add_per_printer(entry, async_add_entities, lambda c, s: [CloudSenderSensor(c, s)])
+    add_entities(entry, async_add_entities, "sensor", AppSensor)
 
 
-class CloudSenderSensor(SenderEntity, SensorEntity):
+class AppSensor(AppEntity, SensorEntity):
     _attr_device_class = SensorDeviceClass.ENUM
-    _attr_options = ["idle", "sent", "error"]
 
-    def __init__(self, coordinator, serial) -> None:
-        super().__init__(coordinator, serial, "cloud_sender")
+    def __init__(self, hub, serial, desc) -> None:
+        super().__init__(hub, serial, desc)
+        self._attr_options = list(desc.get("options", {}))
 
     @property
-    def native_value(self) -> str:
-        return self.pstate.result
+    def native_value(self) -> str | None:
+        return self.app.get("state")
 
     @property
     def extra_state_attributes(self) -> dict:
-        st = self.pstate
-        return {
-            "account_email": self.printer.get("email"),
-            "last_file": st.last_file,
-            "last_time": st.last_time,
-            "last_error": st.last_error,
-        }
+        return self.app.get("attributes", {})

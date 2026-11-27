@@ -1,13 +1,15 @@
-"""Shared entity base."""
+"""Shared entity base: one entity per printer and descriptor of the app's manifest."""
 
 from __future__ import annotations
+
+from typing import Any
 
 from homeassistant.helpers import device_registry as dr
 from homeassistant.helpers.device_registry import DeviceInfo
 from homeassistant.helpers.update_coordinator import CoordinatorEntity
 
 from .externals import VENDOR_DOMAIN, VENDOR_MANUFACTURER
-from .coordinator import PrinterState, SenderCoordinator
+from .hub import HubCoordinator
 
 
 def _vendor_device(hass, identifiers):
@@ -19,38 +21,41 @@ def _vendor_device(hass, identifiers):
     return None
 
 
-class SenderEntity(CoordinatorEntity[SenderCoordinator]):
+class AppEntity(CoordinatorEntity[HubCoordinator]):
     _attr_has_entity_name = True
 
-    def __init__(self, coordinator: SenderCoordinator, serial: str, key: str) -> None:
-        super().__init__(coordinator)
-        self.serial = serial
-        self._attr_translation_key = key
-        self._attr_unique_id = f"{serial}_{key}"
+    def __init__(self, hub: HubCoordinator, serial: str, desc: dict[str, Any]) -> None:
+        super().__init__(hub)
+        self.hub, self.serial, self.key = hub, serial, desc["key"]
+        self._attr_name = desc["name"]
+        self._attr_icon = desc.get("icon")
+        self._attr_unique_id = f"{serial}_{self.key}"
         identifiers = {(VENDOR_DOMAIN, serial)}
-        existing = _vendor_device(coordinator.hass, identifiers)
+        existing = _vendor_device(hub.hass, identifiers)
         if existing:
             # Since HA 2026.10 a device belongs to one config entry, so identifiers
             # no longer merge across integrations; attach to the existing device itself.
             self.device_entry = existing
         else:
-            printer = coordinator.data.printers.get(serial, {})
+            printer = hub.data.get(serial, {})
             self._attr_device_info = DeviceInfo(
                 identifiers=identifiers,
                 name=printer.get("name") or serial,
                 manufacturer=VENDOR_MANUFACTURER,
-                model=printer.get("dev_product_name") or printer.get("dev_model_name"),
+                model=printer.get("model"),
                 serial_number=serial,
             )
 
     @property
-    def printer(self) -> dict:
-        return self.coordinator.data.printers.get(self.serial, {})
-
-    @property
-    def pstate(self) -> PrinterState:
-        return self.coordinator.state_for(self.serial)
+    def app(self) -> dict[str, Any]:
+        """What the app says about this entity."""
+        return self.hub.data.get(self.serial, {}).get("entities", {}).get(self.key) or {}
 
     @property
     def available(self) -> bool:
-        return super().available and self.serial in self.coordinator.data.printers
+        # A printer or descriptor the app dropped stays in the registry, unavailable.
+        return (
+            super().available
+            and self.serial in self.hub.data
+            and any(d["key"] == self.key for d in self.hub.manifest.entities)
+        )

@@ -1,56 +1,22 @@
-"""Start cloud print and AMS slot re-read buttons."""
+"""Buttons: pressing runs the descriptor's `press` in the app."""
 
 from __future__ import annotations
 
 from homeassistant.components.button import ButtonEntity
-from homeassistant.exceptions import HomeAssistantError
 
-from . import api
-from .const import AMS_SLOTS
-from .entity import SenderEntity
-from .platform_helper import add_per_printer
+from .entity import AppEntity
+from .platform_helper import add_entities
 
 
 async def async_setup_entry(hass, entry, async_add_entities) -> None:
-    add_per_printer(
-        entry,
-        async_add_entities,
-        lambda c, s: [StartPrintButton(c, s)] + [RereadSlotButton(c, s, n) for n in range(AMS_SLOTS)],
-    )
+    add_entities(entry, async_add_entities, "button", AppButton)
 
 
-class StartPrintButton(SenderEntity, ButtonEntity):
-    def __init__(self, coordinator, serial) -> None:
-        super().__init__(coordinator, serial, "start_print")
+class AppButton(AppEntity, ButtonEntity):
+    def __init__(self, hub, serial, desc) -> None:
+        super().__init__(hub, serial, desc)
+        self._press = desc["press"]
 
     async def async_press(self) -> None:
-        st = self.pstate
-        if not st.file:
-            raise HomeAssistantError("Select a print file first")
-        path = await self.hass.async_add_executor_job(
-            api.resolve_file, self.hass, st.file
-        )
-        await self.coordinator.async_print(
-            self.serial,
-            path,
-            timelapse=st.timelapse,
-            bed_leveling=st.bed_leveling,
-            use_ams=True,
-        )
-
-
-class RereadSlotButton(SenderEntity, ButtonEntity):
-    """Makes the AMS read the spool's RFID tag again, without pulling the spool."""
-
-    _attr_icon = "mdi:nfc-search-variant"
-
-    def __init__(self, coordinator, serial, slot: int) -> None:
-        super().__init__(coordinator, serial, "reread_slot")
-        self.slot = slot
-        self._attr_unique_id = f"{serial}_reread_slot_{slot + 1}"
-        self._attr_translation_placeholders = {"slot": str(slot + 1)}
-
-    async def async_press(self) -> None:
-        await self.coordinator.async_command(
-            f"/api/rfid/{self.serial}", {"ams_id": 0, "slot_id": self.slot}
-        )
+        user_id = self._context.user_id if self._context else None
+        await self.hub.press(self.serial, self._press, user_id)

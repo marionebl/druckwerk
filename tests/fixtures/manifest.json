@@ -1,6 +1,5 @@
 {
   "api_version": 1,
-  "revision": "fixture00001",
   "actions": [
     {
       "name": "print_file",
@@ -9,9 +8,11 @@
       "serial_fields": [
         "device_id"
       ],
+      "title": "Print file",
       "fields": {
         "device_id": {
           "required": false,
+          "title": "Printer",
           "description": "Printer device, as registered by the printer integration.",
           "selector": {
             "device": {
@@ -25,32 +26,36 @@
         },
         "serial": {
           "required": false,
+          "title": "Serial",
           "description": "Printer serial number, used when no device is given.",
           "example": "0000TEST0000001",
           "selector": {
-            "text": null
+            "text": {}
           }
         },
         "file": {
           "required": true,
+          "title": "File",
           "description": "Path relative to /media/druckwerk, or an absolute path under /media or /share.",
           "example": "benchy.gcode.3mf",
           "selector": {
-            "text": null
+            "text": {}
           }
         },
         "timelapse": {
           "required": false,
-          "default": false,
+          "title": "Timelapse",
           "description": "Record a timelapse.",
+          "default": false,
           "selector": {
-            "boolean": null
+            "boolean": {}
           }
         },
         "bed_leveling": {
           "required": false,
-          "default": "on",
+          "title": "Bed leveling",
           "description": "Level the bed before printing: on, off or auto (the printer decides).",
+          "default": "on",
           "selector": {
             "select": {
               "options": [
@@ -63,14 +68,16 @@
         },
         "use_ams": {
           "required": false,
-          "default": true,
+          "title": "Use AMS",
           "description": "Use the AMS filament mapping.",
+          "default": true,
           "selector": {
-            "boolean": null
+            "boolean": {}
           }
         },
         "flow_cali": {
           "required": false,
+          "title": "Flow dynamics calibration",
           "description": "Calibrate the flow before printing: on, off or auto. Left out, the bridge keeps its default (on).",
           "selector": {
             "select": {
@@ -80,24 +87,30 @@
                 "auto"
               ]
             }
-          }
+          },
+          "advanced": true
         },
         "vibration_cali": {
           "required": false,
+          "title": "Vibration calibration",
           "description": "Run the vibration (resonance) calibration. Left out, the bridge keeps its default (on).",
           "selector": {
-            "boolean": null
-          }
+            "boolean": {}
+          },
+          "advanced": true
         },
         "layer_inspect": {
           "required": false,
+          "title": "First layer inspection",
           "description": "Inspect the first layer with the printer camera. Left out: off.",
           "selector": {
-            "boolean": null
-          }
+            "boolean": {}
+          },
+          "advanced": true
         },
         "nozzle_offset_cali": {
           "required": false,
+          "title": "Nozzle offset calibration",
           "description": "Calibrate the nozzle offset: on, off or auto. For printers with two nozzles. Left out: off.",
           "selector": {
             "select": {
@@ -107,10 +120,12 @@
                 "auto"
               ]
             }
-          }
+          },
+          "advanced": true
         },
         "bed_type": {
           "required": false,
+          "title": "Plate type",
           "description": "The build plate in the printer. auto means the file decides. Left out: auto.",
           "selector": {
             "select": {
@@ -124,21 +139,25 @@
                 "3d_effect_plate"
               ]
             }
-          }
+          },
+          "advanced": true
         },
         "ext_change_assist": {
           "required": false,
+          "title": "External spool change assist",
           "description": "Let the printer help when you change the external spool. Left out: off.",
           "selector": {
-            "boolean": null
-          }
+            "boolean": {}
+          },
+          "advanced": true
         },
         "force": {
           "required": false,
-          "default": false,
+          "title": "Force",
           "description": "Send even if the printer is running or paused.",
+          "default": false,
           "selector": {
-            "boolean": null
+            "boolean": {}
           }
         }
       }
@@ -150,9 +169,11 @@
       "serial_fields": [
         "printer"
       ],
+      "title": "Get printers",
       "fields": {
         "printer": {
           "required": false,
+          "title": "Printer",
           "description": "Only this printer: serial number, printer name or device id. Empty returns all printers you may use.",
           "example": "Lab H2S",
           "selector": {
@@ -166,11 +187,13 @@
       "description": "Returns the print queue: waiting jobs per printer serial and for \"any\" (each with its 0-based position, as reorder_job takes it), jobs that wait for approval, running jobs and optionally the latest finished jobs. Read-only.",
       "response": "only",
       "serial_fields": [],
+      "title": "Get queue",
       "fields": {
         "history_limit": {
           "required": false,
-          "default": 0,
+          "title": "History limit",
           "description": "How many finished jobs to include, newest first. 0 for none.",
+          "default": 0,
           "selector": {
             "number": {
               "min": 0,
@@ -188,9 +211,11 @@
       "serial_fields": [
         "target"
       ],
+      "title": "Add to queue",
       "fields": {
         "file": {
           "required": false,
+          "title": "File",
           "description": "Name of a sliced .gcode.3mf in the share, or an absolute path under /media or /share to one. Use this or slice_job_id.",
           "example": "benchy_better_h2s.gcode.3mf",
           "selector": {
@@ -199,6 +224,7 @@
         },
         "slice_job_id": {
           "required": false,
+          "title": "Slice job",
           "description": "Job id of a finished slice from druckwerk.slice. Use this or file.",
           "example": "a1b2c3d4e5f6",
           "selector": {
@@ -207,14 +233,16 @@
         },
         "target": {
           "required": false,
-          "default": "any",
+          "title": "Target",
           "description": "Printer serial number or name, or \"any\" for the first free printer of the model.",
+          "default": "any",
           "selector": {
             "text": {}
           }
         },
         "model": {
           "required": false,
+          "title": "Model",
           "description": "Printer model for target \"any\", for example H2S. Needed when the printers have different models.",
           "example": "H2S",
           "selector": {
@@ -223,6 +251,7 @@
         },
         "options": {
           "required": false,
+          "title": "Options",
           "description": "Print options: timelapse, use_ams, vibration_cali, layer_inspect, ext_change_assist as booleans; bed_leveling, flow_cali, nozzle_offset_cali as true, false or auto; bed_type as auto, cool_plate, eng_plate, hot_plate, textured_plate, supertack_plate or 3d_effect_plate.",
           "example": {
             "timelapse": true,
@@ -235,6 +264,7 @@
         },
         "name": {
           "required": false,
+          "title": "Name",
           "description": "Name of the print, up to 80 characters. The queue and the live activity show it. Default: the file name without .gcode.3mf.",
           "example": "Benchy for Anna",
           "selector": {
@@ -250,9 +280,11 @@
       "serial_fields": [
         "printer"
       ],
+      "title": "Slice model",
       "fields": {
         "model_file": {
           "required": true,
+          "title": "Model file",
           "description": "Absolute path of the model (.stl, .3mf, .obj, .step) under /share or /media.",
           "example": "/media/models/cube.stl",
           "selector": {
@@ -261,6 +293,7 @@
         },
         "printer": {
           "required": true,
+          "title": "Printer",
           "description": "Printer serial number, printer name or device id. You need an active grant on it.",
           "selector": {
             "text": {}
@@ -268,6 +301,7 @@
         },
         "tray": {
           "required": true,
+          "title": "Tray",
           "description": "Loaded AMS tray as unit:slot, both 0-based, as get_printers lists them. 0:0 is the first slot of the first AMS.",
           "example": "0:0",
           "selector": {
@@ -276,6 +310,7 @@
         },
         "plate": {
           "required": false,
+          "title": "Build plate",
           "description": "Build plate type. Empty uses the printer's default.",
           "example": "Textured PEI Plate",
           "selector": {
@@ -292,8 +327,9 @@
         },
         "wait": {
           "required": false,
-          "default": true,
+          "title": "Wait",
           "description": "Wait for the slices to finish and return their results. False returns the slice job ids immediately.",
+          "default": true,
           "selector": {
             "boolean": {}
           }
@@ -305,9 +341,11 @@
       "description": "Returns state, print time, grams and cost of slice jobs, for example after druckwerk.slice with wait false. Read-only.",
       "response": "only",
       "serial_fields": [],
+      "title": "Get slice results",
       "fields": {
         "slice_job_ids": {
           "required": true,
+          "title": "Slice jobs",
           "description": "Slice job ids from druckwerk.slice.",
           "example": [
             "a1b2c3d4e5f6"
@@ -325,9 +363,11 @@
       "description": "Cancels a waiting job. Users cancel their own jobs; printer admins cancel any job. A job that already started runs on the printer and cannot be cancelled here.",
       "response": "optional",
       "serial_fields": [],
+      "title": "Cancel job",
       "fields": {
         "job_id": {
           "required": true,
+          "title": "Job",
           "description": "Queue job id (12 hex characters) from get_queue.",
           "example": "a1b2c3d4e5f6",
           "selector": {
@@ -343,9 +383,11 @@
       "serial_fields": [
         "printer"
       ],
+      "title": "Reorder job",
       "fields": {
         "job_id": {
           "required": true,
+          "title": "Job",
           "description": "Queue job id (12 hex characters) from get_queue.",
           "example": "a1b2c3d4e5f6",
           "selector": {
@@ -354,6 +396,7 @@
         },
         "position": {
           "required": true,
+          "title": "Position",
           "description": "New 0-based position among the waiting jobs (of the printer, when printer is set).",
           "example": 0,
           "selector": {
@@ -366,6 +409,7 @@
         },
         "printer": {
           "required": false,
+          "title": "Printer scope",
           "description": "Count positions among the waiting jobs of this printer only. Empty counts all waiting jobs.",
           "selector": {
             "text": {}
@@ -380,9 +424,11 @@
       "serial_fields": [
         "target"
       ],
+      "title": "Move job",
       "fields": {
         "job_id": {
           "required": true,
+          "title": "Job",
           "description": "Queue job id (12 hex characters) from get_queue.",
           "example": "a1b2c3d4e5f6",
           "selector": {
@@ -391,6 +437,7 @@
         },
         "target": {
           "required": true,
+          "title": "Target",
           "description": "New printer serial number or name, or \"any\".",
           "example": "any",
           "selector": {
@@ -399,6 +446,7 @@
         },
         "model": {
           "required": false,
+          "title": "Model",
           "description": "Printer model, needed when the target is \"any\" and the job has none.",
           "selector": {
             "text": {}
@@ -411,9 +459,11 @@
       "description": "Sends a waiting job to the end of the queue so the next one comes first. Printer admins only.",
       "response": "optional",
       "serial_fields": [],
+      "title": "Skip job",
       "fields": {
         "job_id": {
           "required": true,
+          "title": "Job",
           "description": "Queue job id (12 hex characters) from get_queue.",
           "example": "a1b2c3d4e5f6",
           "selector": {
@@ -427,9 +477,11 @@
       "description": "Approves a job that waits for approval so it becomes queued. Printer admins only.",
       "response": "optional",
       "serial_fields": [],
+      "title": "Approve job",
       "fields": {
         "job_id": {
           "required": true,
+          "title": "Job",
           "description": "Queue job id (12 hex characters) from get_queue.",
           "example": "a1b2c3d4e5f6",
           "selector": {
@@ -443,9 +495,11 @@
       "description": "Rejects a job that waits for approval; it is cancelled. Printer admins only.",
       "response": "optional",
       "serial_fields": [],
+      "title": "Reject job",
       "fields": {
         "job_id": {
           "required": true,
+          "title": "Job",
           "description": "Queue job id (12 hex characters) from get_queue.",
           "example": "a1b2c3d4e5f6",
           "selector": {
@@ -459,9 +513,11 @@
       "description": "Puts a failed or cancelled job from the history back into the queue. Printer admins only.",
       "response": "optional",
       "serial_fields": [],
+      "title": "Retry job",
       "fields": {
         "job_id": {
           "required": true,
+          "title": "Job",
           "description": "Queue job id (12 hex characters) from get_queue.",
           "example": "a1b2c3d4e5f6",
           "selector": {
@@ -477,9 +533,11 @@
       "serial_fields": [
         "printer"
       ],
+      "title": "Start next job",
       "fields": {
         "printer": {
           "required": true,
+          "title": "Printer",
           "description": "Printer serial number, printer name or device id. get_printers lists them.",
           "selector": {
             "text": {}
@@ -487,16 +545,18 @@
         },
         "plate_clear": {
           "required": false,
-          "default": false,
+          "title": "Plate clear",
           "description": "Must be true: the build plate is empty and clean. Only set it after the person has looked at the current camera snapshot.",
+          "default": false,
           "selector": {
             "boolean": {}
           }
         },
         "confirmed_by_person": {
           "required": false,
-          "default": false,
+          "title": "Confirmed by person",
           "description": "Must be true: the person has seen the sliced plate review and a current camera snapshot and explicitly said the print may start. An agent must never set this on its own.",
+          "default": false,
           "selector": {
             "boolean": {}
           }
@@ -510,9 +570,11 @@
       "serial_fields": [
         "printer"
       ],
+      "title": "Start job",
       "fields": {
         "printer": {
           "required": true,
+          "title": "Printer",
           "description": "Printer serial number, printer name or device id. get_printers lists them.",
           "selector": {
             "text": {}
@@ -520,6 +582,7 @@
         },
         "job_id": {
           "required": true,
+          "title": "Job",
           "description": "Queue job id (12 hex characters) from get_queue.",
           "example": "a1b2c3d4e5f6",
           "selector": {
@@ -528,16 +591,18 @@
         },
         "plate_clear": {
           "required": false,
-          "default": false,
+          "title": "Plate clear",
           "description": "Must be true: the build plate is empty and clean. Only set it after the person has looked at the current camera snapshot.",
+          "default": false,
           "selector": {
             "boolean": {}
           }
         },
         "confirmed_by_person": {
           "required": false,
-          "default": false,
+          "title": "Confirmed by person",
           "description": "Must be true: the person has seen the sliced plate review and a current camera snapshot and explicitly said the print may start. An agent must never set this on its own.",
+          "default": false,
           "selector": {
             "boolean": {}
           }
@@ -551,9 +616,11 @@
       "serial_fields": [
         "printer"
       ],
+      "title": "Camera snapshot",
       "fields": {
         "printer": {
           "required": true,
+          "title": "Printer",
           "description": "Printer serial number, printer name or device id. get_printers lists them.",
           "selector": {
             "text": {}
@@ -562,12 +629,146 @@
       }
     }
   ],
+  "entities": [
+    {
+      "key": "print_file",
+      "platform": "select",
+      "name": "Print file",
+      "state": "local"
+    },
+    {
+      "key": "timelapse",
+      "platform": "switch",
+      "name": "Print timelapse",
+      "state": "local",
+      "default": false
+    },
+    {
+      "key": "bed_leveling",
+      "platform": "switch",
+      "name": "Print bed leveling",
+      "state": "local",
+      "default": true
+    },
+    {
+      "key": "start_print",
+      "platform": "button",
+      "name": "Start cloud print",
+      "press": {
+        "path": "/api/actions/print_file",
+        "body": {
+          "serial": "$serial",
+          "file": "$print_file",
+          "timelapse": "$timelapse",
+          "bed_leveling": "$bed_leveling",
+          "use_ams": true
+        },
+        "needs": {
+          "print_file": "Select a print file first"
+        }
+      }
+    },
+    {
+      "key": "reread_slot_1",
+      "platform": "button",
+      "name": "Re-read slot 1",
+      "icon": "mdi:nfc-search-variant",
+      "press": {
+        "path": "/api/integration/printers/$serial/rfid",
+        "body": {
+          "ams_id": 0,
+          "slot_id": 0
+        }
+      }
+    },
+    {
+      "key": "reread_slot_2",
+      "platform": "button",
+      "name": "Re-read slot 2",
+      "icon": "mdi:nfc-search-variant",
+      "press": {
+        "path": "/api/integration/printers/$serial/rfid",
+        "body": {
+          "ams_id": 0,
+          "slot_id": 1
+        }
+      }
+    },
+    {
+      "key": "reread_slot_3",
+      "platform": "button",
+      "name": "Re-read slot 3",
+      "icon": "mdi:nfc-search-variant",
+      "press": {
+        "path": "/api/integration/printers/$serial/rfid",
+        "body": {
+          "ams_id": 0,
+          "slot_id": 2
+        }
+      }
+    },
+    {
+      "key": "reread_slot_4",
+      "platform": "button",
+      "name": "Re-read slot 4",
+      "icon": "mdi:nfc-search-variant",
+      "press": {
+        "path": "/api/integration/printers/$serial/rfid",
+        "body": {
+          "ams_id": 0,
+          "slot_id": 3
+        }
+      }
+    },
+    {
+      "key": "cloud_sender",
+      "platform": "sensor",
+      "name": "Cloud sender",
+      "state": "app",
+      "options": {
+        "idle": "Idle",
+        "sent": "Sent",
+        "error": "Error"
+      }
+    },
+    {
+      "key": "cloud_camera",
+      "platform": "camera",
+      "name": "Cloud camera",
+      "state": "app"
+    },
+    {
+      "key": "current_print",
+      "platform": "image",
+      "name": "Current print",
+      "state": "app"
+    },
+    {
+      "key": "chamber_light",
+      "platform": "light",
+      "name": "Chamber light (cloud)",
+      "state": "app",
+      "command": "/api/integration/printers/$serial/light"
+    },
+    {
+      "key": "queue",
+      "platform": "todo",
+      "name": "Queue",
+      "state": "app"
+    }
+  ],
   "llm": {
     "prompt": "Druckwerk manages 3D printers: printer status, the print queue, slicing and starting prints.\nRules:\n- You act as the signed-in Home Assistant user. Home Assistant admins and printer owners are admins of their printers.\n  Users may add jobs on printers they have an active grant for (some grants need an admin's approval), cancel their own jobs\n  and reorder only within their own queue slots. Only admins skip, move, approve, reject, retry and start jobs. A refusal\n  starting with \"rule:\" is final; tell the person, do not try another way round.\n- Slicing takes minutes (one slice at a time, three variants good, better and best). Say so before you start, and use\n  wait false with druckwerk_get_slice_results when your own call timeout is short.\n- Typical flow: druckwerk_get_printers (serial, AMS trays as unit:slot), druckwerk_slice, let the person choose a variant,\n  druckwerk_add_to_queue with its slice_job_id. Adding to the queue never starts a print.\n- Never start a print on your own. Before druckwerk_start_next or druckwerk_start_job, show the person the sliced plate\n  review and a current camera snapshot (druckwerk_camera_snapshot), ask whether the plate is clear and the print may\n  start, and call only after an explicit yes, with plate_clear and confirmed_by_person both true. Without both the call is refused.\n- Printers are named by serial number, printer name or device id. Job ids are 12 hex characters.\n",
     "tools": [
       {
         "name": "druckwerk_get_printers",
         "description": "Status of the printers you may use: state, progress, remaining time, end time, layer, temperatures, AMS trays (unit and slot), HMS errors, current job, queue length.",
+        "annotations": {
+          "read_only": true,
+          "destructive": false,
+          "idempotent": true,
+          "open_world": false
+        },
         "parameters": {
           "type": "object",
           "properties": {
@@ -576,18 +777,18 @@
               "description": "Only this printer: serial or name"
             }
           },
-          "additionalProperties": false
-        },
-        "annotations": {
-          "read_only": true,
-          "destructive": false,
-          "idempotent": true,
-          "open_world": false
+          "required": []
         }
       },
       {
         "name": "druckwerk_get_queue",
         "description": "The print queue: waiting jobs per printer serial and for any (with 0-based position), pending approvals, running jobs, optional history.",
+        "annotations": {
+          "read_only": true,
+          "destructive": false,
+          "idempotent": true,
+          "open_world": false
+        },
         "parameters": {
           "type": "object",
           "properties": {
@@ -599,18 +800,18 @@
               "default": 0
             }
           },
-          "additionalProperties": false
-        },
-        "annotations": {
-          "read_only": true,
-          "destructive": false,
-          "idempotent": true,
-          "open_world": false
+          "required": []
         }
       },
       {
         "name": "druckwerk_add_to_queue",
         "description": "Add a job to the queue from a sliced file name in the share or from a slice_job_id (give one). Does not start a print.",
+        "annotations": {
+          "read_only": false,
+          "destructive": false,
+          "idempotent": false,
+          "open_world": false
+        },
         "parameters": {
           "type": "object",
           "properties": {
@@ -710,18 +911,18 @@
               "description": "Name of the print, shown in the queue and the live activity (80 characters)"
             }
           },
-          "additionalProperties": false
-        },
-        "annotations": {
-          "read_only": false,
-          "destructive": false,
-          "idempotent": false,
-          "open_world": false
+          "required": []
         }
       },
       {
         "name": "druckwerk_slice",
         "description": "Slice a model (.stl, .3mf, .obj, .step under /share or /media) as good, better and best for one printer and tray; returns time, grams, cost and a slice job id per variant. Takes 3 to 15 minutes; wait false returns the ids at once.",
+        "annotations": {
+          "read_only": false,
+          "destructive": false,
+          "idempotent": false,
+          "open_world": false
+        },
         "parameters": {
           "type": "object",
           "properties": {
@@ -731,7 +932,7 @@
             },
             "printer": {
               "type": "string",
-              "description": "Printer serial or name"
+              "description": "Printer serial number or name"
             },
             "tray": {
               "type": "string",
@@ -751,19 +952,18 @@
             "model_file",
             "printer",
             "tray"
-          ],
-          "additionalProperties": false
-        },
-        "annotations": {
-          "read_only": false,
-          "destructive": false,
-          "idempotent": false,
-          "open_world": false
+          ]
         }
       },
       {
         "name": "druckwerk_get_slice_results",
         "description": "State, print time, grams and cost of slice jobs (after druckwerk_slice with wait false).",
+        "annotations": {
+          "read_only": true,
+          "destructive": false,
+          "idempotent": true,
+          "open_world": false
+        },
         "parameters": {
           "type": "object",
           "properties": {
@@ -777,19 +977,18 @@
           },
           "required": [
             "slice_job_ids"
-          ],
-          "additionalProperties": false
-        },
-        "annotations": {
-          "read_only": true,
-          "destructive": false,
-          "idempotent": true,
-          "open_world": false
+          ]
         }
       },
       {
         "name": "druckwerk_cancel_job",
         "description": "Cancel a waiting job. Users cancel their own, admins any.",
+        "annotations": {
+          "read_only": false,
+          "destructive": true,
+          "idempotent": false,
+          "open_world": false
+        },
         "parameters": {
           "type": "object",
           "properties": {
@@ -800,19 +999,18 @@
           },
           "required": [
             "job_id"
-          ],
-          "additionalProperties": false
-        },
-        "annotations": {
-          "read_only": false,
-          "destructive": true,
-          "idempotent": false,
-          "open_world": false
+          ]
         }
       },
       {
         "name": "druckwerk_reorder_job",
         "description": "Move a waiting job to a 0-based position. Users reorder only within their own slots, admins any.",
+        "annotations": {
+          "read_only": false,
+          "destructive": false,
+          "idempotent": false,
+          "open_world": false
+        },
         "parameters": {
           "type": "object",
           "properties": {
@@ -833,19 +1031,18 @@
           "required": [
             "job_id",
             "position"
-          ],
-          "additionalProperties": false
-        },
-        "annotations": {
-          "read_only": false,
-          "destructive": false,
-          "idempotent": false,
-          "open_world": false
+          ]
         }
       },
       {
         "name": "druckwerk_move_job",
         "description": "Change a waiting job's target printer, or to any. Admins only.",
+        "annotations": {
+          "read_only": false,
+          "destructive": false,
+          "idempotent": false,
+          "open_world": false
+        },
         "parameters": {
           "type": "object",
           "properties": {
@@ -865,19 +1062,18 @@
           "required": [
             "job_id",
             "target"
-          ],
-          "additionalProperties": false
-        },
-        "annotations": {
-          "read_only": false,
-          "destructive": false,
-          "idempotent": false,
-          "open_world": false
+          ]
         }
       },
       {
         "name": "druckwerk_skip_job",
         "description": "Send a waiting job to the end of the queue. Admins only.",
+        "annotations": {
+          "read_only": false,
+          "destructive": false,
+          "idempotent": false,
+          "open_world": false
+        },
         "parameters": {
           "type": "object",
           "properties": {
@@ -888,19 +1084,18 @@
           },
           "required": [
             "job_id"
-          ],
-          "additionalProperties": false
-        },
-        "annotations": {
-          "read_only": false,
-          "destructive": false,
-          "idempotent": false,
-          "open_world": false
+          ]
         }
       },
       {
         "name": "druckwerk_approve_job",
         "description": "Approve a job waiting for approval. Admins only.",
+        "annotations": {
+          "read_only": false,
+          "destructive": false,
+          "idempotent": false,
+          "open_world": false
+        },
         "parameters": {
           "type": "object",
           "properties": {
@@ -911,42 +1106,18 @@
           },
           "required": [
             "job_id"
-          ],
-          "additionalProperties": false
-        },
-        "annotations": {
-          "read_only": false,
-          "destructive": false,
-          "idempotent": false,
-          "open_world": false
+          ]
         }
       },
       {
         "name": "druckwerk_reject_job",
         "description": "Reject a job waiting for approval. Admins only.",
-        "parameters": {
-          "type": "object",
-          "properties": {
-            "job_id": {
-              "type": "string",
-              "description": "Queue job id from druckwerk_get_queue"
-            }
-          },
-          "required": [
-            "job_id"
-          ],
-          "additionalProperties": false
-        },
         "annotations": {
           "read_only": false,
           "destructive": true,
           "idempotent": false,
           "open_world": false
-        }
-      },
-      {
-        "name": "druckwerk_retry_job",
-        "description": "Put a failed or cancelled job back into the queue. Admins only.",
+        },
         "parameters": {
           "type": "object",
           "properties": {
@@ -957,19 +1128,40 @@
           },
           "required": [
             "job_id"
-          ],
-          "additionalProperties": false
-        },
+          ]
+        }
+      },
+      {
+        "name": "druckwerk_retry_job",
+        "description": "Put a failed or cancelled job back into the queue. Admins only.",
         "annotations": {
           "read_only": false,
           "destructive": false,
           "idempotent": false,
           "open_world": false
+        },
+        "parameters": {
+          "type": "object",
+          "properties": {
+            "job_id": {
+              "type": "string",
+              "description": "Queue job id from druckwerk_get_queue"
+            }
+          },
+          "required": [
+            "job_id"
+          ]
         }
       },
       {
         "name": "druckwerk_start_next",
         "description": "Start the next queued job on a printer. Admins only. Starting a print needs plate_clear: true and confirmed_by_person: true. Show the person the sliced plate review and a current camera snapshot (druckwerk.camera_snapshot), ask them to confirm the plate is clear and the print may start, and call again only after an explicit yes.",
+        "annotations": {
+          "read_only": false,
+          "destructive": true,
+          "idempotent": false,
+          "open_world": true
+        },
         "parameters": {
           "type": "object",
           "properties": {
@@ -990,19 +1182,18 @@
           },
           "required": [
             "printer"
-          ],
-          "additionalProperties": false
-        },
-        "annotations": {
-          "read_only": false,
-          "destructive": true,
-          "idempotent": false,
-          "open_world": true
+          ]
         }
       },
       {
         "name": "druckwerk_start_job",
         "description": "Start a chosen queued job on a printer, ahead of the queue order. Admins only. Starting a print needs plate_clear: true and confirmed_by_person: true. Show the person the sliced plate review and a current camera snapshot (druckwerk.camera_snapshot), ask them to confirm the plate is clear and the print may start, and call again only after an explicit yes.",
+        "annotations": {
+          "read_only": false,
+          "destructive": true,
+          "idempotent": false,
+          "open_world": true
+        },
         "parameters": {
           "type": "object",
           "properties": {
@@ -1028,19 +1219,18 @@
           "required": [
             "printer",
             "job_id"
-          ],
-          "additionalProperties": false
-        },
-        "annotations": {
-          "read_only": false,
-          "destructive": true,
-          "idempotent": false,
-          "open_world": true
+          ]
         }
       },
       {
         "name": "druckwerk_camera_snapshot",
         "description": "Take a current camera picture; saved under /media/druckwerk, returns its path. Takes up to a minute.",
+        "annotations": {
+          "read_only": true,
+          "destructive": false,
+          "idempotent": false,
+          "open_world": false
+        },
         "parameters": {
           "type": "object",
           "properties": {
@@ -1051,16 +1241,10 @@
           },
           "required": [
             "printer"
-          ],
-          "additionalProperties": false
-        },
-        "annotations": {
-          "read_only": true,
-          "destructive": false,
-          "idempotent": false,
-          "open_world": false
+          ]
         }
       }
     ]
-  }
+  },
+  "revision": "5dbdde582c90"
 }

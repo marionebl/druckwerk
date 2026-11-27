@@ -1,51 +1,45 @@
-"""Camera through the add-on: a live stream (go2rtc plays it) and stills through the snapshot route."""
+"""Camera through the app: a live stream (go2rtc plays it) and stills through the snapshot route."""
 
 from __future__ import annotations
 
 import asyncio
 import logging
 import time
-from pathlib import Path
 
 import aiohttp
 from homeassistant.components.camera import Camera, CameraEntityFeature
 from homeassistant.helpers.aiohttp_client import async_get_clientsession
 from homeassistant.util import dt as dt_util
 
-from .const import CAMERA_MAX_AGE, CAMERA_STALE, CAMERA_TIMEOUT
-from .entity import SenderEntity
-from .platform_helper import add_per_printer
+from .const import CAMERA_MAX_AGE, CAMERA_STALE, CAMERA_TIMEOUT, HUB_SECRET_HEADER
+from .entity import AppEntity
+from .platform_helper import add_entities
 
 _LOGGER = logging.getLogger(__name__)
-OFFLINE_JPEG = Path(__file__).with_name("offline.jpg")
-JPEG_PRODUCTS = ("P1", "A1")  # P1P, P1S, A1, A1 mini
 
 
 async def async_setup_entry(hass, entry, async_add_entities) -> None:
-    add_per_printer(entry, async_add_entities, lambda c, s: [CloudCamera(c, s)])
+    add_entities(entry, async_add_entities, "camera", AppCamera)
 
 
-class CloudCamera(SenderEntity, Camera):
-    # Each snapshot opens a new cloud tunnel and waits for a keyframe (10-60 s under qemu).
+class AppCamera(AppEntity, Camera):
+    # Each snapshot may open a new cloud tunnel and wait for a keyframe (10-60 s under qemu).
     # So the entity serves the last image and refreshes it in the background.
 
     _unrecorded_attributes = frozenset({"frame_time"})
 
-    def __init__(self, coordinator, serial) -> None:
-        SenderEntity.__init__(self, coordinator, serial, "cloud_camera")
+    def __init__(self, hub, serial, desc) -> None:
+        AppEntity.__init__(self, hub, serial, desc)
         Camera.__init__(self)
         self._image: bytes | None = None
         self._fetched = 0.0
         self._task: asyncio.Task | None = None
-        self._offline_image: bytes | None = None
         self._frame_time: str | None = None
         self._last_error: str | None = None
 
     @property
     def online(self) -> bool:
-        # Without the printer's MQTT status the add-on cannot mint a camera URL and answers 502.
-        live = self.printer.get("live")
-        return isinstance(live, dict) and bool(live.get("cached"))
+        return bool(self.app.get("online"))
 
     @property
     def supported_features(self) -> CameraEntityFeature:
@@ -57,10 +51,13 @@ class CloudCamera(SenderEntity, Camera):
         return {"online": self.online, "frame_time": self._frame_time, "last_error": self._last_error}
 
     async def _fetch(self) -> None:
+        # The app answers a placeholder picture while the printer is offline.
         session = async_get_clientsession(self.hass)
-        url = f"{self.coordinator.url}/api/camera/{self.serial}/snapshot"
+        url = self.hub.url + self.app.get("snapshot", "")
         try:
-            async with session.get(url, timeout=aiohttp.ClientTimeout(total=CAMERA_TIMEOUT)) as resp:
+            async with session.get(
+                url, headers={HUB_SECRET_HEADER: self.hub.secret}, timeout=aiohttp.ClientTimeout(total=CAMERA_TIMEOUT)
+            ) as resp:
                 body = await resp.read()
                 if resp.status == 200 and resp.content_type == "image/jpeg":
                     self._image, error = body, None
@@ -76,21 +73,15 @@ class CloudCamera(SenderEntity, Camera):
         self.async_write_ha_state()
 
     async def stream_source(self) -> str | None:
-        if not self.online:
+        stream = self.app.get("stream")
+        if not (self.online and stream):
             return None
-        # The add-on shares one cloud tunnel between all viewers, so go2rtc can open this at will.
-        url = f"{self.coordinator.url}/api/camera/{self.serial}/live"
-        if str(self.printer.get("dev_product_name") or "").startswith(JPEG_PRODUCTS):
-            # These printers send JPEG frames, which WebRTC cannot carry: go2rtc's ffmpeg encodes H.264.
-            return f"ffmpeg:{url}#video=h264"
-        return url
+        # The app shares one cloud tunnel between all viewers, so go2rtc can open this at will.
+        url = self.hub.bridge_url + stream
+        # JPEG frames cannot go over WebRTC: go2rtc's ffmpeg encodes H.264.
+        return f"ffmpeg:{url}#video=h264" if self.app.get("transcode") else url
 
     async def async_camera_image(self, width: int | None = None, height: int | None = None) -> bytes | None:
-        if not self.online:
-            # A fetch can only fail, and None makes HA answer 500. The last frame may no longer hold.
-            if self._offline_image is None:
-                self._offline_image = await self.hass.async_add_executor_job(OFFLINE_JPEG.read_bytes)
-            return self._offline_image
         stale = time.monotonic() - self._fetched > CAMERA_MAX_AGE
         if stale and (self._task is None or self._task.done()):
             self._task = self.hass.async_create_background_task(self._fetch(), f"druckwerk camera {self.serial}")
