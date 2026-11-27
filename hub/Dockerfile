@@ -38,8 +38,25 @@ COPY hub/slicer/engine/ /w/hub/slicer/engine/
 COPY hub/externals.py /w/hub/externals.py
 RUN /w/hub/slicer/engine/build.sh /out
 
+# ffmpeg with only what hub/bridge/server.py runs: raw H.264 and MPEG-TS in, MJPEG stills and MPEG-TS out. The Debian
+# package pulls ~400 MB of codecs and GPU libraries. Built natively on the builder of each arch.
+FROM debian:trixie-slim AS ffmpeg
+RUN apt-get update && apt-get install -y --no-install-recommends build-essential git ca-certificates && rm -rf /var/lib/apt/lists/*
+RUN git clone --depth 1 --branch n7.1.1 https://github.com/FFmpeg/FFmpeg /src && cd /src \
+ && ./configure --prefix=/out --disable-everything --disable-autodetect --disable-doc --disable-debug --disable-network \
+      --disable-ffplay --disable-ffprobe --disable-x86asm --enable-small --enable-static --disable-shared \
+      --enable-protocol=pipe,file --enable-demuxer=h264,mpegts --enable-muxer=mpegts,image2 --enable-parser=h264 \
+      --enable-decoder=h264 --enable-encoder=mjpeg --enable-bsf=null,h264_mp4toannexb,extract_extradata \
+      --enable-filter=buffer,buffersink,scale,format,null,fps \
+ && make -j"$(nproc)" install && strip /out/bin/ffmpeg && /out/bin/ffmpeg -hide_banner -version | head -1
+
+# Only the x86_64 user emulator; the Debian qemu-user package has ~30 CPUs (460 MB).
+FROM debian:trixie-slim AS qemu
+RUN apt-get update && apt-get install -y --no-install-recommends qemu-user-static && rm -rf /var/lib/apt/lists/*
+
 FROM debian:trixie-slim AS base
-RUN apt-get update && apt-get install -y --no-install-recommends python3 ca-certificates ffmpeg && rm -rf /var/lib/apt/lists/*
+RUN apt-get update && apt-get install -y --no-install-recommends python3 ca-certificates && rm -rf /var/lib/apt/lists/*
+COPY --from=ffmpeg /out/bin/ffmpeg /usr/local/bin/ffmpeg
 
 # aarch64: run the x86_64 bridge and plugin under qemu in an x86_64 rootfs (COPY only, the Pi has no amd64 binfmt).
 # The plugin libs land in /amd64/usr/lib at app start (hub/plugin.py).
@@ -47,7 +64,7 @@ RUN apt-get update && apt-get install -y --no-install-recommends python3 ca-cert
 FROM --platform=linux/amd64 gcr.io/distroless/cc-debian12 AS amd64root
 FROM --platform=linux/amd64 debian:bookworm-slim AS amd64libs
 FROM base AS arch-arm64
-RUN apt-get update && apt-get install -y --no-install-recommends qemu-user && rm -rf /var/lib/apt/lists/*
+COPY --from=qemu /usr/bin/qemu-x86_64-static /usr/bin/qemu-x86_64
 COPY --from=amd64root / /amd64/
 # liblzma/libz are dependencies of the plugin that distroless lacks.
 COPY --from=amd64libs /usr/lib/x86_64-linux-gnu/liblzma.so.5 /usr/lib/x86_64-linux-gnu/libz.so.1 /amd64/usr/lib/x86_64-linux-gnu/
