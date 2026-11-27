@@ -87,7 +87,7 @@ COPY hub/ui/index.html hub/ui/style.css hub/ui/app.js hub/ui/api.js hub/ui/util.
 COPY hub/ui/views /srv/ui/views
 COPY hub/ui/vendor/three.module.min.js /srv/ui/vendor/
 COPY hub/ui/vendor/LICENSE-three.txt /usr/share/licenses/three/LICENSE
-COPY hub/app.py hub/ha.py hub/filament.py hub/history.py hub/queue/queue_*.py /srv/
+COPY hub/app.py hub/actions.py hub/ha.py hub/filament.py hub/history.py hub/queue/queue_*.py /srv/
 COPY hub/run.sh /run.sh
 ENV DW_DAEMON_CMD=/opt/bridge/bridge.sh DW_CERT=/opt/bridge/slicer_base64.cer \
     SLICER_SENDER_URL=http://127.0.0.1:8098 SLICER_PORT=8099 SLICER_ENGINE=/srv/engine \

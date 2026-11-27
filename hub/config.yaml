@@ -15,5 +15,5 @@ panel_icon: mdi:printer-3d
 panel_title: Druckwerk
 homeassistant_api: true
 hassio_api: true
-map: ["share:rw", "media:ro"]
+map: ["share:rw", "media:rw"]
 panel_admin: false
