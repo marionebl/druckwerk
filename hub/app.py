@@ -53,6 +53,8 @@ MEDIA_DIR = "/media/druckwerk"  # snapshots and plate images of the actions
 SLICED = re.compile(r"Metadata/plate_\d+\.gcode")
 TASKS_TTL = 60  # seconds a printer's cloud task list is reused
 SPOOLS_TTL = 30  # seconds an account's cloud filament library is reused
+STALE_AFTER = 60  # seconds after which a printer view from an earlier status call is marked stale
+STATUS_STALE_MAX = 600  # seconds the queue may still act on such a view
 COVER_MAX = 5 * 1024 * 1024  # bytes of a cloud cover image
 DOMAIN_DEFAULTS = "schedule,input_boolean,binary_sensor,person"
 
@@ -348,9 +350,25 @@ class App:
             return {}
         return (data or {}).get("print") or {} if status == 200 and isinstance(data, dict) else {}
 
+    def status_entry(self, serial):
+        """(view, age in s) of the printer: fresh from the bridge, else the last good one (one failed call is not offline)."""
+        v = printer_state.view(self.bridge_print(serial), self.clock())
+        with self._cache_lock:
+            if v is not None:
+                self._cache["view:" + serial] = (self.clock(), v)
+            at, last = self._cache.get("view:" + serial, (0, None))
+        return (last, self.clock() - at) if last is not None else (None, 0)
+
     def printer_status(self, serial):
-        """What the printer reports now (hub/printer_state.py), from the bridge; None when the bridge cannot say."""
-        return printer_state.view(self.bridge_print(serial), self.clock())
+        """What the printer reports now (hub/printer_state.py), from the bridge; None when the bridge cannot say.
+        The queue acts on it, so a last good view counts for 10 min only."""
+        v, age = self.status_entry(serial)
+        return v if age <= STATUS_STALE_MAX else None
+
+    def cloud_online(self, serial):
+        """False only when the bridge's printer list says the printer is offline (the cloud's flag); unknown counts as online."""
+        printers = self._cached("printers", 5, self.bridge_printers)
+        return next((p.get("online") is not False for p in printers if p.get("serial") == serial), True)
 
     def state(self, entity_id):
         """The queue's state lookup: a registered printer's own sensors come from the bridge, any other entity from HA."""
@@ -375,13 +393,16 @@ class App:
 
     def printer_view(self, p, role):
         serial = p["serial"]
-        v = self.printer_status(serial)
+        v, age = self.status_entry(serial)
+        if v is not None and not self.cloud_online(serial):
+            v = None
         b = v or {}
         tray = b.get("active_tray")
         job = next((j for j in self.queue.jobs if j.get("printer") == serial and j["state"] in ("starting", "printing")), None)
         return {
             "serial": serial, "name": p["name"], "model": p["model"], "role": role,
             "online": v is not None and b["status"] != "offline",
+            "stale": v is not None and age > STALE_AFTER, "status_age": round(age) if v is not None else None,
             "status": b.get("status"), "stage": b.get("stage"), "progress": b.get("progress"),
             "remaining_min": b.get("remaining_min"), "end_time": b.get("end_time"),
             "layer": b.get("layer"), "total_layers": b.get("total_layers"),

@@ -91,7 +91,8 @@ function card(p) {
         h('div', { class: 'bar' }, h('i', { style: `width:${p.progress}%` })),
         h('small', null, `Layer ${p.layer}/${p.total_layers}`)),
       p.online && h('div', { class: 'row between' },
-        h('small', null, `Nozzle ${Math.round(p.nozzle_temp)}° · Bed ${Math.round(p.bed_temp)}°`)),
+        h('small', null, `Nozzle ${Math.round(p.nozzle_temp)}° · Bed ${Math.round(p.bed_temp)}°`),
+        p.stale && h('small', { class: 'muted' }, `status from ${Math.max(1, Math.round(p.status_age / 60))} min ago`)),
       filament(p, true)));
 }
 
