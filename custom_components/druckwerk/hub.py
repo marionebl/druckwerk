@@ -1,159 +1,103 @@
-"""Polls the hub: queue snapshot and events; fires HA events and notifications."""
+"""Polls the app's state and forwards calls. The app holds all logic."""
 
 from __future__ import annotations
 
 import logging
-from dataclasses import dataclass, field
 from typing import Any
 
 import aiohttp
 from homeassistant.config_entries import ConfigEntry
-from homeassistant.core import Event, HomeAssistant
+from homeassistant.core import HomeAssistant
 from homeassistant.exceptions import HomeAssistantError, ServiceValidationError
 from homeassistant.helpers.aiohttp_client import async_get_clientsession
 from homeassistant.helpers.update_coordinator import DataUpdateCoordinator, UpdateFailed
 
 from . import hub_api
-from .manifest import Manifest
 from .const import (
-    ACTION_PREFIX,
     CONF_HUB_SECRET,
     CONF_RECIPIENTS,
+    CONF_URL,
     DOMAIN,
-    EVENT_INTERVAL,
-    EVENT_PREFIX,
     FORWARD_TIMEOUT,
+    PRESS_TIMEOUT,
+    STATE_INTERVAL,
 )
+from .manifest import Manifest
 
 _LOGGER = logging.getLogger(__name__)
-WAITING = ("queued", "pending_approval")
+NETWORK_ERRORS = (aiohttp.ClientError, TimeoutError, ValueError)
 
 
-@dataclass
-class HubData:
-    jobs: list[dict[str, Any]] = field(default_factory=list)
-
-
-class HubCoordinator(DataUpdateCoordinator[HubData]):
-    """Every 5 s: GET /api/events; the queue is refetched when something happened."""
+class HubCoordinator(DataUpdateCoordinator[dict[str, dict[str, Any]]]):
+    """Every 5 s: GET /api/integration/state. `data` is its `printers`, keyed by serial."""
 
     def __init__(self, hass: HomeAssistant, entry: ConfigEntry) -> None:
+        self.secret: str = entry.data.get(CONF_HUB_SECRET, "")
+        # Without a secret every call fails, so nothing polls.
         super().__init__(
-            hass, _LOGGER, config_entry=entry, name=f"{DOMAIN}_hub", update_interval=EVENT_INTERVAL
+            hass, _LOGGER, config_entry=entry, name=DOMAIN, update_interval=STATE_INTERVAL if self.secret else None
         )
         self.url = hub_api.hub_url_for(entry.data)
-        self.secret: str = entry.data[CONF_HUB_SECRET]
-        self.seq: int | None = None  # None until the first poll; its backlog is not replayed
+        self.bridge_url: str = entry.data[CONF_URL]
+        self.loaded_data = dict(entry.data)
+        self.local: dict[tuple[str, str], Any] = {}  # (serial, key) -> value of select and switches
         self.manifest = Manifest(hass, entry, self)
+        self._push_options = True  # at setup and whenever the app answers again after being down
 
     async def call(self, method: str, path: str, body: Any = None, **kwargs: Any) -> Any:
         session = async_get_clientsession(self.hass)
         return await hub_api.hub_request(session, self.url, self.secret, method, path, body, **kwargs)
 
-    async def forward(self, path: str, body: Any, user_id: str | None) -> dict[str, Any]:
-        """POST an action or tool call as the HA user; returns the app's `result`."""
+    async def request(
+        self, method: str, path: str, body: Any = None, user_id: str | None = None, timeout: float = 60, **kwargs: Any
+    ) -> Any:
+        """Like call, with errors as HA shows them: 400 is a validation error."""
         try:
-            doc = await self.call("POST", path, body, act_as=user_id, detail=True, timeout=FORWARD_TIMEOUT)
+            return await self.call(method, path, body, act_as=user_id, timeout=timeout, **kwargs)
         except hub_api.HubError as err:
             if err.status == 400:
                 raise ServiceValidationError(err.text) from err
             raise
-        except (aiohttp.ClientError, TimeoutError, ValueError) as err:
+        except NETWORK_ERRORS as err:
             raise HomeAssistantError(f"Druckwerk not reachable: {err}") from err
+
+    async def forward(self, path: str, body: Any, user_id: str | None) -> dict[str, Any]:
+        """POST an action or tool call as the HA user; returns the app's `result`."""
+        doc = await self.request("POST", path, body, user_id, timeout=FORWARD_TIMEOUT)
         return doc.get("result") or {}
 
-    async def _async_update_data(self) -> HubData:
+    async def _async_update_data(self) -> dict[str, dict[str, Any]]:
+        first = self.data is None
         try:
-            query = "" if self.seq is None else f"?since={self.seq}"
-            doc = await self.call("GET", f"/api/events{query}")
-            events = doc.get("events", [])
-            first = self.seq is None
-            self.seq = doc.get("seq", self.seq)
+            doc = await self.call("GET", "/api/integration/state")
             revision = doc.get("manifest_revision")
             if first or (revision and revision != self.manifest.revision):
                 await self.manifest.async_refresh()
-            if first or events or self.data is None:
-                queue = await self.call("GET", "/api/queue")
-                data = HubData(jobs=list(queue.get("jobs", [])))
-            else:
-                data = self.data
-        except (aiohttp.ClientError, TimeoutError, ValueError, AttributeError) as err:
+            printers = dict(doc["printers"])
+        except (*NETWORK_ERRORS, hub_api.HubError, AttributeError, KeyError) as err:
+            self._push_options = True
             raise UpdateFailed(f"Druckwerk not reachable: {err}") from err
-        self.data = data  # handlers below see the fresh queue
-        if not first:
-            for event in events:
-                await self._handle(event)
-        return data
-
-    def next_job(self, serial: str, exclude: str | None = None) -> dict[str, Any] | None:
-        """First queued job for this printer (or for any printer)."""
-        for job in self.data.jobs if self.data else []:
-            if (
-                job.get("state") == "queued"
-                and job.get("target") in (serial, "any")
-                and job.get("id") != exclude
-            ):
-                # start-next takes the first job; a drying there needs its own confirmation, not a plate prompt.
-                return None if job.get("kind") == "dry" else job
-        return None
-
-    async def _handle(self, event: dict[str, Any]) -> None:
-        etype, serial = event.get("type"), event.get("serial")
-        if not etype:
-            return
-        self.hass.bus.async_fire(f"{EVENT_PREFIX}{etype}", event)
-        job = event.get("job") or {}
-        try:
-            if etype == "job_done":
-                nxt = self.next_job(serial, exclude=job.get("id"))
-                if nxt:
-                    await self.notify_admins(
-                        serial,
-                        f"Plate clear? Start next: {nxt.get('name') or nxt.get('file')}",
-                        actions=[{"action": f"{ACTION_PREFIX}{serial}", "title": "Plate clear, start"}],
-                    )
-            elif etype == "approval_needed":
-                who = job.get("owner_name") or "Someone"
-                await self.notify_admins(serial, f"{who} needs approval to {'dry' if job.get('kind') == 'dry' else 'print'} {job.get('name') or job.get('file')}")
-        except (aiohttp.ClientError, TimeoutError, ValueError) as err:
-            _LOGGER.warning("Cannot notify for %s: %s", etype, err)
-
-    async def admin_user_ids(self, serial: str) -> set[str]:
-        """HA admins plus active owners of the printer (or of all printers)."""
-        ids: set[str] = set()
-        for g in await self.call("GET", "/api/grants"):
-            if g.get("active", True) and g.get("role") == "owner" and g.get("printer") in (serial, "*"):
-                ids.add(g.get("user_id"))
-        for u in await self.call("GET", "/api/ha/users"):
-            if u.get("is_admin"):
-                ids.add(u.get("id"))
-        return ids
-
-    async def notify_admins(self, serial: str, message: str, actions: list | None = None) -> None:
-        """Notify the printer's admins who are mapped and at home (person state "home")."""
-        recipients: dict[str, str] = self.config_entry.options.get(CONF_RECIPIENTS, {})
-        if not recipients:
-            return
-        admins = await self.admin_user_ids(serial)
-        for person, service in recipients.items():
-            state = self.hass.states.get(person)
-            if not state or state.state != "home" or state.attributes.get("user_id") not in admins:
-                continue
-            data: dict[str, Any] = {"actions": actions} if actions else {}
-            await self.hass.services.async_call(
-                "notify",
-                service.removeprefix("notify."),
-                {"title": "Druckwerk", "message": message, "data": data},
-            )
-
-    async def start_next(self, serial: str) -> None:
-        await self.call("POST", f"/api/printers/{serial}/start-next", {"plate_clear": True})
-        await self.async_request_refresh()
-
-    async def on_action(self, event: Event) -> None:
-        action = str(event.data.get("action", ""))
-        if action.startswith(ACTION_PREFIX):
+        if self._push_options:
             try:
-                await self.start_next(action[len(ACTION_PREFIX):])
-            except (aiohttp.ClientError, TimeoutError, ValueError) as err:
-                _LOGGER.warning("start-next failed: %s", err)
+                await self.push_options()
+            except (*NETWORK_ERRORS, hub_api.HubError) as err:
+                _LOGGER.warning("Cannot push options: %s", err)
+        return printers
+
+    async def push_options(self) -> None:
+        """Tell the app who gets notifications; the app keeps no other copy."""
+        recipients = self.config_entry.options.get(CONF_RECIPIENTS, {})
+        await self.call("PUT", "/api/integration/options", {"recipients": recipients})
+        self._push_options = False
+
+    async def press(self, serial: str, press: dict[str, Any], user_id: str | None) -> None:
+        """Run a button's `press` descriptor (contract: hub/API.md, "How to run press")."""
+        for key, text in press.get("needs", {}).items():
+            if self.local.get((serial, key)) in (None, ""):
+                raise HomeAssistantError(text)
+        values = {"$serial": serial, **{f"${k}": v for (s, k), v in self.local.items() if s == serial}}
+        body = {k: values.get(v, v) if isinstance(v, str) else v for k, v in press.get("body", {}).items()}
+        path = press["path"].replace("$serial", serial)
+        as_user = user_id if path.startswith(("/api/actions/", "/api/tools/")) else None
+        await self.request("POST", path, body, as_user, timeout=PRESS_TIMEOUT)
+        await self.async_request_refresh()

@@ -210,7 +210,7 @@ class Hub:
         media = tmp_path / "media"
         (media / "druckwerk").mkdir(parents=True)
         self.media = media
-        self.app.media_roots = [os.path.realpath(media), os.path.realpath(self.s.SHARE)]
+        self.app.media_roots = [os.path.realpath(media)]
         self.app.media_dir = str(media / "druckwerk")
         self.app.install()
         self.server = ThreadingHTTPServer(("127.0.0.1", 0), self.s.Handler)

@@ -1,30 +1,30 @@
-"""Add entities for printers as they show up in the add-on."""
+"""Add entities for printers and descriptors as they show up in the app."""
 
 from __future__ import annotations
 
-from collections.abc import Callable
-
 from homeassistant.config_entries import ConfigEntry
-from homeassistant.helpers.entity import Entity
 from homeassistant.helpers.entity_platform import AddEntitiesCallback
 
-from .coordinator import SenderCoordinator
+from .entity import AppEntity
 
 
-def add_per_printer(
-    entry: ConfigEntry,
-    async_add_entities: AddEntitiesCallback,
-    factory: Callable[[SenderCoordinator, str], list[Entity]],
+def add_entities(
+    entry: ConfigEntry, async_add_entities: AddEntitiesCallback, platform: str, cls: type[AppEntity]
 ) -> None:
-    """Create entities now and for every printer that appears later (no reload)."""
-    coordinator: SenderCoordinator = entry.runtime_data
-    known: set[str] = set()
+    """Create entities now and for every printer or descriptor that appears later (no reload)."""
+    hub = entry.runtime_data
+    known: set[tuple[str, str]] = set()
 
     def _check() -> None:
-        new = set(coordinator.data.printers) - known
+        new = [
+            (serial, desc)
+            for serial in sorted(hub.data or {})
+            for desc in hub.manifest.entities
+            if desc.get("platform") == platform and (serial, desc["key"]) not in known
+        ]
         if new:
-            known.update(new)
-            async_add_entities([e for s in sorted(new) for e in factory(coordinator, s)])
+            known.update((serial, desc["key"]) for serial, desc in new)
+            async_add_entities([cls(hub, serial, desc) for serial, desc in new])
 
     _check()
-    entry.async_on_unload(coordinator.async_add_listener(_check))
+    entry.async_on_unload(hub.async_add_listener(_check))

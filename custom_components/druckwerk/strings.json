@@ -17,119 +17,6 @@
       "single_instance_allowed": "Druckwerk is already set up."
     }
   },
-  "entity": {
-    "select": {
-      "print_file": {
-        "name": "Print file"
-      }
-    },
-    "switch": {
-      "timelapse": {
-        "name": "Print timelapse"
-      },
-      "bed_leveling": {
-        "name": "Print bed leveling"
-      }
-    },
-    "button": {
-      "start_print": {
-        "name": "Start cloud print"
-      },
-      "reread_slot": {
-        "name": "Re-read slot {slot}"
-      }
-    },
-    "sensor": {
-      "cloud_sender": {
-        "name": "Cloud sender",
-        "state": {
-          "idle": "Idle",
-          "sent": "Sent",
-          "error": "Error"
-        }
-      }
-    },
-    "camera": {
-      "cloud_camera": {
-        "name": "Cloud camera"
-      }
-    },
-    "image": {
-      "current_print": {
-        "name": "Current print"
-      }
-    },
-    "light": {
-      "chamber_light": {
-        "name": "Chamber light (cloud)"
-      }
-    },
-    "todo": {
-      "queue": {
-        "name": "Queue"
-      }
-    }
-  },
-  "services": {
-    "print_file": {
-      "name": "Print file",
-      "description": "Sends a .gcode.3mf file to a printer as a cloud print through the add-on.",
-      "fields": {
-        "device_id": {
-          "name": "Printer",
-          "description": "Printer device, as registered by the printer integration."
-        },
-        "serial": {
-          "name": "Serial",
-          "description": "Printer serial number, used when no device is given."
-        },
-        "file": {
-          "name": "File",
-          "description": "Path relative to /media/druckwerk, or an absolute path under /media or /share."
-        },
-        "timelapse": {
-          "name": "Timelapse",
-          "description": "Record a timelapse."
-        },
-        "bed_leveling": {
-          "name": "Bed leveling",
-          "description": "Level the bed before printing: on, off or auto (the printer decides)."
-        },
-        "use_ams": {
-          "name": "Use AMS",
-          "description": "Use the AMS filament mapping."
-        },
-        "force": {
-          "name": "Force",
-          "description": "Send even if the printer is running or paused."
-        },
-        "flow_cali": {
-          "name": "Flow dynamics calibration",
-          "description": "Calibrate the flow before printing: on, off or auto. Left out, the bridge keeps its default (on)."
-        },
-        "vibration_cali": {
-          "name": "Vibration calibration",
-          "description": "Run the vibration (resonance) calibration. Left out, the bridge keeps its default (on)."
-        },
-        "layer_inspect": {
-          "name": "First layer inspection",
-          "description": "Inspect the first layer with the printer camera. Left out: off."
-        },
-        "nozzle_offset_cali": {
-          "name": "Nozzle offset calibration",
-          "description": "Calibrate the nozzle offset: on, off or auto. For printers with two nozzles. Left out: off."
-        },
-        "bed_type": {
-          "name": "Plate type",
-          "description": "The build plate in the printer. auto means the file decides. Left out: auto."
-        },
-        "ext_change_assist": {
-          "name": "External spool change assist",
-          "description": "Let the printer help when you change the external spool. Left out: off."
-        }
-      }
-    }
-  },
   "options": {
     "step": {
       "init": {
@@ -158,6 +45,17 @@
     "app_too_old": {
       "title": "Update the Druckwerk app",
       "description": "The Druckwerk app is too old to offer actions and tools. Update the Druckwerk app."
+    }
+  },
+  "entity": {
+    "sensor": {
+      "cloud_sender": {
+        "state": {
+          "idle": "Idle",
+          "sent": "Sent",
+          "error": "Error"
+        }
+      }
     }
   }
 }

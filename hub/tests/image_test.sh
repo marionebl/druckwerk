@@ -75,7 +75,9 @@ curl -fsS "${ID[@]}" $B/api/jobs/$J | python3 -c 'import json,sys;j=json.load(sy
 [ "$STATE" = done ]
 curl -fsS "${ID[@]}" -o /dev/null -w 'plate.png %{http_code} %{size_download} B\n' $B/api/jobs/$J/plate.png
 curl -fsS "${ID[@]}" -o /dev/null -w 'plate.gcode %{http_code} %{size_download} B\n' $B/api/jobs/$J/plate.gcode
-curl -fsS "${ID[@]}" -X POST -d '{"confirm":true}' $B/api/jobs/$J/print; echo
+# The app sends the print to the real bridge, which has no account here: it must refuse with its own error text.
+code=$(curl -s -o /tmp/print.json -w '%{http_code}' "${ID[@]}" -X POST -d '{"confirm":true}' $B/api/jobs/$J/print); echo "print: $code $(cat /tmp/print.json)"
+case "$code" in 409|502) python3 -c 'import json;assert json.load(open("/tmp/print.json"))["error"]' ;; *) echo "FAIL: print gave $code" >&2; exit 1 ;; esac
 curl -fsS http://127.0.0.1:18801/calls; echo
 curl -fsS http://127.0.0.1:18801/calls | python3 -c 'import json,sys;c=[x for x in json.load(sys.stdin) if x["path"]=="/supervisor/discovery"];assert c and c[0]["body"]["service"]=="druckwerk" and c[0]["body"]["config"]["host"]=="hub-test",c;print("discovery sent to Supervisor")'
 # A wrong hash must be reported by health, retried, and must install nothing.

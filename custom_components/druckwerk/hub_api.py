@@ -11,7 +11,6 @@ from homeassistant.exceptions import HomeAssistantError
 
 from .const import (
     BRIDGE_PORT,
-    CONF_HUB_SECRET,
     CONF_HUB_URL,
     CONF_URL,
     HUB_PORT,
@@ -32,10 +31,10 @@ def hub_url_for(data: dict[str, Any]) -> str:
 
 
 class HubError(HomeAssistantError):
-    """The hub refused or failed a call; the text is the hub's own (403 texts start with "rule:")."""
+    """The app refused or failed a call; `text` is its `error` (403 texts start with "rule:")."""
 
     def __init__(self, status: int, text: str) -> None:
-        super().__init__(f"Druckwerk answered {status}: {text}")
+        super().__init__(text)
         self.status = status
         self.text = text
 
@@ -49,37 +48,36 @@ async def hub_request(
     body: Any = None,
     *,
     act_as: str | None = None,
-    data: bytes | None = None,
+    data: Any = None,
+    headers: dict[str, str] | None = None,
     timeout: float | None = None,
     binary: bool = False,
-    detail: bool = False,
 ) -> Any:
-    """Call the hub; internal calls carry X-Hub-Secret.
+    """Call the app with the hub secret; act_as applies that HA user's rules (None keeps the call admin).
 
-    act_as applies that HA user's rules in the hub; None keeps the call admin (automations).
-    detail raises HubError with the hub's error text instead of ClientResponseError, binary returns bytes.
-    Raises ClientError/TimeoutError/ValueError otherwise.
+    Raises HubError for a status of 400 or more, ClientError/TimeoutError/ValueError otherwise.
     """
-    headers = {HUB_SECRET_HEADER: secret} if secret else {}
+    head = dict(headers or {})
+    if secret:
+        head[HUB_SECRET_HEADER] = secret
     if act_as:
-        headers[ACT_AS_HEADER] = act_as
+        head[ACT_AS_HEADER] = act_as
     if data is not None:
-        headers["Content-Type"] = "application/octet-stream"
+        head["Content-Type"] = "application/octet-stream"
     async with session.request(
         method,
         f"{url}{path}",
         json=body if data is None else None,
         data=data,
-        headers=headers,
+        headers=head,
         timeout=aiohttp.ClientTimeout(total=timeout) if timeout else _TIMEOUT,
     ) as resp:
-        if detail and resp.status >= 400:
+        if resp.status >= 400:
             try:
                 text = str((await resp.json(content_type=None)).get("error"))
             except (aiohttp.ClientError, ValueError, AttributeError):
                 text = resp.reason or "error"
             raise HubError(resp.status, text)
-        resp.raise_for_status()
         if binary:
             return await resp.read()
         return await resp.json(content_type=None)

@@ -10,13 +10,11 @@ from homeassistant.exceptions import HomeAssistantError, ServiceValidationError
 from homeassistant.helpers import issue_registry as ir
 from homeassistant.helpers import llm
 from homeassistant.helpers.service import SERVICE_DESCRIPTION_CACHE
-from pytest_homeassistant_custom_component.common import MockConfigEntry
 
 from custom_components.druckwerk import manifest as manifest_module
 from custom_components.druckwerk.llm_api import API_ID
 
-from .conftest import HUB_SECRET, HUB_URL, SERIAL, URL
-from .test_hub import MANIFEST, hub_setup, mock_hub, tick
+from .conftest import HUB_URL, MANIFEST, SERIAL, URL, mock_hub, setup_entry, tick
 
 UID = "user-anna"
 HEX = "0123456789ab"
@@ -72,9 +70,10 @@ def _conversation_stub(monkeypatch):
 
 
 @pytest.fixture
-async def hub(hass, addon, media, vendor_device):
-    await hub_setup(hass, mock=addon)
-    return addon
+async def hub(hass, app, vendor_device):
+    await setup_entry(hass)
+    return app
+
 
 
 async def test_actions_registered_from_the_manifest(hass, hub):
@@ -90,29 +89,26 @@ async def test_actions_registered_from_the_manifest(hass, hub):
     assert desc["fields"]["plate_clear"]["default"] is False and desc["fields"]["printer"]["selector"]
 
 
-async def test_local_print_file_wins_over_the_manifest(hass, hub):
-    assert ("druckwerk", "print_file") not in hass.data[SERVICE_DESCRIPTION_CACHE]
-    with pytest.raises(Exception, match="device_id|serial"):  # the local schema runs, not the permissive one
-        await act(hass, "print_file", {"file": "a.gcode.3mf"})
+async def test_print_file_is_forwarded_with_the_serial_and_the_user(hass, hub, vendor_device):
+    hub.post(f"{HUB_URL}/api/actions/print_file", json={"result": {"result": "sent"}})
+    data = {"device_id": vendor_device.id, "file": "benchy.gcode.3mf", "timelapse": True, "force": True}
+    assert await act(hass, "print_file", data) == {"result": "sent"}
+    (post,) = post_calls(hub, "/api/actions/print_file")
+    assert post[2] == {**data, "device_id": SERIAL}
+    assert act_as(post) == UID
 
 
-async def test_cached_manifest_is_used_when_the_app_is_down(hass, addon, hass_storage, media, vendor_device):
+async def test_cached_manifest_is_used_when_the_app_is_down(hass, app, hass_storage, vendor_device):
     hass_storage["druckwerk.manifest.e1"] = {"version": 1, "data": MANIFEST}
-    addon.get(f"{HUB_URL}/api/events", exc=aiohttp.ClientError)
-    entry = MockConfigEntry(entry_id="e1", domain="druckwerk", unique_id="druckwerk", data={"url": URL, "hub_secret": HUB_SECRET})
-    entry.add_to_hass(hass)
-    assert await hass.config_entries.async_setup(entry.entry_id)
-    await hass.async_block_till_done()
+    app._mocks = []
+    app.get(f"{HUB_URL}/api/integration/state", exc=aiohttp.ClientError)
+    await setup_entry(hass, entry_id="e1")
     assert "get_queue" in hass.services.async_services_for_domain("druckwerk")
     assert API_ID in [a.id for a in llm.async_get_apis(hass)]
 
 
-async def test_good_manifest_is_cached(hass, addon, hass_storage, media, vendor_device):
-    mock_hub(addon)
-    entry = MockConfigEntry(entry_id="e1", domain="druckwerk", unique_id="druckwerk", data={"url": URL, "hub_secret": HUB_SECRET})
-    entry.add_to_hass(hass)
-    assert await hass.config_entries.async_setup(entry.entry_id)
-    await hass.async_block_till_done()
+async def test_good_manifest_is_cached(hass, app, hass_storage, vendor_device):
+    await setup_entry(hass, entry_id="e1")
     assert hass_storage["druckwerk.manifest.e1"]["data"]["revision"] == MANIFEST["revision"]
 
 
@@ -237,53 +233,47 @@ async def test_unload_removes_actions_and_api_and_setup_brings_them_back(hass, h
     (entry,) = hass.config_entries.async_entries("druckwerk")
     assert await hass.config_entries.async_unload(entry.entry_id)
     assert "get_queue" not in hass.services.async_services_for_domain("druckwerk")
-    assert "print_file" in hass.services.async_services_for_domain("druckwerk")
     assert API_ID not in [a.id for a in llm.async_get_apis(hass)]
     assert await hass.config_entries.async_setup(entry.entry_id)
     assert "get_queue" in hass.services.async_services_for_domain("druckwerk")
     assert API_ID in [a.id for a in llm.async_get_apis(hass)]
 
 
-async def test_without_hub_secret_nothing_is_registered(hass, addon, media, vendor_device):
-    entry = MockConfigEntry(domain="druckwerk", unique_id="druckwerk", data={"url": URL})
-    entry.add_to_hass(hass)
-    assert await hass.config_entries.async_setup(entry.entry_id)
+async def test_without_hub_secret_nothing_is_registered(hass, app, vendor_device):
+    await setup_entry(hass, data={"url": URL})
     assert API_ID not in [a.id for a in llm.async_get_apis(hass)]
     assert "get_queue" not in hass.services.async_services_for_domain("druckwerk")
 
 
 # ---- version negotiation
-async def test_newer_api_version_raises_an_issue_and_registers_nothing(hass, addon, media, vendor_device):
-    await hub_setup(hass, mock=addon, manifest=dict(MANIFEST, api_version=2))
+async def test_newer_api_version_raises_an_issue_and_registers_nothing(hass, app, vendor_device):
+    mock_hub(app, manifest=dict(MANIFEST, api_version=2))
+    await setup_entry(hass)
     assert "get_queue" not in hass.services.async_services_for_domain("druckwerk")
     assert API_ID not in [a.id for a in llm.async_get_apis(hass)]
     assert issues(hass) == {"integration_too_old"}
-    mock_hub(addon, manifest=dict(MANIFEST, api_version=1, revision="again0000001"))
+    mock_hub(app, manifest=dict(MANIFEST, api_version=1, revision="again0000001"))
     await tick(hass)
     assert issues(hass) == set() and "get_queue" in hass.services.async_services_for_domain("druckwerk")
 
 
-async def setup_with_missing_route(hass, addon):
-    mock_hub(addon)
-    addon.get(f"{HUB_URL}/api/integration/manifest", status=404)
-    addon._mocks.insert(0, addon._mocks.pop())  # the first match is served
-    entry = MockConfigEntry(entry_id="e1", domain="druckwerk", unique_id="druckwerk", data={"url": URL, "hub_secret": HUB_SECRET})
-    entry.add_to_hass(hass)
-    assert await hass.config_entries.async_setup(entry.entry_id)
-    await hass.async_block_till_done()
+async def setup_with_missing_route(hass, app):
+    app.get(f"{HUB_URL}/api/integration/manifest", status=404, json={"error": "Not found"})
+    app._mocks.insert(0, app._mocks.pop())  # the first match is served
+    await setup_entry(hass, entry_id="e1")
 
 
-async def test_no_manifest_route_and_no_cache_raises_an_issue(hass, addon, media, vendor_device):
-    await setup_with_missing_route(hass, addon)
+async def test_no_manifest_route_and_no_cache_raises_an_issue(hass, app, vendor_device):
+    await setup_with_missing_route(hass, app)
     assert issues(hass) == {"app_too_old"}
     assert "get_queue" not in hass.services.async_services_for_domain("druckwerk")
 
 
-async def test_no_manifest_route_keeps_the_cache_and_warns_once(hass, addon, hass_storage, media, vendor_device, monkeypatch):
+async def test_no_manifest_route_keeps_the_cache_and_warns_once(hass, app, hass_storage, vendor_device, monkeypatch):
     warnings = []
     monkeypatch.setattr(manifest_module._LOGGER, "warning", lambda *a: warnings.append(a))
     hass_storage["druckwerk.manifest.e1"] = {"version": 1, "data": MANIFEST}
-    await setup_with_missing_route(hass, addon)
+    await setup_with_missing_route(hass, app)
     await tick(hass)
     assert issues(hass) == set() and "get_queue" in hass.services.async_services_for_domain("druckwerk")
     assert len(warnings) == 1

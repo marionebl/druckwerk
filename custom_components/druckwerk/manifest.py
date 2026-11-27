@@ -1,4 +1,4 @@
-"""The app's manifest: which actions and LLM tools exist. The integration only forwards them.
+"""The app's manifest: which actions, LLM tools and entities exist. The integration only renders and forwards them.
 
 The last good manifest is cached, so the actions exist at HA start before the app answers.
 """
@@ -18,6 +18,7 @@ from homeassistant.helpers.service import async_set_service_schema
 from homeassistant.helpers.storage import Store
 
 from .const import API_VERSION, DOMAIN
+from .hub_api import HubError
 from .devices import serial_from_device
 from .llm_api import DruckwerkAPI
 
@@ -25,7 +26,6 @@ if TYPE_CHECKING:
     from .hub import HubCoordinator
 
 _LOGGER = logging.getLogger(__name__)
-LOCAL_ACTIONS = {"print_file"}  # implemented here with the printer bridge; a manifest entry of that name is ignored
 RESPONSES = {"none": SupportsResponse.NONE, "optional": SupportsResponse.OPTIONAL, "only": SupportsResponse.ONLY}
 ISSUE_TOO_NEW = "integration_too_old"
 ISSUE_NO_MANIFEST = "app_too_old"
@@ -36,6 +36,7 @@ class Manifest:
         self.hass = hass
         self.hub = hub
         self.revision: str | None = None
+        self.entities: list[dict[str, Any]] = []  # descriptors, one entity per printer each
         self._store: Store[dict[str, Any]] = Store(hass, 1, f"{DOMAIN}.manifest.{entry.entry_id}")
         self._actions: set[str] = set()
         self._unregister_llm = None
@@ -52,7 +53,7 @@ class Manifest:
     async def async_refresh(self) -> None:
         try:
             doc = await self.hub.call("GET", "/api/integration/manifest")
-        except aiohttp.ClientResponseError as err:
+        except HubError as err:
             if err.status != 404:
                 _LOGGER.debug("Manifest not available: %s", err)
                 return
@@ -94,10 +95,8 @@ class Manifest:
 
     def _apply(self, doc: dict[str, Any]) -> None:
         self.revision = doc.get("revision")
+        self.entities = doc.get("entities", [])
         actions = {a["name"]: a for a in doc.get("actions", [])}
-        for name in LOCAL_ACTIONS & set(actions):
-            _LOGGER.debug("Manifest action %s ignored: the integration implements it", name)
-            del actions[name]
         for name in self._actions - actions.keys():
             self.hass.services.async_remove(DOMAIN, name)
         for name, action in actions.items():

@@ -10,14 +10,13 @@ from pathlib import Path
 
 from homeassistant.helpers import entity_registry as er
 from homeassistant.helpers import llm
-import yaml
 import probatio
 from homeassistant.helpers.service import SERVICE_DESCRIPTION_CACHE
 
 from custom_components.druckwerk import const
 from custom_components.druckwerk.llm_api import API_ID
 
-from .test_hub import hub_setup
+from .conftest import setup_entry
 
 GOLDEN = Path(__file__).parent / "golden" / "contract.json"
 
@@ -31,12 +30,9 @@ async def _snapshot(hass) -> dict:
     entities = sorted(
         (e.domain, e.unique_id, e.entity_id) for e in reg.entities.values() if e.platform == "druckwerk"
     )
-    # Dynamic actions keep their description in HA's cache; print_file is static, read the file HA reads
+    # Every action is dynamic: its description is in HA's cache
     # (the descriptions API imports the conversation component: hassil, turbojpeg).
-    desc = {k: v for k, v in yaml.safe_load((Path(const.__file__).parent / "services.yaml").read_text()).items()}
-    cached = {name: d for (domain, name), d in hass.data[SERVICE_DESCRIPTION_CACHE].items() if domain == "druckwerk"}
-    assert not set(desc) & set(cached)
-    desc.update(cached)
+    desc = {name: d for (domain, name), d in hass.data[SERVICE_DESCRIPTION_CACHE].items() if domain == "druckwerk"}
     assert set(desc) == set(hass.services.async_services()["druckwerk"])
     services = {
         name: {"fields": {k: _field(v) for k, v in sorted((d.get("fields") or {}).items())}}
@@ -55,15 +51,15 @@ async def _snapshot(hass) -> dict:
         "services": services,
         "llm_api": {"id": API_ID, "tools": tools},
         "constants": {
-            "event_prefix": const.EVENT_PREFIX,
+            "event_prefix": "druckwerk_",  # the app fires the events now; the integration has no constant
             "upload_secret_header": const.UPLOAD_SECRET_HEADER,
             "upload_url": "/api/druckwerk/upload/{name}",
         },
     }
 
 
-async def test_contract_matches_golden(hass, addon, media, vendor_device):
-    await hub_setup(hass, mock=addon)
+async def test_contract_matches_golden(hass, app, vendor_device):
+    await setup_entry(hass)
     snap = await _snapshot(hass)
     if os.environ.get("UPDATE_GOLDEN"):
         GOLDEN.write_text(json.dumps(snap, indent=2, sort_keys=True) + "\n")

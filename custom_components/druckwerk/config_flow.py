@@ -13,7 +13,6 @@ from homeassistant.helpers.aiohttp_client import async_get_clientsession
 from homeassistant.helpers.service_info.hassio import HassioServiceInfo
 
 from . import hub_api
-from .api import async_get_json
 from .const import (
     BRIDGE_PORT,
     CONF_HUB_SECRET,
@@ -29,7 +28,7 @@ from .const import (
 
 
 class DruckwerkConfigFlow(ConfigFlow, domain=DOMAIN):
-    """Ask for the add-on URL and check it answers /api/health."""
+    """Ask for the app URL and check it answers /api/health."""
 
     VERSION = 1
 
@@ -48,12 +47,10 @@ class DruckwerkConfigFlow(ConfigFlow, domain=DOMAIN):
         if user_input is not None:
             url = user_input[CONF_URL].strip().rstrip("/")
             try:
-                health = await async_get_json(
-                    async_get_clientsession(self.hass), url, "/api/health"
-                )
+                health = await hub_api.hub_request(session, url, None, "GET", "/api/health")
                 if not isinstance(health, dict) or "server" not in health:
                     raise ValueError("not a Druckwerk health document")
-            except (aiohttp.ClientError, TimeoutError, ValueError):
+            except (aiohttp.ClientError, TimeoutError, ValueError, hub_api.HubError):
                 errors["base"] = "cannot_connect"
             else:
                 return self.async_create_entry(
@@ -140,7 +137,7 @@ class DruckwerkOptionsFlow(OptionsFlow):
     @staticmethod
     async def _hub_accepts(session, url: str, secret: str) -> bool:
         try:
-            await hub_api.hub_request(session, url, secret, "GET", "/api/events")
-        except (aiohttp.ClientError, TimeoutError, ValueError):
+            await hub_api.hub_request(session, url, secret, "GET", "/api/integration/manifest")
+        except (aiohttp.ClientError, TimeoutError, ValueError, hub_api.HubError):
             return False
         return True
