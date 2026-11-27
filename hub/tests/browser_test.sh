@@ -17,5 +17,5 @@ docker run -d --rm --name $IMG --network host -v "$WORK/seeded:/data" -v "$WORK/
   -e HUB_INGRESS_IPS=127.0.0.1 -e SLICER_JOBS=/tmp/jobs -e SLICER_SHARE=/tmp/share -e SUPERVISOR_TOKEN=tok $IMG -I /srv/hub.py >/dev/null
 for _ in $(seq 100); do curl -fs http://127.0.0.1:18813/index.html >/dev/null 2>&1 && break; sleep 0.2; done
 SECRET=$(docker exec $IMG python3 -c 'import json;print(json.load(open("/data/hub.json"))["secret"])')
-echo "isolation headers: $(curl -sI http://127.0.0.1:18813/ | grep -i '^cross-origin\|^document-isolation' | tr -d '\r' | tr '\n' ' ')"
+echo "isolation headers: $(curl -s -D - -o /dev/null http://127.0.0.1:18813/ | grep -i '^cross-origin\|^document-isolation' | tr -d '\r' | tr '\n' ' ')"
 HUB=http://127.0.0.1:18813 STL="$REPO/hub/tests/fixtures/test_plate.stl" JOBS="$WORK/jobs" SECRET="$SECRET" python3 "$HERE/browser_slice.py"
