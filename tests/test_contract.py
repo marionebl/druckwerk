@@ -12,6 +12,7 @@ from homeassistant.helpers import entity_registry as er
 from homeassistant.helpers import llm
 import yaml
 import probatio
+from homeassistant.helpers.service import SERVICE_DESCRIPTION_CACHE
 
 from custom_components.druckwerk import const
 from custom_components.druckwerk.llm_api import API_ID
@@ -30,8 +31,12 @@ async def _snapshot(hass) -> dict:
     entities = sorted(
         (e.domain, e.unique_id, e.entity_id) for e in reg.entities.values() if e.platform == "druckwerk"
     )
-    # The descriptions API imports the conversation component (hassil, turbojpeg); read the file it reads.
-    desc = yaml.safe_load((Path(const.__file__).parent / "services.yaml").read_text())
+    # Dynamic actions keep their description in HA's cache; print_file is static, read the file HA reads
+    # (the descriptions API imports the conversation component: hassil, turbojpeg).
+    desc = {k: v for k, v in yaml.safe_load((Path(const.__file__).parent / "services.yaml").read_text()).items()}
+    cached = {name: d for (domain, name), d in hass.data[SERVICE_DESCRIPTION_CACHE].items() if domain == "druckwerk"}
+    assert not set(desc) & set(cached)
+    desc.update(cached)
     assert set(desc) == set(hass.services.async_services()["druckwerk"])
     services = {
         name: {"fields": {k: _field(v) for k, v in sorted((d.get("fields") or {}).items())}}

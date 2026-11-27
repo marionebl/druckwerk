@@ -35,3 +35,5 @@ EVENT_PREFIX = "druckwerk_"
 ACTION_PREFIX = "DRUCKWERK_START_"
 HUB_SECRET_HEADER = "X-Hub-Secret"
 ACT_AS_HEADER = "X-Druckwerk-Act-As"
+API_VERSION = 1  # highest manifest api_version this integration speaks
+FORWARD_TIMEOUT = 1860  # seconds; a slice that waits runs up to 30 minutes in the app

@@ -9,10 +9,12 @@ from typing import Any
 import aiohttp
 from homeassistant.config_entries import ConfigEntry
 from homeassistant.core import Event, HomeAssistant
+from homeassistant.exceptions import HomeAssistantError, ServiceValidationError
 from homeassistant.helpers.aiohttp_client import async_get_clientsession
 from homeassistant.helpers.update_coordinator import DataUpdateCoordinator, UpdateFailed
 
 from . import hub_api
+from .manifest import Manifest
 from .const import (
     ACTION_PREFIX,
     CONF_HUB_SECRET,
@@ -20,6 +22,7 @@ from .const import (
     DOMAIN,
     EVENT_INTERVAL,
     EVENT_PREFIX,
+    FORWARD_TIMEOUT,
 )
 
 _LOGGER = logging.getLogger(__name__)
@@ -41,10 +44,23 @@ class HubCoordinator(DataUpdateCoordinator[HubData]):
         self.url = hub_api.hub_url_for(entry.data)
         self.secret: str = entry.data[CONF_HUB_SECRET]
         self.seq: int | None = None  # None until the first poll; its backlog is not replayed
+        self.manifest = Manifest(hass, entry, self)
 
     async def call(self, method: str, path: str, body: Any = None, **kwargs: Any) -> Any:
         session = async_get_clientsession(self.hass)
         return await hub_api.hub_request(session, self.url, self.secret, method, path, body, **kwargs)
+
+    async def forward(self, path: str, body: Any, user_id: str | None) -> dict[str, Any]:
+        """POST an action or tool call as the HA user; returns the app's `result`."""
+        try:
+            doc = await self.call("POST", path, body, act_as=user_id, detail=True, timeout=FORWARD_TIMEOUT)
+        except hub_api.HubError as err:
+            if err.status == 400:
+                raise ServiceValidationError(err.text) from err
+            raise
+        except (aiohttp.ClientError, TimeoutError, ValueError) as err:
+            raise HomeAssistantError(f"Druckwerk not reachable: {err}") from err
+        return doc.get("result") or {}
 
     async def _async_update_data(self) -> HubData:
         try:
@@ -53,6 +69,9 @@ class HubCoordinator(DataUpdateCoordinator[HubData]):
             events = doc.get("events", [])
             first = self.seq is None
             self.seq = doc.get("seq", self.seq)
+            revision = doc.get("manifest_revision")
+            if first or (revision and revision != self.manifest.revision):
+                await self.manifest.async_refresh()
             if first or events or self.data is None:
                 queue = await self.call("GET", "/api/queue")
                 data = HubData(jobs=list(queue.get("jobs", [])))
