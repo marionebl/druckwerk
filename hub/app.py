@@ -69,6 +69,15 @@ def num(v, cast=float):
         return None
 
 
+MINUTES_PER = {"h": 60, "min": 1, "s": 1 / 60}
+
+
+def minutes(state, unit):
+    """A duration sensor's state in minutes; the vendor sensor reports hours, other setups minutes."""
+    n = num(state)
+    return None if n is None else int(round(n * MINUTES_PER.get(unit, 1)))
+
+
 class Capture:
     """Stands in for the request handler so a slicer handler's answer can be post-processed."""
 
@@ -347,6 +356,9 @@ class App:
         def v(key):
             s = states.get(self.entity(p, key))
             return None if not s or s["state"] in ("unknown", "unavailable") else s["state"]
+
+        def unit(key):
+            return states[self.entity(p, key)]["attributes"].get("unit_of_measurement")
         status = v("status")
         b = {}
         if status is None:
@@ -369,7 +381,7 @@ class App:
             "online": online["state"] == "on" if online else status not in (None, "offline"),
             "status": status, "stage": v("stage"),
             "progress": num(v("progress")) if v("progress") is not None else num(b.get("mc_percent")),
-            "remaining_min": num(v("remaining"), int) if v("remaining") is not None else num(b.get("mc_remaining_time"), int),
+            "remaining_min": minutes(v("remaining"), unit("remaining")) if v("remaining") is not None else num(b.get("mc_remaining_time"), int),
             "end_time": v("end"),
             "layer": num(v("layer"), int) if v("layer") is not None else num(b.get("layer_num"), int),
             "total_layers": num(v("total"), int) if v("total") is not None else num(b.get("total_layer_num"), int),
