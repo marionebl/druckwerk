@@ -1,0 +1,19 @@
+{
+  "_comment": "The `print` object of the bridge's GET /api/status/<serial> for an H2S that finished a print, with an AMS 2 Pro drying and four empty trays (live answer 2026-11-27, subset; serial, task ids and print name replaced).",
+  "print": {
+    "gcode_state": "FINISH", "mc_percent": 100, "percent": 100, "mc_remaining_time": 0, "remain_time": 0,
+    "layer_num": 831, "total_layer_num": 831, "mc_print_stage": "1", "mc_stage": 1, "stg_cur": -1,
+    "stg": [29, 13, 74, 75, 4, 14, 3], "state": 6,
+    "nozzle_temper": 29, "nozzle_target_temper": 0, "bed_temper": 25, "bed_target_temper": 0,
+    "device": {"ctc": {"info": {"temp": 25}}, "bed": {"info": {"temp": 25}}, "extruder": {"info": [{"id": 0, "temp": 29}]},
+               "plate": {"cur_id": "P0201"}, "nozzle": {"info": [{"diameter": 0.4}]}},
+    "subtask_name": "vase_21cm_2026-11-26_h2s_good_arc", "task_id": "1000000001", "job_id": "1000000001", "project_id": "1000000001",
+    "print_type": "cloud", "hms": [], "online": {"ahb": true, "version": 5}, "wifi_signal": "-46dBm",
+    "nozzle_diameter": "0.4", "nozzle_type": "HS01",
+    "ams": {"ams": [{"id": "0", "info": "50941023", "humidity": "5", "humidity_raw": "6", "temp": "62.0",
+                      "dry_setting": {"dry_duration": 12, "dry_filament": "PETG", "dry_temperature": 65}, "dry_time": 474,
+                      "tray": [{"id": "0", "state": 10}, {"id": "1", "state": 10}, {"id": "2", "state": 10}, {"id": "3", "state": 10}]}],
+            "ams_exist_bits": "1", "tray_exist_bits": "0", "tray_now": "255", "tray_tar": "255", "version": 818},
+    "vir_slot": [{"id": "255", "tray_type": "", "tray_color": "00000000", "remain": 0, "tag_uid": "0000000000000000"}]
+  }
+}

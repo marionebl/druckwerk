@@ -15,14 +15,16 @@ import secrets
 import sys
 import threading
 import time
+import urllib.request
 import zipfile
-from urllib.parse import parse_qs, unquote, urlsplit
+from urllib.parse import parse_qs, quote, unquote, urlsplit
 
 import actions
 import externals
 import files
 import filament
 import history
+import printer_state
 from ha import HAError, HAUnavailable
 from queue_access import Access, Caller, Forbidden, Grants, Unauthorized, caller_from_headers
 from queue_engine import WAITING, NotFound, Queue, QueueError
@@ -39,13 +41,9 @@ IDENTITY_HEADERS = ("X-Remote-User-Id", "X-Remote-User-Name", "X-Remote-User-Dis
 JOB_ID = r"([0-9a-f]{12})"
 SERIAL = r"([A-Za-z0-9_-]{1,40})"
 OFFLINE_JPEG = os.path.join(os.path.dirname(os.path.abspath(__file__)), "offline.jpg")
-# Sensor names of the vendor HA integration after the printer prefix (verified against its translations/en.json).
-SENSORS = {"status": "print_status", "stage": "current_stage", "progress": "print_progress",
-           "remaining": "remaining_time", "end": "end_time", "layer": "current_layer", "total": "total_layer_count",
-           "nozzle": "nozzle_temperature", "nozzle_t": "nozzle_target_temperature", "bed": "bed_temperature",
-           "bed_t": "bed_target_temperature", "chamber": "chamber_temperature", "tray": "active_tray",
-           "task": "task_name"}
-BRIDGE_STATE = {"RUNNING": "running", "FINISH": "finish", "FAILED": "failed", "IDLE": "idle", "PAUSE": "pause"}
+# Entity ids the queue and the watchdog ask for: <prefix>_<suffix>. State() answers them from the bridge, so they need not
+# exist in Home Assistant (with the vendor integration installed they are its real ids).
+SENSORS = {"status": "print_status", "stage": "current_stage", "progress": "print_progress", "tray": "active_tray"}
 UI_FILES = r"(index\.html|style\.css|app\.js|api\.js|util\.js|feedback\.js|views/[a-z]+\.js|vendor/three\.module\.min\.js)"
 # A feedback post carries screenshots; every other route keeps the slicer's 8 KB JSON limit.
 FEEDBACK_MAX = 1500000
@@ -54,6 +52,8 @@ MEDIA_ROOTS = ("/media", "/share")  # where a queue file may be named by absolut
 MEDIA_DIR = "/media/druckwerk"  # snapshots and plate images of the actions
 SLICED = re.compile(r"Metadata/plate_\d+\.gcode")
 TASKS_TTL = 60  # seconds a printer's cloud task list is reused
+SPOOLS_TTL = 30  # seconds an account's cloud filament library is reused
+COVER_MAX = 5 * 1024 * 1024  # bytes of a cloud cover image
 DOMAIN_DEFAULTS = "schedule,input_boolean,binary_sensor,person"
 
 
@@ -75,13 +75,18 @@ def num(v, cast=float):
         return None
 
 
-MINUTES_PER = {"h": 60, "min": 1, "s": 1 / 60}
-
-
-def minutes(state, unit):
-    """A duration sensor's state in minutes; the vendor sensor reports hours, other setups minutes."""
-    n = num(state)
-    return None if n is None else int(round(n * MINUTES_PER.get(unit, 1)))
+def fetch_image(url):
+    """(bytes, content type) of an image at an http(s) URL; a failure is a 502."""
+    if urlsplit(url).scheme not in ("http", "https"):
+        raise HttpError(502, "cover image: not a web address")
+    try:
+        with urllib.request.urlopen(url, timeout=15) as r:
+            data, ctype = r.read(COVER_MAX + 1), r.headers.get_content_type()
+    except (OSError, ValueError) as e:
+        raise HttpError(502, "cover image: %s" % e)
+    if len(data) > COVER_MAX or not ctype.startswith("image/"):
+        raise HttpError(502, "cover image: not an image or too large")
+    return data, ctype
 
 
 class Capture:
@@ -125,17 +130,17 @@ class App:
         self.data_dir, self.ui_dir = data_dir, ui_dir
         os.makedirs(os.path.join(data_dir, "plates"), exist_ok=True)
         self.registry = Registry(data_dir)
-        self.spools = filament.Spools(data_dir)
+        self.prices = filament.Prices(data_dir)
+        self.loads = filament.LoadRequests(data_dir)
         self.grants = Grants(self.registry, data_dir, self._grant_state, clock)
         self.access = Access(self.registry, self.grants, self.get_user)
-        self.queue = Queue(self.registry, data_dir, ha.state, self._call_service, self.get_trays, clock=clock,
+        self.queue = Queue(self.registry, data_dir, self.state, self._call_service, self.get_trays, clock=clock,
                            job_allowed=self.access.job_allowed, dry=Drying(self), send_print=self.send_print)
         self.media_roots = list(MEDIA_ROOTS)
         self.media_dir = MEDIA_DIR
         self.sender, self.watchdog, self.notifier, self.integration = Sender(self), Watchdog(self), Notifier(self), Integration(self)
         self.secret = self._load_secret()
         self._auto_at = None
-        self._track_at = None
         self._cache = {}
         self._cache_lock = threading.Lock()
         # Events: seq starts at the boot time so it keeps growing across restarts (pollers hold the last seq they saw).
@@ -223,67 +228,30 @@ class App:
             return main["entity_id"].split(".", 1)[1].removesuffix("_print_status")
         return slug(dev.get("name_by_user") or dev.get("name") or "") or None
 
-    def ams(self, serial, states, raw=False):
-        """AMS units of one printer from the entity registry: [{unit, humidity_index, temp, trays: [...]}]."""
-        devices, entities = self.registries()
-        dev_name = {d["id"]: d.get("name") or "" for d in devices}
-        units = {}
-        for e in entities:
-            uid = e.get("unique_id") or ""
-            if e.get("platform") != externals.HA_VENDOR_DOMAIN or "_%s_AMS_" % serial not in uid:
-                continue
-            ams_serial, _, key = uid.split("_%s_AMS_" % serial, 1)[1].partition("_")
-            u = units.setdefault(ams_serial, {"name": dev_name.get(e.get("device_id"), ""), "e": {}})
-            u["e"][key] = e["entity_id"]
-        out = []
-        for u in units.values():
-            m = re.search(r"_AMS_(\d+)$", u["name"])
-            if not m:
-                continue  # rack AMS (HT, 3H) has no slot numbering we can match to spools
-            n = int(m.group(1))
-            unit = n - 1 if n < 128 else n
-            trays = []
-            for key, eid in sorted(u["e"].items()):
-                tm = re.fullmatch(r"tray_(\d+)", key)
-                st = states.get(eid)
-                if not tm or not st:
-                    continue
-                a = st.get("attributes", {})
-                slot = int(tm.group(1)) - 1
-                empty = a.get("empty") or st["state"] in ("unknown", "unavailable", "Empty", "")
-                spool = self.spools.in_tray(serial, unit, slot)
-                remain = a.get("remain")
-                tray_uid = next((x for x in (a.get("tag_uid"), a.get("tray_uuid")) if x and set(str(x)) - {"0"}), "")
-                trays.append({"slot": slot, "type": "" if empty else a.get("type") or "",
-                              "colour": "" if empty else re.sub(r"[^0-9A-Fa-f]", "", a.get("color") or "")[:6].upper(),
-                              "name": "" if empty else st["state"],
-                              "remain_pct": remain if isinstance(remain, (int, float)) and remain >= 0 else None,
-                              "spool_id": spool["id"] if spool else None, **({"uid": str(tray_uid)} if raw else {})})
-            hum = states.get(u["e"].get("humidity_index", ""))
-            temp = states.get(u["e"].get("temperature", ""))
-            out.append({"unit": unit, "humidity_index": num(hum and hum["state"], int),
-                        "temp": num(temp and temp["state"]), "trays": trays})
-        return sorted(out, key=lambda a: a["unit"])
+    def default_prefix(self, serial, name):
+        """The vendor integration's entity prefix when it has the printer, else one made from the name (unique per printer)."""
+        prefix = self.suggested_prefix(serial)
+        if prefix:
+            return prefix
+        base = slug(name) or slug(serial)
+        taken = {p["prefix"] for p in self.registry.all() if p["serial"] != serial}
+        return base if base not in taken else "%s_%s" % (base, slug(serial))
 
-    def external(self, serial, states):
-        _, entities = self.registries()
-        rx = re.compile(r"_%s_ExternalSpool\w*_external_spool$" % re.escape(serial))
-        for e in entities:
-            if e.get("platform") == externals.HA_VENDOR_DOMAIN and rx.search(e.get("unique_id") or ""):
-                st = states.get(e["entity_id"])
-                if st and not st["attributes"].get("empty") and st["state"] not in ("unknown", "unavailable", "Empty"):
-                    a = st["attributes"]
-                    return {"type": a.get("type") or "", "name": st["state"],
-                            "colour": re.sub(r"[^0-9A-Fa-f]", "", a.get("color") or "")[:6].upper()}
-        return None
+    def ams(self, serial, raw=False, status=None):
+        """AMS units of one printer, from the bridge: [{unit, humidity_index, temp, trays: [...]}]."""
+        status = status or self.printer_status(serial) or {}
+        library = self.library((self.registry.get(serial) or {}).get("account"), fetch=False)
+        out = []
+        for u in status.get("ams", []):
+            trays = []
+            for t in u["trays"]:
+                spool = filament.in_tray(library, serial, u["unit"], t["slot"])
+                trays.append({**{k: v for k, v in t.items() if k != "uid" or raw}, "spool_id": spool["id"] if spool else None})
+            out.append(dict(u, trays=trays))
+        return out
 
     def get_trays(self, serial):
-        try:
-            states = self.ha.states(max_age=0)
-        except HAError:
-            return []
-        return [{"type": t["type"], "colour": "#" + t["colour"]} for a in self.ams(serial, states)
-                for t in a["trays"] if t["type"]]
+        return [{"type": t["type"], "colour": "#" + t["colour"]} for a in self.ams(serial) for t in a["trays"] if t["type"]]
 
     # -- calls to the bridge and HA --
     def bridge_json(self, method, path, body=None, timeout=30):
@@ -351,12 +319,6 @@ class App:
         except HttpError:
             return []
 
-    def safe_states(self):
-        try:
-            return self.ha.states()
-        except HAError:
-            return {}
-
     def ha_users(self):
         users = self.ha.command("config/auth/list")
         return [{"id": u["id"], "name": u.get("name") or "",
@@ -374,6 +336,24 @@ class App:
             return {}
         return (data or {}).get("print") or {} if status == 200 and isinstance(data, dict) else {}
 
+    def printer_status(self, serial):
+        """What the printer reports now (hub/printer_state.py), from the bridge; None when the bridge cannot say."""
+        return printer_state.view(self.bridge_print(serial), self.clock())
+
+    def state(self, entity_id):
+        """The queue's state lookup: a registered printer's own sensors come from the bridge, any other entity from HA."""
+        for p in self.registry.all():
+            for key in SENSORS:
+                if entity_id == self.entity(p, key):
+                    v = self.printer_status(p["serial"])
+                    if v is None:
+                        return None
+                    if key == "tray":
+                        return v["active_tray"]["name"] if v["active_tray"] else "none"
+                    value = v[{"status": "status", "stage": "stage", "progress": "progress"}[key]]
+                    return None if value is None else str(value)
+        return self.ha.state(entity_id)
+
     def drying(self, serial, max_age=5):
         """Units with a dryer, from the bridge; None when it cannot say."""
         try:
@@ -381,53 +361,26 @@ class App:
         except HttpError:
             return None
 
-    def printer_view(self, p, role, states):
-        serial, pre = p["serial"], p["prefix"]
-
-        def v(key):
-            s = states.get(self.entity(p, key))
-            return None if not s or s["state"] in ("unknown", "unavailable") else s["state"]
-
-        def unit(key):
-            return states[self.entity(p, key)]["attributes"].get("unit_of_measurement")
-        status = v("status")
-        b = {}
-        if status is None:
-            b = self.bridge_print(serial)  # no HA entities yet: fall back to the bridge's MQTT status
-            status = BRIDGE_STATE.get(b.get("gcode_state"), None)
-        tray = states.get(self.entity(p, "tray"))
-        ta = tray["attributes"] if tray and tray["state"] not in ("none", "unknown", "unavailable") else None
-        hms = states.get("binary_sensor.%s_hms_errors" % pre)
-        hms_out = []
-        if hms:
-            a = hms["attributes"]
-            for i in range(1, int(a.get("Count") or 0) + 1):
-                hms_out.append({"code": a.get("%d-Code" % i, ""), "severity": a.get("%d-Severity" % i, "info"),
-                                "text": a.get("%d-Error" % i, ""), "url": a.get("%d-Wiki" % i, "")})
-        online = states.get("binary_sensor.%s_online" % pre)
+    def printer_view(self, p, role):
+        serial = p["serial"]
+        v = self.printer_status(serial)
+        b = v or {}
+        tray = b.get("active_tray")
         job = next((j for j in self.queue.jobs if j.get("printer") == serial and j["state"] in ("starting", "printing")), None)
-        has_cover = "image.%s_cover_image" % pre in states
         return {
             "serial": serial, "name": p["name"], "model": p["model"], "role": role,
-            "online": online["state"] == "on" if online else status not in (None, "offline"),
-            "status": status, "stage": v("stage"),
-            "progress": num(v("progress")) if v("progress") is not None else num(b.get("mc_percent")),
-            "remaining_min": minutes(v("remaining"), unit("remaining")) if v("remaining") is not None else num(b.get("mc_remaining_time"), int),
-            "end_time": v("end"),
-            "layer": num(v("layer"), int) if v("layer") is not None else num(b.get("layer_num"), int),
-            "total_layers": num(v("total"), int) if v("total") is not None else num(b.get("total_layer_num"), int),
-            "nozzle_temp": num(v("nozzle")) if v("nozzle") is not None else num(b.get("nozzle_temper")),
-            "nozzle_target": num(v("nozzle_t")) if v("nozzle_t") is not None else num(b.get("nozzle_target_temper")),
-            "bed_temp": num(v("bed")) if v("bed") is not None else num(b.get("bed_temper")),
-            "bed_target": num(v("bed_t")) if v("bed_t") is not None else num(b.get("bed_target_temper")),
-            "chamber_temp": num(v("chamber")) if v("chamber") is not None else num(b.get("chamber_temper")),
-            "task_name": v("task") or b.get("subtask_name") or None,
-            "cover_url": "api/printers/%s/cover" % serial if has_cover else None,
+            "online": v is not None and b["status"] != "offline",
+            "status": b.get("status"), "stage": b.get("stage"), "progress": b.get("progress"),
+            "remaining_min": b.get("remaining_min"), "end_time": b.get("end_time"),
+            "layer": b.get("layer"), "total_layers": b.get("total_layers"),
+            "nozzle_temp": b.get("nozzle_temp"), "nozzle_target": b.get("nozzle_target"),
+            "bed_temp": b.get("bed_temp"), "bed_target": b.get("bed_target"), "chamber_temp": b.get("chamber_temp"),
+            "task_name": b.get("task_name"),
+            "cover_url": "api/printers/%s/cover" % serial if b.get("task_name") else None,
             "camera_url": "api/printers/%s/camera" % serial,
-            "active_tray": {"unit": num(ta.get("ams_index"), int), "slot": num(ta.get("tray_index"), int)}
-            if ta and ta.get("ams_index") is not None and ta.get("tray_index") is not None else None,
+            "active_tray": {"unit": tray["unit"], "slot": tray["slot"]} if tray else None,
             "drying": self.drying(serial) or [],
-            "ams": self.ams(serial, states), "external": self.external(serial, states), "hms": hms_out,
+            "ams": self.ams(serial, status=v), "external": b.get("external"), "hms": b.get("hms", []),
             "current_job": dict(job) if job else None,
             "queue_length": sum(1 for j in self.queue.jobs if j["state"] in WAITING and serial in self.access.serials_of(j)),
         }
@@ -439,10 +392,10 @@ class App:
     def _waiting_ids(self):
         return [j["id"] for j in self.queue.jobs if j["state"] in WAITING]
 
-    def emit(self, type_, serial, job):
+    def emit(self, type_, serial, job, **extra):
         self.seq += 1
         # job always carries id, file, owner_name, target and printer (None until a printer took it).
-        event = {"seq": self.seq, "type": type_, "serial": serial or "", "job": dict({"printer": None}, **job) if job else None}
+        event = {"seq": self.seq, "type": type_, "serial": serial or "", "job": dict({"printer": None}, **job) if job else None, **extra}
         self.events.append(event)
         self.notifier.put(event)
 
@@ -479,11 +432,14 @@ class App:
         grams = job.get("filament_grams") or []
         hint = tuple(job["slice_tray"]) if job.get("slice_tray") and len(job["filaments"]) == 1 else None
         prices, used = [], []
+        library = self.printer_spools(serial)
         for f, g in zip(job["filaments"], grams):
-            sp = self.spools.match(serial, f["type"], f["colour"], hint)
-            prices.append((sp["price_per_kg"] or 0) if sp else 0)
+            sp = filament.match(library, serial, f["type"], f["colour"], hint)
+            prices.append((self.prices.get(sp["id"]) or 0) if sp else 0)
             if sp and g:
-                self.spools.consume(sp, g)
+                if sp["grams_left"] is not None:
+                    sp["grams_left"] = max(0, sp["grams_left"] - g)  # a second filament on this spool starts from here
+                    self.update_cloud_spool(sp["account"], sp["id"], {"grams_left": sp["grams_left"]})
                 used.append({"spool_id": sp["id"], "grams": g})
         job["spools_used"] = used
         job["cost"] = filament.job_cost(grams, prices, job.get("print_seconds") or 0, printer.get("model"),
@@ -499,17 +455,17 @@ class App:
                                                        "hub_port": self.port, "secret": self.secret}}
 
     def auto_register(self, listed=None):
-        """Register printers that the bridge lists and HA already has, so an admin needs no setup step."""
+        """Register every printer that the bridge lists (the accounts' bound printers), so an admin needs no setup step."""
         for d in listed if listed is not None else self.bridge_ok("GET", "/api/printers", timeout=20):
             serial = d["serial"]
             if self.registry.get(serial) or self.registry.is_removed(serial):
                 continue
-            prefix = self.suggested_prefix(serial)
-            if prefix and "sensor.%s_print_status" % prefix in self.ha.states():
-                self.registry.put(serial, name=d.get("name") or serial,
-                                  model=d.get("dev_product_name") or d.get("dev_model_name") or "", account=d.get("account"),
-                                  prefix=prefix, plate_type="", nozzle="", pause_entities=[], electricity_kwh_price=0)
-                log("registered printer %s as %s" % (serial, prefix))
+            name = d.get("name") or serial
+            prefix = self.default_prefix(serial, name)
+            self.registry.put(serial, name=name, model=d.get("dev_product_name") or d.get("dev_model_name") or "",
+                              account=d.get("account"), prefix=prefix, plate_type="", nozzle="", pause_entities=[],
+                              electricity_kwh_price=0)
+            log("registered printer %s as %s" % (serial, prefix))
 
     def try_auto_register(self, every=60, listed=None):
         # Throttled: the bridge or HA may be down, and each try costs two calls.
@@ -522,28 +478,12 @@ class App:
         except Exception as e:  # noqa: BLE001 - bridge and HA errors must not stop the ticker
             log("auto register: %s" % e)
 
-    def try_track_filament(self, every=60):
-        """Record the filament in the AMS trays as spools; throttled like auto_register."""
-        now = self.clock()
-        if self._track_at is not None and now - self._track_at < every:
-            return
-        self._track_at = now
-        try:
-            states = self.ha.states(max_age=0)
-            for p in self.registry.all():
-                for unit in self.ams(p["serial"], states, raw=True):
-                    for t in unit["trays"]:
-                        self.spools.see(p["serial"], unit["unit"], t["slot"], t, now)
-        except Exception as e:  # noqa: BLE001 - HA may be down; the next try follows
-            log("track filament: %s" % e)
-
     def tick_all(self):
         try:
             self.watchdog.tick()
         except Exception as e:  # noqa: BLE001 - HA may be down; the next tick follows
             log("watchdog: %s" % e)
         self.try_auto_register()
-        self.try_track_filament()
         for p in self.registry.all():
             try:
                 self.queue.tick(p["serial"])
@@ -653,7 +593,7 @@ class App:
             cfg = self.registry.get(serial)
             printers.append({"serial": serial, "device_name": d.get("name") or serial,
                              "model": d.get("dev_product_name") or d.get("dev_model_name") or "", "account": d.get("account"),
-                             "configured": bool(cfg), "suggested_prefix": self.suggested_prefix(serial),
+                             "configured": bool(cfg), "suggested_prefix": self.default_prefix(serial, d.get("name") or serial),
                              "config": self.config_view(cfg) if cfg else None})
         return {"accounts": [{"id": a["id"], "email": a["email"], "logged_in": a.get("logged_in", True),
                               "daemon_running": bool((a.get("daemon") or {}).get("running"))} for a in health["accounts"]],
@@ -676,11 +616,6 @@ class App:
 
     def put_printer(self, h, m, q, c):
         serial, b = m.group(1), h.json()
-        prefix = str(b.get("ha_prefix") or "").strip()
-        if not prefix:
-            raise ValueError("ha_prefix is required")
-        if "sensor.%s_print_status" % prefix not in self.ha.states(max_age=0):
-            raise ValueError("Home Assistant has no sensor.%s_print_status: check the printer integration's entity prefix" % prefix)
         price = b.get("electricity_kwh_price", 0)
         if isinstance(price, bool) or not isinstance(price, (int, float)) or price < 0:
             raise ValueError("electricity_kwh_price must be a number >= 0")
@@ -688,6 +623,7 @@ class App:
         old = self.registry.get(serial)
         if not known and not old:
             raise NotFound("the logged-in accounts have no printer with that serial")
+        prefix = str(b.get("ha_prefix") or "").strip() or self.default_prefix(serial, b.get("name") or serial)
         model = (known and (known.get("dev_product_name") or known.get("dev_model_name"))) or old["model"]
         p = self.registry.put(serial, name=b.get("name"), model=model, account=known["account"] if known else old["account"],
                               prefix=prefix, plate_type=b.get("plate") or "", nozzle=b.get("nozzle") or "",
@@ -710,12 +646,11 @@ class App:
         return {"url": "http://%s:%s" % (self.hostname_fn(), self.port), "secret": self.secret, "connected": connected}
 
     def get_printers(self, h, m, q, c):
-        states = self.ha.states()
         out = []
         for p in self.registry.all():
             role = self.access.role(c, p["serial"])
             if role:
-                out.append(self.printer_view(p, role, states))
+                out.append(self.printer_view(p, role))
         return out
 
     def printer_access(self, c, serial, admin=False):
@@ -732,10 +667,30 @@ class App:
         query = urlsplit(h.path).query if kind == "live" else ""
         self.proxy(h, "/api/camera/%s/%s" % (serial, kind), query)
 
+    def cover_png(self, serial):
+        """The plate image of the file Druckwerk sent for the current print (or the file named like the printer's task)."""
+        task = (self.printer_status(serial) or {}).get("task_name")
+        return self.integration.preview(serial, self.integration.wanted(serial, self.sender.result(serial)["last_path"], task))[1]
+
+    def task_cover(self, serial, task):
+        """The cloud's cover of the newest task with the printer's task name; None without one."""
+        wanted = history.names(task)
+        try:
+            tasks = self.cloud_tasks(serial)
+        except HttpError:
+            return None
+        hits = [t for t in tasks if t.get("cover_url") and history.names(t.get("title"), t.get("design_title")) & wanted]
+        return max(hits, key=lambda t: t.get("started_at") or 0)["cover_url"] if hits and wanted else None
+
     def get_cover(self, h, m, q, c):
-        p = self.printer_access(c, m.group(1))
-        ctype, data = self.ha.image("image.%s_cover_image" % p["prefix"])
-        h.send(200, data, ctype)
+        serial = self.printer_access(c, m.group(1))["serial"]
+        png = self.cover_png(serial)
+        if png:
+            return h.send(200, png, "image/png")
+        url = self.task_cover(serial, (self.printer_status(serial) or {}).get("task_name"))
+        if not url:
+            raise NotFound("no cover image for this print")
+        h.send(200, *fetch_image(url))
 
     def cloud_tasks(self, serial):
         return self._cached("tasks:" + serial, TASKS_TTL, lambda: self.bridge_ok("GET", "/api/tasks?serial=%s&limit=100" % serial, timeout=30))
@@ -808,10 +763,10 @@ class App:
         use = filament.slice_usage(job["result"])
         tray = (job.get("settings") or {}).get("tray")
         hint = (int(tray["ams"]), int(tray["id"])) if tray and len(use["filaments"]) == 1 else None
-        prices = []
+        prices, library = [], self.printer_spools(serial)
         for f in use["filaments"]:
-            sp = self.spools.match(serial, f["type"], f["colour"], hint)
-            prices.append((sp["price_per_kg"] or 0) if sp else 0)
+            sp = filament.match(library, serial, f["type"], f["colour"], hint)
+            prices.append((self.prices.get(sp["id"]) or 0) if sp else 0)
         return filament.job_cost([f["grams"] for f in use["filaments"]], prices, use["seconds"], printer.get("model"),
                                  printer.get("electricity_kwh_price") or 0)
 
@@ -983,42 +938,163 @@ class App:
         except OSError:
             raise NotFound("no plate image")
 
-    # -- spools --
-    def spool_admin(self, c, spool):
-        """HA admins manage all spools; the admin or owner of a printer manages the spools assigned to it."""
-        if spool.get("printer") and self.access.role(c, spool["printer"]) == "admin":
-            return
-        if not self.access.is_global_admin(c):
+    # -- spools (the Bambu Cloud filament library, read and written through the bridge) --
+    def library(self, account, fetch=True):
+        """An account's spools, reused for SPOOLS_TTL. fetch=False only reads what is cached, however old."""
+        key = "lib:%s" % account
+        with self._cache_lock:
+            at, val = self._cache.get(key, (0, None))
+        if val is not None and (not fetch or self.clock() - at < SPOOLS_TTL):
+            return val
+        if not fetch or not account:
+            return []
+        try:
+            val = self.bridge_ok("GET", "/api/filament?account=" + quote(account), timeout=30)
+        except HttpError as e:  # no stale copy: the person must see that the cloud did not answer
+            raise HttpError(e.status, "Bambu Cloud filament library: %s" % e)
+        with self._cache_lock:
+            self._cache[key] = (self.clock(), val)
+        self.loads.settle(val)
+        return val
+
+    def printer_spools(self, serial):
+        """Copies of the spools of the printer's account; empty when the cloud does not answer, so a print still settles."""
+        account = (self.registry.get(serial) or {}).get("account")
+        try:
+            return [dict(s) for s in self.library(account)] if account else []
+        except HttpError as e:
+            log("filament library: %s" % e)
+            return []
+
+    def update_cloud_spool(self, account, spool_id, fields):
+        try:
+            self.bridge_ok("PUT", "/api/filament/%s?account=%s" % (spool_id, quote(account)), fields, timeout=30)
+        except HttpError as e:
+            log("spool %s not updated in the cloud: %s" % (spool_id, e))
+        self._cache.pop("lib:%s" % account, None)
+
+    def library_accounts(self, c):
+        """Cloud accounts whose library the caller sees: all for HA admins, else those that own a printer the caller sees."""
+        if self.access.is_global_admin(c):
+            found = self._cached("accounts", 60, lambda: {p["account"] for p in self.bridge_ok("GET", "/api/printers", timeout=20) if p.get("account")})
+        else:
+            found = {p.get("account") for p in self.registry.all() if self.access.role(c, p["serial"])} - {None}
+        if not found:
+            raise HttpError(409, "No Bambu Cloud account is linked for your printers; link one in the bridge setup.")
+        return sorted(found)
+
+    def visible_spools(self, c):
+        out = []
+        for acc in self.library_accounts(c):
+            # Spools loaded in a printer the caller cannot see stay hidden from non-admins.
+            out += [dict(s, price_per_kg=self.prices.get(s["id"])) for s in self.library(acc)
+                    if self.access.is_global_admin(c) or not s["printer"] or self.access.role(c, s["printer"])]
+        return out
+
+    def spool_admin(self, c, account):
+        """HA admins and the admin or owner of one of the account's printers manage its spools."""
+        if not (self.access.is_global_admin(c) or any(p.get("account") == account and self.access.role(c, p["serial"]) == "admin"
+                                                      for p in self.registry.all())):
             raise Forbidden("rule: only an admin of the spool's printer (or a Home Assistant admin) manages spools")
 
+    def find_spool(self, c, spool_id):
+        spool = next((s for s in self.visible_spools(c) if s["id"] == spool_id), None)
+        if not spool:
+            raise NotFound("no such spool")
+        self.spool_admin(c, spool["account"])
+        return spool
+
+    def split_price(self, b):
+        """(cloud fields, price) of a request body; the price stays in the hub."""
+        b = dict(b)
+        price = b.pop("price_per_kg", "keep")
+        if price not in (None, "keep") and (isinstance(price, bool) or not isinstance(price, (int, float)) or price < 0):
+            raise ValueError("price_per_kg must be a number >= 0")
+        return b, price
+
     def get_spools(self, h, m, q, c):
-        return [s for s in self.spools.items
-                if (self.access.role(c, s["printer"]) if s["printer"] else self.access.is_global_admin(c))]
+        return self.visible_spools(c)
 
     def post_spool(self, h, m, q, c):
-        b = h.json()
-        self.spool_admin(c, {"printer": b.get("printer")})
-        if b.get("printer") and not self.registry.get(b["printer"]):
-            raise ValueError("unknown printer")
-        return self.spools.add(**b)
+        fields, price = self.split_price(h.json())
+        account = fields.pop("account", None)
+        if not account:
+            accounts = self.library_accounts(c)
+            if len(accounts) != 1:
+                raise ValueError("account is required: " + ", ".join(accounts))
+            account = accounts[0]
+        if account not in self.library_accounts(c):
+            raise Forbidden("rule: this Bambu Cloud account is not one of yours")
+        self.spool_admin(c, account)
+        made = self.bridge_ok("POST", "/api/filament?account=" + quote(account), fields)
+        self._cache.pop("lib:%s" % account, None)
+        if made.get("id") is not None and price not in (None, "keep"):
+            self.prices.set(made["id"], price)
+        return dict(made, price_per_kg=self.prices.get(made.get("id")))
 
     def put_spool(self, h, m, q, c):
-        s = self.spools.get(m.group(1))
-        if not s:
-            raise NotFound("no such spool")
-        self.spool_admin(c, s)
-        b = h.json()
-        if b.get("printer"):  # unlinking is fine; linking needs admin of the target printer too
-            self.spool_admin(c, {"printer": b["printer"]})
-        return self.spools.update(m.group(1), **b)
+        old = self.find_spool(c, m.group(1))
+        fields, price = self.split_price(h.json())
+        made = {}
+        if fields:
+            made = self.bridge_ok("PUT", "/api/filament/%s?account=%s" % (old["id"], quote(old["account"])), fields)
+            self._cache.pop("lib:%s" % old["account"], None)
+        if price != "keep":
+            self.prices.set(old["id"], price)
+        return {**old, **fields, **made, "price_per_kg": self.prices.get(old["id"])}
 
     def delete_spool(self, h, m, q, c):
-        s = self.spools.get(m.group(1))
-        if not s:
+        old = self.find_spool(c, m.group(1))
+        self.bridge_ok("DELETE", "/api/filament/%s?account=%s" % (old["id"], quote(old["account"])))
+        self._cache.pop("lib:%s" % old["account"], None)
+        self.prices.set(old["id"], None)
+        return {"removed": old["id"]}
+
+    # -- load requests: a user asks the printer's owner to put a library spool into the AMS --
+    def load_request_visible(self, c, r):
+        return self.access.role(c, r["printer"]) is not None
+
+    def get_load_requests(self, h, m, q, c):
+        try:
+            for acc in self.library_accounts(c):
+                self.library(acc)
+        except HttpError as e:  # the list itself needs no cloud
+            log("load requests: %s" % e)
+        return [r for r in list(self.loads.items) if self.load_request_visible(c, r)]
+
+    def post_load_request(self, h, m, q, c):
+        b = h.json()
+        serial = str(b.get("printer") or "")
+        if not serial:
+            raise ValueError("printer is required")
+        note = b.get("note") or ""
+        if not isinstance(note, str) or len(note) > 200:
+            raise ValueError("note must be text of at most 200 characters")
+        p = self.printer_access(c, serial)
+        spool = next((s for s in self.visible_spools(c) if s["id"] == m.group(1)), None)
+        if not spool:
             raise NotFound("no such spool")
-        self.spool_admin(c, s)
-        self.spools.remove(m.group(1))
-        return {"removed": m.group(1)}
+        if not self.ams(serial):
+            raise ValueError("this printer has no AMS")
+        if spool.get("printer") == serial and spool.get("in_printer"):
+            raise HttpError(409, "this spool is already in that printer")
+        label = " ".join(x for x in (spool["brand"], spool["type"], spool["name"]) if x)
+        req, created = self.loads.add({
+            "id": secrets.token_hex(6), "spool_id": spool["id"], "spool_label": label, "colour": spool["colour"],
+            "printer": serial, "user_id": c.user_id, "user_name": c.display or c.name, "note": note.strip(),
+            "created_at": int(self.clock())})
+        if created:
+            self.emit("load_requested", serial, None, request=dict(req, printer_name=p["name"]))
+        return req
+
+    def delete_load_request(self, h, m, q, c):
+        r = next((x for x in self.loads.items if x["id"] == m.group(1)), None)
+        if not r or not self.load_request_visible(c, r):
+            raise NotFound("no such load request")
+        if r["user_id"] != c.user_id and self.access.role(c, r["printer"]) != "admin":
+            raise Forbidden("rule: only the requester or an admin of the printer can cancel this request")
+        self.loads.remove(r["id"])
+        return {"removed": r["id"]}
 
     # -- HA lookups, events --
     def get_ha_users(self, h, m, q, c):
@@ -1117,8 +1193,7 @@ class App:
     def get_image(self, h, m, q):
         self.internal_caller(h)
         serial = m.group(1)
-        path = self.integration.wanted(serial, self.sender.result(serial)["last_path"], self.safe_states())
-        png = self.integration.preview(serial, path)[1]
+        png = self.cover_png(serial)
         if not png:
             raise NotFound("no preview")
         h.send(200, png, "image/png")
@@ -1222,8 +1297,11 @@ class App:
             ("GET", r"/api/history", w(self.get_history)),
             ("GET", r"/api/spools", w(self.get_spools)),
             ("POST", r"/api/spools", w(self.post_spool)),
-            ("PUT", r"/api/spools/([0-9a-f]{12})", w(self.put_spool)),
-            ("DELETE", r"/api/spools/([0-9a-f]{12})", w(self.delete_spool)),
+            ("PUT", r"/api/spools/(\d{1,19})", w(self.put_spool)),
+            ("DELETE", r"/api/spools/(\d{1,19})", w(self.delete_spool)),
+            ("POST", r"/api/spools/(\d{1,19})/load-request", w(self.post_load_request)),
+            ("GET", r"/api/load-requests", w(self.get_load_requests)),
+            ("DELETE", r"/api/load-requests/([0-9a-f]{12})", w(self.delete_load_request)),
             ("GET", r"/api/ha/users", w(self.get_ha_users, "ha_admin")),
             ("GET", r"/api/ha/entities", w(self.get_ha_entities, "ha_admin")),
             ("POST", r"/api/ha/switches", w(self.create_switch, "ha_admin")),

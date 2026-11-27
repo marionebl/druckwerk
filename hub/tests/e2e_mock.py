@@ -13,15 +13,12 @@ import sys
 import threading
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 
-import os
-sys.path.insert(0, os.path.join(os.path.dirname(os.path.abspath(__file__)), ".."))
-from externals import HA_VENDOR_DOMAIN as VENDOR  # noqa: E402
 
 GUID = "258EAFA5-E914-47DA-95CA-C5AB0DC85B11"
 H2S, P1S, X1C = "FAKE-H2S-0001", "FAKE-P1S-0002", "FAKE-X1C-0003"
 PREFIX = {H2S: "h2s_fake0001", P1S: "p1s_fake0002", X1C: "x1c_fake0003"}
 NAMES = {H2S: ("Workshop H2S", "H2S"), P1S: ("Office P1S", "P1S"), X1C: ("Garage X1C", "X1C")}
-# A 1x1 JPEG, so camera and cover <img> elements really decode.
+# A 1x1 JPEG, so camera <img> elements really decode.
 JPEG = base64.b64decode("/9j/4AAQSkZJRgABAQEASABIAAD/2wBDAP//////////////////////////////////////////////////////////////////////////////////////"
                         "wgALCAABAAEBAREA/8QAFBABAAAAAAAAAAAAAAAAAAAAAP/aAAgBAQABPxA=")
 # (type, colour, name, remain %, bridge tray_info_idx); None = empty slot
@@ -35,76 +32,60 @@ def st(state, **attrs):
     return {"state": state, "attributes": attrs}
 
 
-def printer_states(serial, status, **kw):
-    p = PREFIX[serial]
-    s = {"sensor.%s_print_status" % p: st(status), "sensor.%s_current_stage" % p: st(kw.get("stage", "idle")),
-         "sensor.%s_print_progress" % p: st(str(kw.get("progress", 0))), "sensor.%s_remaining_time" % p: st(str(kw.get("remaining", 0))),
-         "sensor.%s_end_time" % p: st(kw.get("end", "unknown")), "sensor.%s_current_layer" % p: st(str(kw.get("layer", 0))),
-         "sensor.%s_total_layer_count" % p: st(str(kw.get("total", 0))), "sensor.%s_nozzle_temperature" % p: st(str(kw.get("nozzle", 25))),
-         "sensor.%s_nozzle_target_temperature" % p: st(str(kw.get("nozzle_t", 0))), "sensor.%s_bed_temperature" % p: st(str(kw.get("bed", 25))),
-         "sensor.%s_bed_target_temperature" % p: st(str(kw.get("bed_t", 0))), "sensor.%s_chamber_temperature" % p: st("27"),
-         "sensor.%s_task_name" % p: st(kw.get("task", "")), "binary_sensor.%s_online" % p: st("off" if kw.get("offline") else "on"),
-         "sensor.%s_active_tray" % p: st("none"), "image.%s_cover_image" % p: st("2026-11-27T10:00:00"),
-         "binary_sensor.%s_hms_errors" % p: st("off", Count=0)}
-    return s
-
-
-def tray_state(t, n):
+def mqtt_tray(i, t):
+    """A tray as the printer's MQTT status reports it; state 10 is an empty slot, 11 one with a spool."""
     if not t:
-        return st("Empty", slot=n, type="", color="#00000000", remain=-1, empty=True)
-    return st(t[2], slot=n, type=t[0], color="#%sFF" % t[1], remain=t[3], empty=False)
+        return {"id": str(i), "state": 10}
+    return {"id": str(i), "state": 11, "tray_type": t[0], "tray_color": t[1] + "FF", "tray_info_idx": t[4], "tray_sub_brands": t[2], "remain": t[3]}
+
+
+def mqtt_status(state, units, **kw):
+    """The `print` object of the bridge's /api/status/<serial>; the hub reads everything about a printer from it."""
+    nozzle, bed = kw.get("nozzle", 25), kw.get("bed", 25)
+    return {"gcode_state": state, "stg_cur": kw.get("stage", -1), "mc_percent": kw.get("progress", 0), "mc_remaining_time": kw.get("remaining", 0),
+            "layer_num": kw.get("layer", 0), "total_layer_num": kw.get("total", 0), "nozzle_temper": nozzle, "nozzle_target_temper": kw.get("nozzle_t", 0),
+            "bed_temper": bed, "bed_target_temper": kw.get("bed_t", 0), "device": {"ctc": {"info": {"temp": 27}}},
+            "subtask_name": kw.get("task", ""), "hms": kw.get("hms", []),
+            "ams": {"tray_now": kw.get("tray_now", "255"), "ams": [
+                {"id": str(u), "humidity": ("2", "4")[u], "temp": ("27", "31")[u], "tray": [mqtt_tray(i, t) for i, t in enumerate(trays)]}
+                for u, trays in enumerate(units)]}}
+
+
+def build_prints():
+    return {H2S: mqtt_status("RUNNING", UNITS, stage=0, progress=42, remaining=95, layer=128, total=300, nozzle=249, nozzle_t=250, bed=60,
+                             bed_t=60, task="Gridfinity bin 4x2", tray_now="1"),
+            P1S: mqtt_status("IDLE", [P1S_TRAYS]),
+            # paused for a missing filament, with the HMS error the printer reports for it
+            X1C: mqtt_status("PAUSE", [], stage=6, progress=63, remaining=40, layer=190, total=300, nozzle=215, nozzle_t=220, bed=60, bed_t=60,
+                             task="Cable clips", hms=[{"attr": 0x07000100, "code": 0x00020007}])}
 
 
 def build_states():
-    from time import strftime, gmtime, time
-    end = strftime("%Y-%m-%dT%H:%M:%S+00:00", gmtime(time() + 95 * 60))
-    s = printer_states(H2S, "running", stage="printing", progress=42, remaining=95, end=end, layer=128, total=300, nozzle=249,
-                       nozzle_t=250, bed=59.6, bed_t=60, task="Gridfinity bin 4x2")
-    s["sensor.h2s_fake0001_active_tray"] = st("Prusament PETG Blue", ams_index=0, tray_index=1)
-    s.update(printer_states(P1S, "idle"))
-    s.update(printer_states(X1C, "unavailable", offline=True))
-    s["binary_sensor.x1c_fake0003_hms_errors"] = st("on", Count=1, **{"1-Code": "HMS_0700_0100_0001_0007", "1-Error": "The AMS filament has run out.",
-                                                                    "1-Wiki": "https://wiki.example.invalid/hms", "1-Severity": "serious"})
-    for u, trays in enumerate(UNITS):
-        for n, t in enumerate(trays, 1):
-            s["sensor.h2s_ams%d_tray_%d" % (u + 1, n)] = tray_state(t, n)
-        s["sensor.h2s_ams%d_humidity_index" % (u + 1)] = st("4" if u == 0 else "2")
-        s["sensor.h2s_ams%d_temperature" % (u + 1)] = st("27" if u == 0 else "31")
-    for n, t in enumerate(P1S_TRAYS, 1):
-        s["sensor.p1s_ams1_tray_%d" % n] = tray_state(t, n)
-    s.update({"schedule.workshop_hours": st("on", friendly_name="Workshop hours"), "input_boolean.guests_home": st("off", friendly_name="Guests home"),
-              "person.lena": st("home", friendly_name="Lena")})
-    return s
-
-
-def build_registries():
-    devices, entities = [], []
-    for serial, p in PREFIX.items():
-        devices.append({"id": "dev-" + p, "identifiers": [[VENDOR, serial]], "name": "%s_%s" % (NAMES[serial][1].lower(), serial.lower()),
-                        "name_by_user": NAMES[serial][0], "model": NAMES[serial][1]})
-        entities.append({"entity_id": "sensor.%s_print_status" % p, "device_id": "dev-" + p, "platform": VENDOR, "unique_id": serial + "_print_status"})
-    for serial, prefix, units in ((H2S, "h2s", UNITS), (P1S, "p1s", [P1S_TRAYS])):
-        for u, trays in enumerate(units):
-            dev = "dev-%s-ams%d" % (prefix, u + 1)
-            devices.append({"id": dev, "identifiers": [[VENDOR, "%sAMS%d" % (prefix.upper(), u + 1)]], "model": "AMS",
-                            "name": "%s_%s_AMS_%d" % (prefix, serial.lower(), u + 1)})
-            for key in ["tray_%d" % n for n in range(1, len(trays) + 1)] + (["humidity_index", "temperature"] if prefix == "h2s" else []):
-                entities.append({"entity_id": "sensor.%s_ams%d_%s" % (prefix, u + 1, key), "device_id": dev, "platform": VENDOR,
-                                 "unique_id": "%s_%s_AMS_%sAMS%d_%s" % (prefix.upper(), serial, prefix.upper(), u + 1, key)})
-    return devices, entities
+    """Home Assistant has no entities of the vendor integration: only what the access rules and notifications use."""
+    return {"schedule.workshop_hours": st("on", friendly_name="Workshop hours"), "input_boolean.guests_home": st("off", friendly_name="Guests home"),
+            "person.lena": st("home", friendly_name="Lena")}
 
 
 USERS = [{"id": "u-admin", "name": "Alex Admin", "is_owner": False, "is_active": True, "system_generated": False, "group_ids": ["system-admin"]},
          {"id": "u-user", "name": "Lena Tester", "is_owner": False, "is_active": True, "system_generated": False, "group_ids": ["system-users"]},
          {"id": "u-friend", "name": "Jonas Example", "is_owner": False, "is_active": True, "system_generated": False, "group_ids": ["system-users"]}]
 STATES = build_states()
-DEVICES, ENTITIES = build_registries()
+PRINTS = build_prints()
+DEVICES, ENTITIES = [], []  # no printer devices or entities in HA
 CALLS = []
 
 
 def bridge_ams(trays):
     return {"ams": {"ams": [{"id": "0", "tray": [{"id": str(i), "tray_type": t[0], "tray_color": t[1] + "FF", "tray_info_idx": t[4],
                                                   "tray_sub_brands": t[2]} if t else {"id": str(i)} for i, t in enumerate(trays)]}]}, "vt_tray": {}}
+
+
+SPOOLS = [{"id": str(5000 + i), "brand": n.split()[0], "type": t, "name": n, "colour": c, "grams_left": left, "grams_total": 1000,
+           "printer": pr, "unit": u, "slot": s, "in_printer": pr is not None, "rfid": None, "account": "acc1"}
+          for i, (t, c, n, left, pr, u, s) in enumerate([
+              ("PLA", "F2F2F2", "Acme PLA White", 880, H2S, 0, 0), ("PETG", "1F6FEB", "Prusament PETG Blue", 610, H2S, 0, 1),
+              ("PLA", "E4572E", "Sunlu PLA Red", 140, H2S, 0, 2), ("TPU", "222222", "TPU 95A Black", 730, H2S, 1, 0),
+              ("PLA", "2E2E2E", "Generic PLA Black", 950, None, None, None)])]
 
 
 class H(BaseHTTPRequestHandler):
@@ -124,11 +105,13 @@ class H(BaseHTTPRequestHandler):
         if p == "/api/printers":
             return self.reply(200, [{"dev_id": s, "serial": s, "name": n, "dev_product_name": m, "account": "acc1", "live": {"ok": 1}}
                                     for s, (n, m) in NAMES.items()])
+        if p == "/api/filament":
+            return self.reply(200, SPOOLS)
         if p.startswith("/api/ams/"):
             serial = p.rsplit("/", 1)[1]
             return self.reply(200, bridge_ams(UNITS[0] if serial == H2S else P1S_TRAYS))
         if p.startswith("/api/status/"):
-            return self.reply(200, {"print": {}})
+            return self.reply(200, {"print": PRINTS.get(p.rsplit("/", 1)[1], {})})
         if p.startswith("/api/camera/"):
             return self.reply(200, JPEG, "image/jpeg")
         if p == "/calls":
@@ -138,8 +121,6 @@ class H(BaseHTTPRequestHandler):
         if p.startswith("/core/states/"):
             eid = p.rsplit("/", 1)[1]
             return self.reply(200, dict(STATES[eid], entity_id=eid)) if eid in STATES else self.reply(404, {"message": "Entity not found"})
-        if p.startswith("/core/image_proxy/"):
-            return self.reply(200, JPEG, "image/jpeg")
         self.reply(404, {"error": "no such route " + p})
 
     def do_POST(self):
@@ -153,7 +134,20 @@ class H(BaseHTTPRequestHandler):
             return self.reply(200, {"result": "sent"})
         if self.path.startswith("/core/services/"):
             return self.reply(200, {"service_response": {"result": "sent"}})
+        if self.path.split("?")[0] == "/api/filament":
+            SPOOLS.append(dict(SPOOLS[-1], **body, id=str(5000 + len(SPOOLS)), printer=None, in_printer=False))
+            return self.reply(200, SPOOLS[-1])
         self.reply(200, {})  # supervisor discovery
+
+    def do_PUT(self):
+        body = json.loads(self.rfile.read(int(self.headers.get("Content-Length") or 0)) or b"{}")
+        CALLS.append({"path": self.path, "body": body})
+        sid = self.path.split("?")[0].rsplit("/", 1)[1]
+        spool = next((s for s in SPOOLS if s["id"] == sid), None)
+        if not spool:
+            return self.reply(404, {"error": "unknown spool"})
+        spool.update(body)
+        self.reply(200, spool)
 
     def do_DELETE(self):
         self.reply(200, {"deleted": self.path.rsplit("/", 1)[1]})

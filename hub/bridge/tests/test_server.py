@@ -520,6 +520,59 @@ class MultiAccountTest(unittest.TestCase):
         self.assertEqual(st, 502)
         self.assertIn("HTTP 401", d["error"])
 
+    def test_02d_filament_library_of_one_account(self):
+        s = self.s
+        st, a = s.json("GET", "/api/filament?account=a_example_com")
+        self.assertEqual(st, 200)
+        self.assertEqual(len(a), 60)  # two pages
+        self.assertEqual([q.split("&")[0].split("?")[1] for q, _ in self.cloud.filament_calls[-2:]], ["offset=0", "offset=50"])
+        self.assertEqual(a[0], {"id": "9000", "brand": "Acme", "type": "PLA", "name": "PLA Basic aexamplecom", "colour": "FF0000",
+                                "grams_left": 500, "grams_total": 1000, "printer": None, "unit": None, "slot": None,
+                                "in_printer": False, "rfid": None, "account": "a_example_com"})
+        self.assertEqual((a[1]["printer"], a[1]["unit"], a[1]["slot"], a[1]["in_printer"], a[1]["rfid"], a[1]["grams_left"]),
+                         ("SERIAL001", 0, 2, True, "RF1", None))
+        b = s.json("GET", "/api/filament?account=b_example_com")[1]
+        self.assertIn("PLA Basic bexamplecom", b[0]["name"])
+        self.assertEqual({e for _, e in self.cloud.filament_calls}, {"a@example.com", "b@example.com"})
+        for shape in ("array", "data"):  # the other list shapes the vendor slicer accepts
+            self.cloud.list_shape = shape
+            self.assertEqual(len(s.json("GET", "/api/filament?account=a_example_com")[1]), 60, shape)
+        self.cloud.list_shape = "hits"
+
+    def test_02e_filament_write_routes(self):
+        s = self.s
+        st, new = s.json("POST", "/api/filament?account=a_example_com",
+                         {"brand": "Prusa", "type": "PETG", "name": "PETG Blue", "colour": "1f6feb", "grams_left": 800, "grams_total": 1000})
+        self.assertEqual(st, 200)
+        self.assertEqual((new["id"], new["brand"], new["colour"], new["grams_left"]), ("9160", "Prusa", "1F6FEB", 800))
+        sent = next(b for p, b, *_ in reversed(self.cloud.calls) if p == mock_cloud.FILAMENT and "filamentName" in b)
+        self.assertEqual(sent, {"filamentVendor": "Prusa", "filamentType": "PETG", "filamentName": "PETG Blue", "color": "1F6FEBFF",
+                                "colors": ["1F6FEBFF"], "colorType": 2, "netWeight": 800, "totalNetWeight": 1000, "rolls": 1,
+                                "createType": "manual", "isSupport": False})
+        st, upd = s.json("PUT", "/api/filament/9160?account=a_example_com", {"grams_left": 750})
+        self.assertEqual((st, upd["grams_left"], upd["brand"]), (200, 750, "Prusa"))
+        put = next(c for c in reversed(self.cloud.calls) if c[-1] == "PUT")
+        self.assertEqual((put[0], put[1]), (mock_cloud.FILAMENT, {"id": 9160, "netWeight": 750}))  # the id travels in the body
+        self.assertEqual(s.json("PUT", "/api/filament/1?account=a_example_com", {"grams_left": 1})[0], 502)  # the cloud knows no id 1
+        self.assertEqual(s.req("PUT", "/api/filament/9160?account=a_example_com", {"grams_left": -1})[0], 400)
+        self.assertEqual(s.req("POST", "/api/filament?account=a_example_com", {"type": "PLA"})[0], 400)  # a name is required
+        self.assertEqual(s.json("DELETE", "/api/filament/9160?account=a_example_com")[0], 200)
+        dele = next(c for c in reversed(self.cloud.calls) if c[-1] == "DELETE")
+        self.assertEqual((dele[0], dele[1]), (mock_cloud.FILAMENT + "/batch", {"ids": [9160]}))
+        self.assertEqual(len(s.json("GET", "/api/filament?account=a_example_com")[1]), 60)
+
+    def test_02f_filament_errors(self):
+        s = self.s
+        self.assertEqual(s.req("GET", "/api/filament?account=nope")[0], 404)
+        self.assertEqual(s.req("GET", "/api/filament")[0], 404)  # no account named
+        known = dict(self.cloud.owner)
+        self.cloud.owner.clear()  # the cloud no longer knows the token: 401
+        st, d = s.json("GET", "/api/filament?account=a_example_com")
+        self.cloud.owner.update(known)
+        self.assertEqual(st, 502)
+        self.assertIn("HTTP 401", d["error"])
+        self.assertNotIn("TOKEN-SECRET", d["error"])
+
     def test_03_relogin_replaces_token(self):
         s = self.s
         old = self.cloud.tokens["b@example.com"]

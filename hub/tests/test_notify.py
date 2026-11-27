@@ -21,7 +21,7 @@ def hub(hub):
         "person.far": st("not_home", user_id=ADMIN),  # an admin who is away
     })
     hub.grant(OTHER, SERIAL, role="owner")
-    hub.ha.s["sensor.lab_h2s_print_status"]["state"] = "idle"
+    hub.set_print(gcode_state="IDLE")
     return hub
 
 
@@ -38,9 +38,9 @@ def finish_first_job(hub):
     first = hub.req("POST", "/api/queue", {"file": "a.gcode.3mf", "target": SERIAL, "name": "First"}, user=ADMIN)[1]
     second = hub.req("POST", "/api/queue", {"file": "b.gcode.3mf", "target": SERIAL, "name": "Second"}, user=ADMIN)[1]
     hub.req("POST", "/api/printers/%s/start-next" % SERIAL, {"plate_clear": True}, user=ADMIN)
-    hub.ha.s["sensor.lab_h2s_current_stage"]["state"] = "changing_filament"
+    hub.set_print(stg_cur=4)
     hub.app.tick_all()
-    hub.ha.s["sensor.lab_h2s_print_status"]["state"] = "finish"
+    hub.set_print(gcode_state="FINISH")
     hub.app.tick_all()
     return first, second
 
@@ -78,9 +78,9 @@ def test_no_notification_without_a_next_job_or_recipients(hub):
     push(hub)
     hub.req("POST", "/api/queue", {"file": "a.gcode.3mf", "target": SERIAL}, user=ADMIN)
     hub.req("POST", "/api/printers/%s/start-next" % SERIAL, {"plate_clear": True}, user=ADMIN)
-    hub.ha.s["sensor.lab_h2s_current_stage"]["state"] = "changing_filament"
+    hub.set_print(stg_cur=4)
     hub.app.tick_all()
-    hub.ha.s["sensor.lab_h2s_print_status"]["state"] = "finish"
+    hub.set_print(gcode_state="FINISH")
     hub.app.tick_all()
     hub.app.notifier.flush()
     assert notes(hub) == []
@@ -95,9 +95,9 @@ def test_a_waiting_drying_is_not_offered_as_the_next_plate(hub):
     hub.req("POST", "/api/queue", {"file": "a.gcode.3mf", "target": SERIAL}, user=ADMIN)
     hub.req("POST", "/api/queue", {"kind": "dry", "target": SERIAL, "ams_id": 0, "temp": 55, "hours": 4}, user=ADMIN)
     hub.req("POST", "/api/printers/%s/start-next" % SERIAL, {"plate_clear": True}, user=ADMIN)
-    hub.ha.s["sensor.lab_h2s_current_stage"]["state"] = "changing_filament"
+    hub.set_print(stg_cur=4)
     hub.app.tick_all()
-    hub.ha.s["sensor.lab_h2s_print_status"]["state"] = "finish"
+    hub.set_print(gcode_state="FINISH")
     hub.app.tick_all()
     hub.app.notifier.flush()
     assert notes(hub) == []

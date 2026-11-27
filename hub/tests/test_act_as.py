@@ -59,7 +59,7 @@ def test_act_as_ha_admin_can_do_admin_things(hub):
     job = add(hub, USER)
     assert job["state"] == "pending_approval"
     assert act(hub, "POST", "/api/queue/%s/approve" % job["id"], {}, ADMIN)[1]["state"] == "queued"
-    hub.ha.s["sensor.lab_h2s_print_status"]["state"] = "idle"
+    hub.set_print(gcode_state="IDLE")
     st, started = act(hub, "POST", "/api/printers/%s/start-next" % SERIAL, {"plate_clear": True}, ADMIN)
     assert st == 200 and started["id"] == job["id"]
     assert act(hub, "POST", "/api/queue/%s/skip" % add(hub, USER, "b.gcode.3mf")["id"], {}, ADMIN)[0] == 200
@@ -104,8 +104,8 @@ def test_act_as_on_slicer_routes_uses_the_users_ownership(hub):
 
 def test_slice_job_answer_has_a_cost_estimate(hub):
     hub.setup_printers()
-    hub.app.spools.add(brand="X", type="PETG", colour="ADB1B2", name="n", grams_left=900, grams_total=1000,
-                       price_per_kg=20.0, printer=SERIAL, unit=0, slot=0)
+    sp = hub.cloud_spool(brand="X", type="PETG", colour="ADB1B2", name="n", grams_left=900, printer=SERIAL, unit=0, slot=0)
+    hub.app.prices.set(sp["id"], 20.0)
     jid = hub.sliced(owner=USER)
     job = act(hub, "GET", "/api/jobs/" + jid, None, USER)[1]
     # 75.22 g at 20/kg plus 7440 s of electricity at the printer's price

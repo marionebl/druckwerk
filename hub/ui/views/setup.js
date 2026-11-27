@@ -48,7 +48,7 @@ export async function mount(ctx, root) {
     const saved = p.configured, c = p.config || {};
     const f = {
       name: h('input', { type: 'text', value: c.name || p.device_name || '' }),
-      prefix: h('input', { type: 'text', value: c.ha_prefix || p.suggested_prefix || '', placeholder: 'e.g. x1c_00m00a000000000' }),
+      prefix: h('input', { type: 'text', value: c.ha_prefix || p.suggested_prefix || '', placeholder: 'e.g. workshop_h2s' }),
       plate: h('select', null, PLATES.map((x) => h('option', { selected: x === (c.plate || PLATES[0]) }, x))),
       nozzle: h('select', null, NOZZLES.map((x) => h('option', { selected: x === String(c.nozzle || '0.4') }, x))),
       pause: h('input', { type: 'text', value: (c.pause_entities || []).join(', '), placeholder: 'switch.printer_power, input_boolean.pause_printing' }),
@@ -58,7 +58,7 @@ export async function mount(ctx, root) {
       pill(saved ? 'Configured' : 'New', saved ? 'ok' : 'warn')),
       h('div', { class: 'form', style: 'margin-top:14px' },
         h('div', { class: 'form two' }, field('Name', f.name),
-          field('Printer integration prefix', f.prefix, p.suggested_prefix ? 'Found in the Home Assistant device registry.' : 'Not found automatically. Use the entity prefix of the printer integration device.')),
+          field('Prefix (optional)', f.prefix, 'Only a name for the printer in the hub. If you also use the printer integration, use its entity prefix.')),
         h('div', { class: 'form two' }, field('Build plate', f.plate), field('Nozzle (mm)', f.nozzle)),
         field('Pause entities', f.pause, 'Entity ids, comma separated. The hub turns these on to pause printing, for example a smart plug.'),
         field('Electricity price (EUR per kWh)', f.price, 'Used for the cost estimate. Optional.'),

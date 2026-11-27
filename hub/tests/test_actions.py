@@ -65,7 +65,7 @@ def test_get_queue_groups_waiting_jobs(hub):
     assert [(j["id"], j["position"]) for j in queue["waiting"][SERIAL]] == [(first["id"], 0), (pending["id"], 1)]
     assert [j["id"] for j in queue["waiting"]["any"]] == [anywhere["id"]]
     assert [j["id"] for j in queue["pending_approvals"]] == [pending["id"]] and queue["running"] == []
-    hub.ha.s["sensor.lab_h2s_print_status"]["state"] = "idle"
+    hub.set_print(gcode_state="IDLE")
     ok(act(hub, "start_next", dict(printer=SERIAL, **FLAGS)))
     ok(act(hub, "cancel_job", {"job_id": anywhere["id"]}))
     queue = ok(act(hub, "get_queue", {"history_limit": 5}))
@@ -147,7 +147,7 @@ def test_reorder_and_move(hub):
 @pytest.mark.parametrize("name", ["start_next", "start_job"])
 def test_start_is_refused_without_both_flags(hub, name, flags):
     job = add(hub)
-    hub.ha.s["sensor.lab_h2s_print_status"]["state"] = "idle"
+    hub.set_print(gcode_state="IDLE")
     data = dict({"printer": SERIAL}, **flags, **({"job_id": job["id"]} if name == "start_job" else {}))
     status, body = act(hub, name, data)
     assert status == 400 and "camera snapshot" in body["error"] and "explicit yes" in body["error"]
@@ -157,7 +157,7 @@ def test_start_is_refused_without_both_flags(hub, name, flags):
 
 def test_start_next_and_start_job_with_both_flags(hub):
     one, two = add(hub), add(hub, "b.gcode.3mf")
-    hub.ha.s["sensor.lab_h2s_print_status"]["state"] = "idle"
+    hub.set_print(gcode_state="IDLE")
     assert ok(act(hub, "start_next", dict(printer="Lab", **FLAGS)))["job"]["id"] == one["id"]
     hub.app.queue.jobs[0].update(state="done", printer=None)
     assert ok(act(hub, "start_job", dict(printer=SERIAL, job_id=two["id"], **FLAGS)))["job"]["state"] == "starting"
@@ -293,7 +293,7 @@ def test_a_tool_runs_the_action_as_the_user(hub):
 
 def test_a_start_tool_is_refused_without_both_flags(hub):
     add(hub)
-    hub.ha.s["sensor.lab_h2s_print_status"]["state"] = "idle"
+    hub.set_print(gcode_state="IDLE")
     status, body = tool(hub, "druckwerk_start_next", {"printer": SERIAL, "plate_clear": True})
     assert status == 400 and "camera snapshot" in body["error"]
     assert ok(tool(hub, "druckwerk_start_next", dict(printer=SERIAL, **FLAGS)))["job"]["state"] == "starting"
@@ -339,7 +339,7 @@ def test_unknown_names_and_bad_bodies(hub):
 
 def test_an_action_reads_yes_and_1_as_true_and_off_as_false(hub):
     add(hub)
-    hub.ha.s["sensor.lab_h2s_print_status"]["state"] = "idle"
+    hub.set_print(gcode_state="IDLE")
     assert act(hub, "start_next", {"printer": SERIAL, "plate_clear": "off", "confirmed_by_person": "on"})[0] == 400
     assert ok(act(hub, "start_next", {"printer": SERIAL, "plate_clear": "yes", "confirmed_by_person": 1}))["job"]["state"] == "starting"
 

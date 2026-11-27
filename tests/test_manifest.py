@@ -143,6 +143,16 @@ async def test_device_id_becomes_the_serial_in_serial_fields(hass, hub, vendor_d
     assert post[2] == {"printer": SERIAL, "plate_clear": True}
 
 
+async def test_druckwerks_own_device_becomes_the_serial_too(hass, app):
+    from homeassistant.helpers import device_registry as dr
+    entry = await setup_entry(hass)  # no vendor device: the integration made its own
+    own = next(iter(dr.async_get(hass).async_get_devices(identifiers={("druckwerk", SERIAL)})), None)
+    assert own and own.config_entry_id == entry.entry_id
+    app.post(f"{HUB_URL}/api/actions/start_next", json={"result": {}})
+    await act(hass, "start_next", {"printer": own.id, "plate_clear": True})
+    assert post_calls(app, "/api/actions/start_next")[0][2] == {"printer": SERIAL, "plate_clear": True}
+
+
 async def test_other_values_stay_and_other_fields_are_not_replaced(hass, hub, vendor_device):
     hub.post(f"{HUB_URL}/api/actions/cancel_job", json={"result": {}})
     await act(hass, "cancel_job", {"job_id": vendor_device.id})

@@ -53,20 +53,26 @@ def test_unreachable_home_assistant_means_restarting():
 
 
 def test_hub_answers_503_with_retry_while_home_assistant_restarts(hub):
+    def down(max_age=3):
+        raise HAUnavailable(RESTARTING)
+    hub.ha.states = down
+    st, body = hub.req("GET", "/api/ha/entities", user=ADMIN)
+    assert st == 503 and body == {"error": RESTARTING, "retry": True}
+
+
+def test_other_ha_errors_stay_a_502_without_retry(hub):
+    def broken(max_age=3):
+        raise HAError("Home Assistant answered 500: boom")
+    hub.ha.states = broken
+    st, body = hub.req("GET", "/api/ha/entities", user=ADMIN)
+    assert st == 502 and "retry" not in body
+
+
+def test_printers_do_not_need_home_assistant(hub):
     hub.setup_printers()
 
     def down(max_age=3):
         raise HAUnavailable(RESTARTING)
     hub.ha.states = down
-    st, body = hub.req("GET", "/api/printers", user=ADMIN)
-    assert st == 503 and body == {"error": RESTARTING, "retry": True}
-
-
-def test_other_ha_errors_stay_a_502_without_retry(hub):
-    hub.setup_printers()
-
-    def broken(max_age=3):
-        raise HAError("Home Assistant answered 500: boom")
-    hub.ha.states = broken
-    st, body = hub.req("GET", "/api/printers", user=ADMIN)
-    assert st == 502 and "retry" not in body
+    st, plist = hub.req("GET", "/api/printers", user=ADMIN)
+    assert st == 200 and plist[0]["status"] == "running"

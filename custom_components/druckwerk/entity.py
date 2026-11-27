@@ -8,6 +8,7 @@ from homeassistant.helpers import device_registry as dr
 from homeassistant.helpers.device_registry import DeviceInfo
 from homeassistant.helpers.update_coordinator import CoordinatorEntity
 
+from .const import DOMAIN
 from .externals import VENDOR_DOMAIN, VENDOR_MANUFACTURER
 from .hub import HubCoordinator
 
@@ -30,16 +31,16 @@ class AppEntity(CoordinatorEntity[HubCoordinator]):
         self._attr_name = desc["name"]
         self._attr_icon = desc.get("icon")
         self._attr_unique_id = f"{serial}_{self.key}"
-        identifiers = {(VENDOR_DOMAIN, serial)}
-        existing = _vendor_device(hub.hass, identifiers)
+        existing = _vendor_device(hub.hass, {(VENDOR_DOMAIN, serial)})
         if existing:
             # Since HA 2026.10 a device belongs to one config entry, so identifiers
             # no longer merge across integrations; attach to the existing device itself.
             self.device_entry = existing
         else:
             printer = hub.data.get(serial, {})
+            # No vendor integration (or it does not know this printer): Druckwerk's own device.
             self._attr_device_info = DeviceInfo(
-                identifiers=identifiers,
+                identifiers={(DOMAIN, serial)},
                 name=printer.get("name") or serial,
                 manufacturer=VENDOR_MANUFACTURER,
                 model=printer.get("model"),

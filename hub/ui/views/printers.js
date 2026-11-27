@@ -67,7 +67,7 @@ function card(p) {
 
 async function grid(ctx, root) {
   const list = h('div', { class: 'grid' });
-  root.append(h('div', { class: 'page-head' }, h('div', null, h('h1', null, 'Printers'), h('div', { class: 'sub' }, 'Live status from Home Assistant')),
+  root.append(h('div', { class: 'page-head' }, h('div', null, h('h1', null, 'Printers'), h('div', { class: 'sub' }, 'Live status of your printers')),
     btn([icon('plus', 18), 'New print'], () => ctx.go('#/new'), 'primary')), list);
   let last = '';
   ctx.every(5000, async () => {
@@ -77,7 +77,7 @@ async function grid(ctx, root) {
       if (sig === last) return;
       last = sig;
       clear(list, ps.length ? ps.map(card) : ctx.isAdmin()
-        ? h('div', { class: 'empty' }, 'No printers yet. They appear here automatically when the printer integration in Home Assistant has the printer. ', h('a', { href: '#/setup' }, 'Open setup'), '.')
+        ? h('div', { class: 'empty' }, 'No printers yet. They appear here automatically when a logged-in cloud account has a printer. ', h('a', { href: '#/setup' }, 'Open setup'), '.')
         : empty('No printers yet. An admin can grant you access, or add printers in the setup wizard.'));
     } catch (e) { if (!last) clear(list, empty(e.message)); }
   });

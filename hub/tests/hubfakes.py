@@ -25,14 +25,8 @@ USERS = [
     {"id": OTHER, "name": "Cy", "is_owner": False, "is_active": True, "system_generated": False, "group_ids": ["system-users"]},
     {"id": "sys", "name": "Supervisor", "is_owner": False, "is_active": True, "system_generated": True, "group_ids": []},
 ]
-DEVICES = [{"id": "dev1", "identifiers": [[VENDOR, SERIAL]], "name": "h2s_" + SERIAL.lower(), "name_by_user": "Lab H2S", "model": "H2S"},
-           {"id": "ams1", "identifiers": [[VENDOR, "AMSFAKE1"]], "name": "h2s_%s_AMS_1" % SERIAL.lower(), "model": "AMS 2 Pro"}]
-ENTITIES = [
-    {"entity_id": "sensor.lab_h2s_print_status", "device_id": "dev1", "platform": VENDOR, "unique_id": SERIAL + "_print_status"},
-    {"entity_id": "sensor.ams_tray_1", "device_id": "ams1", "platform": VENDOR, "unique_id": "H2S_%s_AMS_AMSFAKE1_tray_1" % SERIAL},
-    {"entity_id": "sensor.ams_tray_2", "device_id": "ams1", "platform": VENDOR, "unique_id": "H2S_%s_AMS_AMSFAKE1_tray_2" % SERIAL},
-    {"entity_id": "sensor.ams_humidity", "device_id": "ams1", "platform": VENDOR, "unique_id": "H2S_%s_AMS_AMSFAKE1_humidity_index" % SERIAL},
-]
+DEVICES = [{"id": "dev1", "identifiers": [[VENDOR, SERIAL]], "name": "h2s_" + SERIAL.lower(), "name_by_user": "Lab H2S", "model": "H2S"}]
+ENTITIES = [{"entity_id": "sensor.lab_h2s_print_status", "device_id": "dev1", "platform": VENDOR, "unique_id": SERIAL + "_print_status"}]
 SLICE_INFO = open(os.path.join(HERE, "fixtures", "slice_info.config")).read()
 
 
@@ -54,30 +48,16 @@ def st(state, **attrs):
 
 
 class FakeHA:
-    def __init__(self):
-        self.users, self.devices, self.entities = USERS, DEVICES, ENTITIES
+    def __init__(self, vendor=True):
+        """vendor=False is a Home Assistant without the vendor integration: no devices, no entities of it."""
+        self.users, self.devices, self.entities = USERS, DEVICES if vendor else [], ENTITIES if vendor else []
         self.calls, self.fail = [], {}
         self.commands = []  # websocket commands that change HA: (type, fields)
         self.events = []  # bus events fired through the REST API: (type, data)
         self.entries = []  # config entries as HA lists them
-        self.s = {
-            "sensor.lab_h2s_print_status": st("running"), "sensor.lab_h2s_current_stage": st("printing"),
-            "sensor.lab_h2s_print_progress": st("42"), "sensor.lab_h2s_remaining_time": st("73"),
-            "sensor.lab_h2s_end_time": st("2026-11-27T20:00:00+00:00"), "sensor.lab_h2s_current_layer": st("10"),
-            "sensor.lab_h2s_total_layer_count": st("50"), "sensor.lab_h2s_nozzle_temperature": st("220.5"),
-            "sensor.lab_h2s_nozzle_target_temperature": st("220"), "sensor.lab_h2s_bed_temperature": st("60"),
-            "sensor.lab_h2s_bed_target_temperature": st("60"), "sensor.lab_h2s_chamber_temperature": st("30"),
-            "sensor.lab_h2s_task_name": st("cube"), "binary_sensor.lab_h2s_online": st("on"),
-            "sensor.lab_h2s_active_tray": st("PLA Basic", ams_index=0, tray_index=1),
-            "image.lab_h2s_cover_image": st("2026-11-27T19:00:00"),
-            "binary_sensor.lab_h2s_hms_errors": st("on", Count=1, **{"1-Code": "HMS_0300_0100_0001_0007", "1-Error": "Bed sensor",
-                                                                   "1-Wiki": "https://wiki.example/x", "1-Severity": "serious"}),
-            "sensor.ams_tray_1": st("PETG HF", slot=1, type="PETG", color="#ADB1B2FF", remain=80, empty=False),
-            "sensor.ams_tray_2": st("PLA Basic", slot=2, type="PLA", color="#BB3D43FF", remain=55, empty=False),
-            "sensor.ams_humidity": st("4"),
-            "schedule.workday": st("on", friendly_name="Workday"), "light.lamp": st("on"),
-            "sensor.lab_p1s_print_status": st("idle"),
-        }
+        self.s = {"schedule.workday": st("on", friendly_name="Workday"), "light.lamp": st("on")}
+        if vendor:
+            self.s["sensor.lab_h2s_print_status"] = st("running")
 
     def state(self, eid):
         return (self.s.get(eid) or {}).get("state")
@@ -113,10 +93,28 @@ class FakeHA:
         return "image/jpeg", b"JPEGDATA"
 
 
+DEFAULT_SPOOL = {"id": "", "brand": "", "type": "PLA", "name": "PLA Basic", "colour": "FFFFFF", "grams_left": 1000, "grams_total": 1000,
+                 "printer": None, "unit": None, "slot": None, "in_printer": False, "rfid": None, "account": "a_x"}
+
+
 def task(id, title, started, serial=SERIAL, status="finished", seconds=600, grams=5.0):
     """A normalized cloud task as the bridge's /api/tasks returns it."""
     return {"id": id, "serial": serial, "title": title, "status": status, "status_code": status, "started_at": started,
             "ended_at": started + seconds, "seconds": seconds, "grams": grams, "cover_url": "", "plate": 1, "design_title": ""}
+
+
+# What the bridge's MQTT status says by default: the Lab H2S prints a cube (42 %, AMS 1 holds PETG and PLA), the P1S is idle.
+DEFAULT_PRINT = {
+    SERIAL: {"gcode_state": "RUNNING", "mc_percent": 42, "mc_remaining_time": 73, "layer_num": 10, "total_layer_num": 50,
+             "nozzle_temper": 220, "nozzle_target_temper": 220, "bed_temper": 60, "bed_target_temper": 60,
+             "device": {"ctc": {"info": {"temp": 30}}}, "stg_cur": 0, "subtask_name": "cube",
+             "lights_report": [{"node": "chamber_light", "mode": "on"}],
+             "hms": [{"attr": 0x03000100, "code": 0x00020007}],
+             "ams": {"tray_now": "1", "ams": [{"id": "0", "humidity": "2", "temp": "28.5", "tray": [
+                 {"id": "0", "state": 11, "tray_type": "PETG", "tray_sub_brands": "PETG HF", "tray_color": "ADB1B2FF", "remain": 80},
+                 {"id": "1", "state": 11, "tray_type": "PLA", "tray_sub_brands": "PLA Basic", "tray_color": "BB3D43FF", "remain": 55}]}]}},
+    SERIAL2: {"gcode_state": "IDLE", "stg_cur": -1},
+}
 
 
 class FakeBridge(BaseHTTPRequestHandler):
@@ -127,7 +125,12 @@ class FakeBridge(BaseHTTPRequestHandler):
     drying = []  # what GET /api/drying/<serial> answers
     drying_fail = {}  # path -> (status, error) for POSTs that the bridge refuses
     printer_extra = {}  # serial -> fields merged into GET /api/printers (print_status, live)
+    status = {}  # serial -> the `print` object GET /api/status/<serial> answers (default: DEFAULT_PRINT)
+    status_fail = set()  # serials whose status answers 503
     post_answer = {}  # path -> (status, body) instead of the usual answer
+    library = {}  # account -> spools as the bridge's /api/filament lists them
+    library_fail = None  # (status, error) that every /api/filament call answers
+    library_calls = []  # (method, path, body)
 
     def reply(self, code, body, ctype="application/json"):
         data = body if isinstance(body, bytes) else json.dumps(body).encode()
@@ -145,6 +148,8 @@ class FakeBridge(BaseHTTPRequestHandler):
             return self.reply(200, [dict(p, **FakeBridge.printer_extra.get(p["serial"], {})) for p in (
                 {"serial": SERIAL, "name": "Lab", "dev_product_name": "H2S", "account": "a_x", "email": "a@example.invalid"},
                 {"serial": SERIAL2, "name": "Other", "dev_product_name": "P1S", "account": "a_x"})])
+        if self.path.startswith("/api/filament"):
+            return self.filament("GET", None)
         if self.path.startswith("/api/tasks?"):
             serial = self.path.split("serial=")[1].split("&")[0]
             FakeBridge.task_calls.append(self.path)
@@ -152,17 +157,44 @@ class FakeBridge(BaseHTTPRequestHandler):
                 return self.reply(502, {"error": "Bambu cloud answered HTTP 500"})
             return self.reply(200, FakeBridge.tasks.get(serial, []))
         if self.path.startswith("/api/status/"):
-            return self.reply(200, {"print": {"gcode_state": "RUNNING", "mc_percent": 7, "mc_remaining_time": 5, "layer_num": 2,
-                                              "total_layer_num": 9, "nozzle_temper": 200, "subtask_name": "from bridge"}})
+            serial = self.path.rsplit("/", 1)[1]
+            if serial in FakeBridge.status_fail:
+                return self.reply(503, {"error": "no status from the printer"})
+            return self.reply(200, {"print": FakeBridge.status.get(serial, DEFAULT_PRINT.get(serial, {}))})
         if self.path.startswith("/api/drying/"):
             return self.reply(200, FakeBridge.drying)
         if self.path.startswith("/api/camera/"):
             return self.reply(200, b"FRAME:" + self.path.encode(), "image/jpeg")
         self.reply(404, {"error": "no"})
 
+    def filament(self, method, body):
+        FakeBridge.library_calls.append((method, self.path, body))
+        if FakeBridge.library_fail:
+            return self.reply(FakeBridge.library_fail[0], {"error": FakeBridge.library_fail[1]})
+        path, _, query = self.path.partition("?")
+        account = query.split("account=")[1]
+        spools = FakeBridge.library.setdefault(account, [])
+        if method == "GET":
+            return self.reply(200, spools)
+        if method == "POST":
+            spool = dict(DEFAULT_SPOOL, id=str(7000 + len(spools)), account=account, **body)
+            spools.append(spool)
+            return self.reply(200, spool)
+        spool = next((x for x in spools if x["id"] == path.rsplit("/", 1)[1]), None)
+        if method == "DELETE":
+            spools.remove(spool)
+            return self.reply(200, {"removed": spool["id"]})
+        spool.update(body)
+        self.reply(200, spool)
+
+    def do_PUT(self):
+        self.filament("PUT", json.loads(self.rfile.read(int(self.headers.get("Content-Length") or 0)) or b"{}"))
+
     def do_POST(self):
         body = json.loads(self.rfile.read(int(self.headers.get("Content-Length") or 0)) or b"{}")
         FakeBridge.log.append((self.path, body))
+        if self.path.startswith("/api/filament"):
+            return self.filament("POST", body)
         if self.path in FakeBridge.post_answer:
             code, answer = FakeBridge.post_answer[self.path]
             return self.reply(code, answer)
@@ -182,6 +214,8 @@ class FakeBridge(BaseHTTPRequestHandler):
         self.reply(404, {"error": "no"})
 
     def do_DELETE(self):
+        if self.path.startswith("/api/filament"):
+            return self.filament("DELETE", None)
         self.reply(200, {"deleted": self.path.rsplit("/", 1)[1]})
 
     def log_message(self, *a):
@@ -189,7 +223,7 @@ class FakeBridge(BaseHTTPRequestHandler):
 
 
 class Hub:
-    def __init__(self, tmp_path):
+    def __init__(self, tmp_path, vendor=True):
         spec = importlib.util.spec_from_file_location("slicer_server", os.path.join(REPO, "hub", "slicer", "server.py"))
         self.s = importlib.util.module_from_spec(spec)
         sys.modules["slicer_server"] = self.s
@@ -197,10 +231,12 @@ class Hub:
         self.s.JOBS, self.s.SHARE = str(tmp_path / "jobs"), str(tmp_path / "share")
         self.tmp = tmp_path
         self.now = 1000.0
-        self.ha = FakeHA()
+        self.ha = FakeHA(vendor)
         FakeBridge.log, FakeBridge.tasks, FakeBridge.task_fail, FakeBridge.task_calls = [], {}, set(), []
         FakeBridge.drying, FakeBridge.drying_fail = [], {}
         FakeBridge.printer_extra, FakeBridge.post_answer = {}, {}
+        FakeBridge.status, FakeBridge.status_fail = {}, set()
+        FakeBridge.library, FakeBridge.library_fail, FakeBridge.library_calls = {}, None, []
         self.bridge = ThreadingHTTPServer(("127.0.0.1", 0), FakeBridge)
         threading.Thread(target=self.bridge.serve_forever, kwargs={"poll_interval": 0.02}, daemon=True).start()
         from app import App
@@ -234,6 +270,12 @@ class Hub:
         except ValueError:
             return r.status, out
 
+    def set_print(self, serial=SERIAL, **fields):
+        """Change what the bridge's status says of a printer (the MQTT field names)."""
+        def merge(old, new):
+            return dict(old, **{k: merge(old.get(k) or {}, v) if isinstance(v, dict) else v for k, v in new.items()})
+        FakeBridge.status[serial] = merge(FakeBridge.status.get(serial) or DEFAULT_PRINT.get(serial, {}), fields)
+
     def seed_share(self):
         """a, b, c and d .gcode.3mf in the share: a start sends the real file, so tests that start jobs need them."""
         os.makedirs(self.s.SHARE, exist_ok=True)
@@ -247,6 +289,13 @@ class Hub:
     def setup_printers(self):
         self.app.registry.put(SERIAL, name="Lab", model="H2S", account="a_x", prefix="lab_h2s", electricity_kwh_price=0.4)
         self.app.registry.put(SERIAL2, name="Other", model="P1S", account="a_x", prefix="lab_p1s")
+
+    def cloud_spool(self, account="a_x", **fields):
+        """Put a spool into the fake bridge's cloud library (loaded in a tray when printer, unit and slot are given)."""
+        spools = FakeBridge.library.setdefault(account, [])
+        spool = dict(DEFAULT_SPOOL, id=str(5000 + len(spools)), account=account, in_printer=bool(fields.get("printer")), **fields)
+        spools.append(spool)
+        return spool
 
     def grant(self, user, printer=SERIAL, **kw):
         return self.app.grants.add(user, printer, **kw)

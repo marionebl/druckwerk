@@ -16,7 +16,7 @@ def unit(**kw):
 def test_queue_takes_print_options_and_the_send_passes_them(hub):
     hub.setup_printers()
     hub.seed_share()
-    hub.ha.s["sensor.lab_h2s_print_status"]["state"] = "idle"
+    hub.set_print(gcode_state="IDLE")
     opts = {"bed_leveling": "auto", "flow_cali": False, "layer_inspect": True, "bed_type": "textured_plate"}
     st, job = hub.req("POST", "/api/queue", {"file": "a.gcode.3mf", "target": SERIAL, "options": opts}, user=ADMIN)
     assert st == 200 and job["options"]["bed_leveling"] == "auto" and job["options"]["vibration_cali"] is True
@@ -52,7 +52,7 @@ def test_name_survives_slice_to_queue(hub):
 def test_started_event_carries_the_name(hub):
     hub.setup_printers()
     hub.seed_share()
-    hub.ha.s["sensor.lab_h2s_print_status"]["state"] = "idle"
+    hub.set_print(gcode_state="IDLE")
     since = hub.req("GET", "/api/events", secret=True)[1]["seq"]
     job = hub.req("POST", "/api/queue", {"file": "a.gcode.3mf", "target": SERIAL, "name": "Live name"}, user=ADMIN)[1]
     hub.req("POST", "/api/printers/%s/start-next" % SERIAL, {"plate_clear": True}, user=ADMIN)
@@ -128,7 +128,7 @@ def test_printer_view_lists_drying_units(hub):
 
 def test_admin_starts_drying_after_confirming(hub):
     hub.setup_printers()
-    hub.ha.s["sensor.lab_h2s_print_status"]["state"] = "idle"
+    hub.set_print(gcode_state="IDLE")
     path = "/api/printers/%s/drying" % SERIAL
     assert hub.req("POST", path, DRY, user=ADMIN)[0] == 409  # not confirmed
     assert FakeBridge.log == []
@@ -141,7 +141,7 @@ def test_admin_starts_drying_after_confirming(hub):
 
 def test_non_admin_cannot_start_or_stop_drying(hub):
     hub.setup_printers()
-    hub.ha.s["sensor.lab_h2s_print_status"]["state"] = "idle"
+    hub.set_print(gcode_state="IDLE")
     hub.grant(USER, SERIAL)
     st, body = hub.req("POST", "/api/printers/%s/drying" % SERIAL, dict(DRY, confirmed=True), user=USER)
     assert st == 403 and body["error"].startswith("rule:")
@@ -153,7 +153,7 @@ def test_non_admin_cannot_start_or_stop_drying(hub):
 
 def test_drying_ranges_are_a_400_and_the_bridge_refusal_is_passed_on(hub):
     hub.setup_printers()
-    hub.ha.s["sensor.lab_h2s_print_status"]["state"] = "idle"
+    hub.set_print(gcode_state="IDLE")
     path = "/api/printers/%s/drying" % SERIAL
     for bad in ({"temp": 30}, {"temp": 120}, {"hours": 0}, {"hours": 100}, {"ams_id": 9}, {"temp": "hot"}):
         assert hub.req("POST", path, dict(DRY, confirmed=True, **bad), user=ADMIN)[0] == 400, bad
@@ -174,7 +174,7 @@ def test_direct_start_follows_the_busy_rule(hub):
 
 def test_stop_drying_stops_the_job_and_the_ams(hub):
     hub.setup_printers()
-    hub.ha.s["sensor.lab_h2s_print_status"]["state"] = "idle"
+    hub.set_print(gcode_state="IDLE")
     job = hub.req("POST", "/api/printers/%s/drying" % SERIAL, dict(DRY, confirmed=True), user=ADMIN)[1]
     assert hub.req("POST", "/api/printers/%s/drying/stop" % SERIAL, {"ams_id": 0}, user=ADMIN)[0] == 200
     assert FakeBridge.log[-1] == ("/api/ams/%s/drying/stop" % SERIAL, {"ams_id": 0})
@@ -187,7 +187,7 @@ def test_stop_drying_stops_the_job_and_the_ams(hub):
 
 def test_queue_routes_for_dry_jobs(hub):
     hub.setup_printers()
-    hub.ha.s["sensor.lab_h2s_print_status"]["state"] = "idle"
+    hub.set_print(gcode_state="IDLE")
     hub.grant(USER, SERIAL, needs_approval=True)
     st, job = hub.req("POST", "/api/queue", dict(DRY, kind="dry", target=SERIAL), user=USER)
     assert st == 200 and job["kind"] == "dry" and job["state"] == "pending_approval"
@@ -202,7 +202,7 @@ def test_queue_routes_for_dry_jobs(hub):
 
 def test_dry_jobs_send_no_job_events_and_do_not_settle_spools(hub):
     hub.setup_printers()
-    hub.ha.s["sensor.lab_h2s_print_status"]["state"] = "idle"
+    hub.set_print(gcode_state="IDLE")
     since = hub.req("GET", "/api/events", secret=True)[1]["seq"]
     hub.req("POST", "/api/printers/%s/drying" % SERIAL, dict(DRY, confirmed=True), user=ADMIN)
     hub.req("POST", "/api/printers/%s/drying/stop" % SERIAL, {"ams_id": 0}, user=ADMIN)
