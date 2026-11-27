@@ -45,7 +45,9 @@ const manifest = JSON.parse(fs.readFileSync(path.join(ENGINE_DIR, 'manifest.json
 const presets = JSON.parse(fs.readFileSync(path.join(PRESETS, `${MODEL}.json`), 'utf8'));
 const filament = presets.filaments.find((f) => f.name === filamentName);
 if (!filament) { console.error('FAIL: no filament preset ' + filamentName); process.exit(2); }
-const machine = { ...presets.machine, curr_bed_type: BED }, process_ = { ...presets.process[QUALITY], curr_bed_type: BED };
+// OVERRIDES: JSON of process settings to change (measurement only, e.g. {"brim_type":"no_brim"}).
+const machine = { ...presets.machine, curr_bed_type: BED },
+  process_ = { ...presets.process[QUALITY], curr_bed_type: BED, ...JSON.parse(process.env.OVERRIDES || '{}') };
 const positions = placeOnBed(parseStl(fs.readFileSync(modelFile)), machine);
 
 const t0 = performance.now();

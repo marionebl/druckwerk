@@ -43,17 +43,24 @@ done
 slice h2s-mt64 H2S mt64 "Generic PETG @BBL H2S" "$W/node-h2s-mt64.gcode"
 for q in good best; do QUALITY=$q slice h2s-st-$q H2S st "Generic PETG @BBL H2S" "$W/node-h2s-st-$q.gcode"; done
 echo "-- alpine (musl) node, single thread, H2S, in a container"
-docker run --rm -v "$REPO:/r:ro" -v "$W/in:/in:ro" -v "$W/img:/img:ro" -v "$W/bin:/bin2:ro" -e MODEL=H2S -e VARIANT=st -e ENGINE_DIR=/img/engine/v0.6.0-m1.9 -e PRESETS=/img/engine/presets \
-  node:22-alpine sh -c 'apk add -q time >/dev/null 2>&1; /usr/bin/time -v node /r/hub/slicer/engine/node_slice.mjs /in/test_plate.stl /tmp/o.gcode "Generic PETG @BBL H2S" 2>&1 | tail -3; ' 2>&1 | grep -v '^\s*$' | cut -c1-300 | tee "$R/alpine.txt" | grep -i 'elapsed\|maximum res\|slice_s\|fail\|error' 
-
+docker run --rm -v "$REPO:/r:ro" -v "$W/in:/in:ro" -v "$W/img:/img:ro" -e MODEL=H2S -e VARIANT=st -e ENGINE_DIR=/img/engine/v0.6.0-m1.9 -e PRESETS=/img/engine/presets \
+  node:22-alpine sh -c 'apk add time 2>&1 | tail -1; /usr/bin/time -v node /r/hub/slicer/engine/node_slice.mjs /in/test_plate.stl /tmp/o.gcode "Generic PETG @BBL H2S" 2>&1 | grep -i "slice_s\|Elapsed\|Maximum res\|FAIL\|rror" | cut -c1-300' 2>&1 | tail -8 | tee "$R/alpine.txt"
+echo "-- mt64 with --experimental-wasm-memory64"
+NODE_OPTIONS=--experimental-wasm-memory64 slice h2s-mt64-flag H2S mt64 "Generic PETG @BBL H2S" "$W/node-h2s-mt64f.gcode"
+echo "-- settings aligned to native (no brim and the differing process keys from the compare output), mt, for a fair estimate comparison"
+ALIGN='{"brim_type":"no_brim","sparse_infill_pattern":"grid","enable_arc_fitting":"0","ensure_vertical_shell_thickness":"enabled","precise_outer_wall":"0","seam_slope_conditional":"1","seam_slope_inner_walls":"1","seam_gap":"15%","internal_solid_infill_pattern":"zig-zag","ironing_pattern":"zig-zag","accel_to_decel_enable":"0","travel_jerk":"9","exclude_object":"1"}'
+OVERRIDES='{"brim_type":"no_brim"}' slice h2s-nobrim-mt H2S mt "Generic PETG @BBL H2S" "$W/node-h2s-nobrim.gcode.3mf"
+OVERRIDES=$ALIGN slice h2s-aligned-mt H2S mt "Generic PETG @BBL H2S" "$W/node-h2s-aligned.gcode.3mf"
+OVERRIDES=$ALIGN slice p1s-aligned-mt P1S mt "Generic PETG" "$W/node-p1s-aligned.gcode.3mf"
 echo "### Native Bambu Studio from the app image $IMG (same runner)"
 docker pull -q "$IMG" >/dev/null && {
   docker image inspect "$IMG" --format 'image unpacked size bytes: {{.Size}}' | awk '{print $0, "=", $NF/1048576, "MiB", $NF/1000000, "MB"}'
   docker run --rm --entrypoint sh "$IMG" -c 'du -xm -d1 / 2>/dev/null | sort -n | tail -12; echo; du -xm -d1 /opt/bs 2>/dev/null | sort -n; echo; du -xsm /opt/bs/resources/profiles /srv/engine /srv 2>/dev/null; ls /srv; ls /srv/engine 2>/dev/null; command -v node python3 bash; ls -l /usr/lib/*/libstdc++.so.6* /usr/lib/*/libgcc_s.so.1 2>/dev/null; cat /etc/os-release | head -2; ldd --version | head -1'
   docker run --rm --entrypoint sh "$IMG" -c 'du -xm -d2 /usr /lib /var /opt 2>/dev/null | sort -n | tail -25'
   docker run --rm --entrypoint sh "$IMG" -c 'python3 -I /opt/bs/bin/bs.py filament-for /opt/bs/resources/profiles "Bambu Lab H2S 0.4 nozzle" GFG02 PETG' 2>&1 | tail -2
-  for m in H2S P1S; do
-    if [ $m = H2S ]; then P="Bambu Lab H2S 0.4 nozzle"; PR="0.20mm Standard @BBL H2S"; F="Generic PETG @BBL H2S"; else P="Bambu Lab P1S 0.4 nozzle"; PR="0.20mm Standard @BBL X1C"; F="Generic PETG"; fi
+  for m in H2S P1S H2S-2 P1S-2; do
+    mm=${m%-2}
+    if [ $mm = H2S ]; then P="Bambu Lab H2S 0.4 nozzle"; PR="0.20mm Standard @BBL H2S"; F="Generic PETG @BBL H2S"; else P="Bambu Lab P1S 0.4 nozzle"; PR="0.20mm Standard @BBL X1C"; F="Generic PETG"; fi
     docker run --rm -v "$REPO/hub/tests/rss_run.py:/rss_run.py:ro" -v "$W/in:/in:ro" -v "$W/nat:/out" -e PRINTER="$P" -e PROCESS="$PR" -e BED="Textured PEI Plate" --entrypoint python3 "$IMG" -I /rss_run.py bash /opt/bs/bin/slice.sh /in/test_plate.stl /out/$m "$F" 2>&1 | tail -6 | cut -c1-300 | tee "$R/native-$m.txt"
     ls -l "$W/nat/$m" 2>&1 | tail -2
   done
@@ -69,9 +76,12 @@ docker pull -q "$IMG" >/dev/null && {
 
 echo "### G-code comparison, native vs node st (hub/tests/node_vs_native.py)"
 for m in H2S P1S; do
-  l=$(echo $m | tr A-Z a-z); N=$(ls "$W/nat/$m"/*.gcode.3mf 2>/dev/null | head -1)
+  l=$(echo $m | tr A-Z a-z); AL=$W/node-$l-aligned.gcode.3mf; N=$(ls "$W/nat/$m"/*.gcode.3mf 2>/dev/null | head -1)
   if [ -z "$N" ]; then echo "no native result for $m"; continue; fi
   python3 hub/tests/node_vs_native.py $m "$N" "$W/node-$l-st-1.gcode.3mf" "$R/compare-$m.json" 2>&1 | cut -c1-400 | tee "$R/compare-$m.txt"
+  echo "-- aligned node settings vs native (summary lines only)"
+  python3 hub/tests/node_vs_native.py $m "$N" "$AL" 2>&1 | grep -v '^    \|^  keys only\|^  all differing' | head -30 | cut -c1-300 | tee "$R/compare-$m-aligned.txt"
+  [ $m = H2S ] && { echo "-- no brim only vs native (summary)"; python3 hub/tests/node_vs_native.py $m "$N" "$W/node-h2s-nobrim.gcode.3mf" 2>&1 | sed -n 2,5p; }
   echo "-- st vs mt identical except the timestamp line?"; diff <(unzip -p "$W/node-$l-st-1.gcode.3mf" Metadata/plate_1.gcode) <(unzip -p "$W/node-$l-mt-1.gcode.3mf" Metadata/plate_1.gcode) | head -4 | cut -c1-120
 done
 cp "$W"/node-*.gcode.3mf "$R/" 2>/dev/null; for m in H2S P1S; do cp "$W/nat/$m"/*.gcode.3mf "$R/native-$m.gcode.3mf" 2>/dev/null; done

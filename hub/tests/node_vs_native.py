@@ -39,7 +39,7 @@ def analyse(text):
     r["time_s"] = secs(m.group(1)) if m else None
     m = re.search(r"^; filament used \[g\]\s*=\s*([\d.,]+)", text, re.M) or re.search(r"^; total filament weight \[g\]\s*:\s*([\d.]+)", text, re.M)
     r["grams"] = float(m.group(1).split(",")[0]) if m else None
-    m = re.search(r"^; filament used \[mm\]\s*=\s*([\d.,]+)", text, re.M)
+    m = re.search(r"^; filament used \[mm\]\s*=\s*([\d.,]+)", text, re.M) or re.search(r"^; total filament length \[mm\]\s*:\s*([\d.]+)", text, re.M)
     r["filament_mm"] = float(m.group(1).split(",")[0]) if m else None
     m = re.search(r"^; max_z_height:\s*([\d.]+)", text, re.M)
     r["max_z"] = float(m.group(1)) if m else None
@@ -58,9 +58,13 @@ def analyse(text):
     lo = [1e9, 1e9, 1e9]
     hi = [-1e9, -1e9, -1e9]
     temps, maxf, retr, ext_moves, layer_changes = set(), 0.0, 0, 0, 0
+    feat, fbox = None, {}
     start_end = end_start = None
     for i, line in enumerate(lines):
         line = line.strip()
+        fm = re.match(r"^;\s*(?:FEATURE|TYPE):\s*(.+)$", line)
+        if fm:
+            feat = fm.group(1).strip()
         if line.startswith(";LAYER_CHANGE") or line.startswith("; CHANGE_LAYER"):
             layer_changes += 1
             if not started:
@@ -98,9 +102,14 @@ def analyse(text):
             for k, v in ((0, x), (1, y), (2, z)):
                 lo[k] = min(lo[k], v)
                 hi[k] = max(hi[k], v)
-        if started and d < 0 and not (nx or ny):
+            b = fbox.setdefault(feat or "?", [1e9, 1e9, -1e9, -1e9])
+            b[0], b[1], b[2], b[3] = min(b[0], x), min(b[1], y), max(b[2], x), max(b[3], y)
+        if started and d < 0:
             retr += 1
     r["bbox"] = {"min": [round(v, 2) for v in lo], "max": [round(v, 2) for v in hi]}
+    r["feature_bbox"] = {k: [round(v, 1) for v in b] for k, b in fbox.items()}
+    mb = [b for k, b in fbox.items() if k.lower() not in ("brim", "skirt", "prime tower", "wipe tower")]
+    r["model_bbox_xy"] = [round(f(b[i] for b in mb), 2) for i, f in ((0, min), (1, min), (2, max), (3, max))] if mb else None
     r["temps"] = sorted(temps)
     r["max_feed_mm_min"] = maxf
     r["retractions"] = retr
@@ -140,7 +149,9 @@ def main():
         p = pct(a, b)
         print(f"  {k:16s} native={a} node={b}" + (f" diff={p:+.2f}%" if p is not None else ""))
         out.setdefault("diff_pct", {})[k] = p
-    print(f"  bbox native={nat['bbox']} node={node['bbox']}")
+    print(f"  bbox of all extrusion (brim and skirt included): native={nat['bbox']} node={node['bbox']}")
+    print(f"  bbox X/Y of the model only (no brim, skirt, tower): native={nat['model_bbox_xy']} node={node['model_bbox_xy']}")
+    print(f"  bbox X/Y per feature, native: Brim={nat['feature_bbox'].get('Brim')} Skirt={nat['feature_bbox'].get('Skirt')} | node: Brim={node['feature_bbox'].get('Brim')} Skirt={node['feature_bbox'].get('Skirt')}")
     print(f"  temps native={nat['temps']} node={node['temps']}")
     if nat["layers"] and node["layers"]:
         d = abs(node["layers"] - nat["layers"]) / nat["layers"] * 100
@@ -152,9 +163,19 @@ def main():
         fails.append("layers")
     nb, bb = nat["bbox"], node["bbox"]
     dd = max(abs(a - b) for a, b in zip(nb["min"][:2] + nb["max"][:2], bb["min"][:2] + bb["max"][:2]))
-    print(f"CHECK bbox X/Y within 2 mm: {'PASS' if dd <= 2 else 'FAIL'} (max corner difference {dd:.2f} mm)")
+    print(f"CHECK bbox X/Y of all extrusion within 2 mm: {'PASS' if dd <= 2 else 'FAIL'} (max corner difference {dd:.2f} mm)")
     if dd > 2:
-        fails.append("bbox")
+        fails.append("bbox-all")
+    nm, om = nat["model_bbox_xy"], node["model_bbox_xy"]
+    dm = max(abs(a - b) for a, b in zip(nm, om)) if nm and om else 999
+    print(f"CHECK bbox X/Y of the model only within 2 mm: {'PASS' if dm <= 2 else 'FAIL'} (max corner difference {dm:.2f} mm)")
+    if dm > 2:
+        fails.append("bbox-model")
+    bed = {"H2S": (340, 320), "P1S": (256, 256)}[model]
+    out_of_bed = [name for name, bx in (("native", nb), ("node", bb)) if bx["min"][0] < 0 or bx["min"][1] < 0 or bx["max"][0] > bed[0] or bx["max"][1] > bed[1]]
+    print(f"CHECK all extrusion inside the {bed[0]}x{bed[1]} bed: {'PASS' if not out_of_bed else 'FAIL for ' + ','.join(out_of_bed)}")
+    if "node" in out_of_bed:
+        fails.append("node-outside-bed")
     # settings
     nc, oc = nat["config"], node["config"]
     common = sorted(set(nc) & set(oc))
