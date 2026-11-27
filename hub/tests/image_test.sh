@@ -7,7 +7,7 @@ set -euo pipefail
 HERE=$(cd "$(dirname "$0")" && pwd); REPO=$(cd "$HERE/../.." && pwd)
 IMG=${IMG:-druckwerk-test}
 PLUGIN_ZIP=${PLUGIN_ZIP:-/tmp/druckwerk-plugin/plugin.zip}  # the real vendor zip; fetched once from the URL pinned in externals.py
-[ -n "${SKIP_BUILD:-}" ] || docker build -q -f "${DOCKERFILE:-$REPO/hub/Dockerfile}" ${BUILD_ARGS:-} -t $IMG "$REPO" >/dev/null
+[ -n "${SKIP_BUILD:-}" ] || "$HERE/build_image.sh"
 docker image ls $IMG --format 'image size {{.Size}}'
 "$HERE/no_vendor_libs.sh" $IMG
 if [ ! -s "$PLUGIN_ZIP" ]; then
@@ -31,6 +31,19 @@ for _ in $(seq 300); do curl -fs $BRIDGE/api/health | grep -q '"state": "ready"'
 echo "bridge health: $(curl -fsS $BRIDGE/api/health)"
 curl -fsS $BRIDGE/api/health | python3 -c 'import json,sys;d=json.load(sys.stdin);assert d["plugin"]["state"]=="ready" and d["plugin"]["error"] is None,d'
 docker exec $IMG /opt/bridge/bridge.sh --check
+# Every library the slicer links must be in the image: list all that are missing, not only the first the loader hits.
+MISSING=$(docker exec $IMG sh -c 'cd /opt/bs; LD=$(ls runtime/lib/ld-linux-*.so.[0-9] | head -1); L=$(ls -d runtime/lib/*-linux-gnu | head -1); $LD --library-path app/lib:$L:runtime/lib --list app/bin/bambu-studio' | grep 'not found' || true)
+[ -z "$MISSING" ] || { echo "FAIL: slicer libraries missing from the image:" >&2; echo "$MISSING" >&2; exit 1; }
+echo "slicer links: all libraries present"
+# The slim ffmpeg must do what server.py asks of it: H.264 to a JPEG still, H.264 to MPEG-TS (copy), MPEG-TS to a JPEG still.
+SAMPLE=$HERE/fixtures/sample.h264
+docker exec -i $IMG ffmpeg -loglevel error -f h264 -i - -frames:v 1 -f image2 -c:v mjpeg - < "$SAMPLE" | head -c2 | xxd -p | grep -qx ffd8 \
+  || { echo "FAIL: ffmpeg gave no JPEG from H.264" >&2; exit 1; }
+docker exec -i $IMG ffmpeg -loglevel error -framerate 15 -f h264 -i - -c copy -flush_packets 1 -f mpegts - < "$SAMPLE" > /tmp/dw-sample.ts
+[ -s /tmp/dw-sample.ts ] || { echo "FAIL: ffmpeg gave no MPEG-TS" >&2; exit 1; }
+docker exec -i $IMG ffmpeg -loglevel error -f mpegts -i - -frames:v 1 -f image2 -c:v mjpeg - < /tmp/dw-sample.ts | head -c2 | xxd -p | grep -qx ffd8 \
+  || { echo "FAIL: ffmpeg gave no JPEG from MPEG-TS" >&2; exit 1; }
+echo "ffmpeg: H.264 to JPEG, H.264 to MPEG-TS, MPEG-TS to JPEG ok"
 # Identity: the app trusts Supervisor ingress headers, so no headers means 401 and headers mean 200.
 code=$(curl -s -o /dev/null -w '%{http_code}' $B/api/me); [ "$code" = 401 ] || { echo "FAIL: /api/me without identity gave $code" >&2; exit 1; }
 echo "GET /api/me without identity: $code"

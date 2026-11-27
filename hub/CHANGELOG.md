@@ -1,5 +1,11 @@
 # Changelog
 
+## 3.0.1 (unreleased)
+
+- Make the app image about 70 % smaller, so updates download faster.
+- Remove unused slicer files, the full qemu package and the full ffmpeg package.
+- Split the image into a base image and the app code. The base has the slicer, qemu and ffmpeg and stays the same between versions, so later updates download only the app layers.
+
 ## 3.0.0 (unreleased)
 
 - Druckwerk works on a Home Assistant without the vendor's printer integration (ha-bambulab). The app reads every printer's state from the bridge's MQTT status (`hub/printer_state.py`): status, stage, progress, remaining time, end time, layers, temperatures, task name, active tray, AMS units with trays, humidity and temperature, external spool and HMS errors. It does so on every install, with or without the vendor integration, so both behave the same. `GET /api/printers` keeps its shape.
