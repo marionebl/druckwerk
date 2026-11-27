@@ -142,6 +142,36 @@ def slice_info(path):
             "objects": [o.get("name") for o in plate.iter("object")]}
 
 
+# The CLI prints its steps as "<percent><text>" lines (PrusaSlicer's format, which the vendor's fork keeps); a "%" is accepted too.
+STEP = re.compile(r"^\s{0,2}(\d{1,3})\s*%?\s*([A-Z][^\n]*)$", re.M)
+
+
+def slice_progress(text):
+    """{percent, message} of the last step line in the slicer's log, or None."""
+    found = [m for m in STEP.finditer(text) if int(m.group(1)) <= 100]
+    return {"percent": int(found[-1].group(1)), "message": found[-1].group(2).strip()} if found else None
+
+
+def run_slicer(job, cmd, env, log_path):
+    """Run slice.sh and keep job["progress"] current from the log while it runs. Returns (returncode, output)."""
+    env = dict(env, SLICE_LOG=log_path)
+    p = subprocess.Popen(cmd, stdout=subprocess.PIPE, stderr=subprocess.STDOUT, text=True, env=env)
+    deadline = time.time() + 3 * 3600
+    while True:
+        try:
+            out, _ = p.communicate(timeout=1)
+            return p.returncode, out
+        except subprocess.TimeoutExpired:
+            if time.time() > deadline:
+                p.kill()
+                raise
+            try:
+                with open(log_path, errors="replace") as f:
+                    job["progress"] = slice_progress(f.read()) or job.get("progress")
+            except OSError:
+                pass  # the slicer has not started writing yet
+
+
 def run_slice(jid, printer, quality, tray, bed):
     job = jobs[jid]
     d = job_dir(jid)
@@ -162,13 +192,12 @@ def run_slice(jid, printer, quality, tray, bed):
             out = os.path.join(d, "out")
             shutil.rmtree(out, ignore_errors=True)
             e = dict(os.environ, PRINTER=preset, PROCESS=cfg["quality"][quality], BED=bed, COLOURS=tray["colour"])
-            p = subprocess.run(SLICE + [job["model"], out, filament], capture_output=True, text=True, env=e,
-                               timeout=3 * 3600)
-            job["log"] = (p.stdout + p.stderr)[-4000:]
-            if p.returncode:
-                raise RuntimeError("Slicer failed (exit %d)." % p.returncode)
+            code, output = run_slicer(job, SLICE + [job["model"], out, filament], e, os.path.join(d, "slice.log"))
+            job["log"] = output[-4000:]
+            if code:
+                raise RuntimeError("Slicer failed (exit %d)." % code)
             result = os.path.join(out, os.listdir(out)[0])
-            job.update(state="done", result=result, info=slice_info(result))
+            job.update(state="done", result=result, info=slice_info(result), progress={"percent": 100, "message": "Done"})
         except Exception as ex:  # noqa: BLE001 - every failure is shown to the user
             job.update(state="failed", error=str(ex))
             log("job %s failed: %s" % (jid, ex))

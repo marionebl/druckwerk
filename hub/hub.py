@@ -14,6 +14,7 @@ sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))  # python -I drop
 import slicer_server as s
 from app import App, log
 from ha import HA
+from plates_inbox import PlatesInbox
 
 env = os.environ.get
 BRIDGE = ("127.0.0.1", int(env("DW_PORT", "8098")))
@@ -43,6 +44,8 @@ def main():
     threading.Thread(target=app.run_ticker, args=(stop,), daemon=True).start()
     threading.Thread(target=ha.watch_state_changes, args=(app.on_state, stop), daemon=True).start()
     threading.Thread(target=app.notifier.run, args=(stop,), daemon=True).start()
+    app.plates_inbox = PlatesInbox.from_options(app, env("HUB_DATA", "/data"))
+    threading.Thread(target=app.plates_inbox.run, args=(stop,), daemon=True).start()
     threading.Thread(target=ha.watch_events, args=("mobile_app_notification_action", app.notifier.on_action, stop),
                      daemon=True).start()
 

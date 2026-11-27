@@ -92,6 +92,29 @@ def wait_done(base, jid):
     raise AssertionError("slice did not finish")
 
 
+def test_slicing_job_shows_the_step_and_percent_from_the_slicer_log(app):
+    base = app[0]
+    jid = json.loads(call(base, "POST", "/api/jobs?name=steps.stl", raw=b"solid x\nendsolid x\n")[1])["id"]
+    assert call(base, "POST", "/api/jobs/%s/slice" % jid, {"serial": "H2S0001", "quality": "best", "tray": "0:0"})[0] == 202
+    for _ in range(40):
+        job = json.loads(call(base, "GET", "/api/jobs/" + jid)[1])
+        if job.get("progress"):
+            break
+        time.sleep(0.1)
+    assert job["state"] == "slicing" and job["progress"] == {"percent": 35, "message": "Generating infill"}, job
+    done = wait_done(base, jid)
+    assert done["state"] == "done" and done["progress"]["percent"] == 100
+
+
+def test_slice_progress_reads_the_last_step_line_and_ignores_config_lines():
+    sys.path.insert(0, APP)
+    import server
+    log = "[info] sparse_infill_density = 15%\n  5Processing triangulated mesh\n 20% Generating perimeters\n[info] x 50 Z\n"
+    assert server.slice_progress(log) == {"percent": 20, "message": "Generating perimeters"}
+    assert server.slice_progress("[info] sparse_infill_density = 15%\n") is None
+    assert server.slice_progress("150Nonsense\n") is None
+
+
 def test_printers_lists_supported_models_with_loaded_trays(app):
     base = app[0]
     status, raw = call(base, "GET", "/api/printers")
@@ -137,7 +160,7 @@ def test_upload_slice_preview_print(app):
 
 def test_slice_rejects_unknown_tray_and_quality(app):
     base = app[0]
-    jid = json.loads(call(base, "POST", "/api/jobs?name=a.stl", raw=b"x")[1])["id"]
+    jid = json.loads(call(base, "POST", "/api/jobs?name=steps.stl", raw=b"x")[1])["id"]
     assert call(base, "POST", "/api/jobs/%s/slice" % jid, {"serial": "H2S0001", "quality": "better", "tray": "0:2"})[0] == 400
     assert call(base, "POST", "/api/jobs/%s/slice" % jid, {"serial": "H2S0001", "quality": "ultra", "tray": "0:0"})[0] == 400
     assert call(base, "POST", "/api/jobs?name=a.exe", raw=b"x")[0] == 400
@@ -174,7 +197,7 @@ def job_result(tmp, jid):
 
 def test_browser_gcode_rejects_bad_requests(app):
     base = app[0]
-    jid = json.loads(call(base, "POST", "/api/jobs?name=a.stl", raw=b"x")[1])["id"]
+    jid = json.loads(call(base, "POST", "/api/jobs?name=steps.stl", raw=b"x")[1])["id"]
     assert call(base, "POST", "/api/jobs/%s/gcode?%s" % (jid, gcode_query(tray="0:2")), raw=b"G1")[0] == 400
     assert call(base, "POST", "/api/jobs/%s/gcode?%s" % (jid, gcode_query(quality="ultra")), raw=b"G1")[0] == 400
     assert call(base, "POST", "/api/jobs/%s/gcode?%s" % (jid, gcode_query(filament="Nope")), raw=b"G1")[0] == 400

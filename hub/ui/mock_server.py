@@ -19,6 +19,8 @@ from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from urllib.parse import parse_qs, urlparse
 
 HERE = os.path.dirname(os.path.abspath(__file__))
+sys.path.insert(0, os.path.dirname(HERE))
+import progress  # noqa: E402  the hub's own step logic, so the mock cannot drift from it
 PREFIX = "/api/hassio_ingress/MOCKTOKEN/"
 NOW = time.time
 
@@ -69,6 +71,7 @@ CAMERA_DOWN, EMPTY_AMS, MOCK_SLICES, MOCK_LIGHT = set(), set(), [], []
 DRYING = {H2S: {0: {"name": "AMS 2 Pro", "lo": 45, "hi": 65, "until": None, "filament": "", "temp": None},
                 128: {"name": "AMS HT", "lo": 45, "hi": 85, "until": None, "filament": "", "temp": None}}}
 RESTART = {"until": 0.0}  # while NOW() is before this, every API call answers like Home Assistant that restarts
+START = {}  # serial -> {mode: sending|download|prepare, percent, stage}: a print start under way (test hook)
 MOCK_QUEUED = []  # what the UI sent to queue a slice, for the tests
 
 
@@ -360,6 +363,19 @@ def visible(ident):
     return list(PRINTERS) if IDENT[ident]["is_admin"] else list(USER_PRINTERS)
 
 
+def start_out(p):
+    """The steps of a start the hook set up, from hub/progress.py, and the queued job that is being sent."""
+    h = START.get(p["serial"])
+    if not h:
+        return None, None
+    sending = h["mode"] == "sending"
+    if not sending:
+        p["status"] = "prepare"
+    v = {"status": p["status"], "stage": h.get("stage") or "idle", "prepare_percent": h.get("percent") if h["mode"] == "download" else 100}
+    job = next((j for j in JOBS if j["state"] == "queued" and j.get("kind") != "dry" and (j["target"] == p["serial"] or (j["target"] == "any" and j["model"] == p["model"]))), None)
+    return progress.steps("a.gcode.3mf" if sending else None, {"stage": "upload", "percent": h.get("percent")}, v), job and job["id"]
+
+
 def printer_out(ident, p):
     p = json.loads(json.dumps(p))
     s = p["serial"]
@@ -378,6 +394,7 @@ def printer_out(ident, p):
     p["cover_url"] = f"api/printers/{s}/cover" if p["online"] else None
     p["camera_url"] = f"api/printers/{s}/camera" if p["online"] else None
     p["current_job"] = next((j for j in JOBS if j["state"] == "printing" and j.get("printer") == s), None)
+    p["start"], p["start_job"] = start_out(p)
     p["drying"] = drying_out(s)
     p["queue_length"] = sum(1 for j in JOBS if j["state"] in WAITING and (j["target"] == s or (j["target"] == "any" and j["model"] == p["model"])))
     return p
@@ -473,12 +490,12 @@ def job_action(ident, jid, action, body):
 
 
 def make_job_state(sl):
-    """A fake slice finishes 2 s after /slice."""
+    """A fake slice finishes 3 s after /slice."""
     if sl.get("sliced_at") is None:
         return {"state": "uploaded"}
     el = NOW() - sl["sliced_at"]
-    if el < 2.0:
-        return {"state": "slicing", "elapsed": int(el)}
+    if el < 3.0:
+        return {"state": "slicing", "elapsed": int(el), "progress": {"percent": int(el / 3 * 100), "message": "Generating infill"}}
     sec, g, proc = QUALITY[sl["quality"]]
     return {"state": "done", "quality": sl["quality"], "info": {"seconds": sec, "grams": g, "warnings": [], "has_png": True, "filaments": []},
             "settings": {"process": proc + " @BBL", "tray": sl["tray"], "bed": sl["bed"]}}
@@ -574,6 +591,13 @@ class H(BaseHTTPRequestHandler):
         if path == "api/_mock/hook":  # ?set=camera_down|empty_ams&serial=..&on=1|0
             target = {"camera_down": CAMERA_DOWN, "empty_ams": EMPTY_AMS}[q["set"][0]]
             (target.add if (q.get("on") or ["1"])[0] == "1" else target.discard)(q["serial"][0])
+            return ok({})
+        if path == "api/_mock/start":  # ?serial=..&mode=sending|download|prepare|off&percent=..&stage=..
+            mode = q["mode"][0]
+            if mode == "off":
+                START.pop(q["serial"][0], None)
+            else:
+                START[q["serial"][0]] = {"mode": mode, "percent": int((q.get("percent") or ["0"])[0]), "stage": (q.get("stage") or [""])[0]}
             return ok({})
         if path == "api/_mock/slices":
             return ok(MOCK_SLICES)

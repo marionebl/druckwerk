@@ -31,6 +31,7 @@ class Sender:
         self.path = os.path.join(app.data_dir, "sender.json")
         self.lock = threading.Lock()
         self.results = {}
+        self.sending = {}  # serial -> file name while the bridge call runs, for the progress steps
         if os.path.exists(self.path):
             with open(self.path) as f:
                 self.results = json.load(f)
@@ -73,12 +74,15 @@ class Sender:
                 "timelapse": data.get("timelapse", False), "use_ams": data.get("use_ams", True),
                 "bed_leveling": TRI.get(data.get("bed_leveling", True), data.get("bed_leveling", True)),
                 **{k: TRI.get(data[k], data[k]) for k in ADVANCED if k in data}}
+        self.sending[serial] = filename
         try:
             status_code, answer = self.app.bridge_json("POST", "/api/print", body, timeout=SEND_TIMEOUT)
         except ActionError as e:
             text = "Add-on not reachable: %s" % str(e).removeprefix("bridge is not reachable: ")
             self._record(serial, filename, text)
             raise ActionError(502, text)
+        finally:
+            self.sending.pop(serial, None)
         if status_code == 200 and isinstance(answer, dict) and answer.get("result") in OK_RESULTS:
             self._record(serial, filename, None, path)
             if body["use_ams"]:

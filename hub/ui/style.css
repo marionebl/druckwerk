@@ -313,3 +313,14 @@ details.adv .form { margin-top: 12px; }
 .tl-card { color: inherit; text-decoration: none; } a.tl-card:hover, .job .title a:hover { border-color: var(--accent); }
 .job .title a { color: inherit; text-decoration: none; } .job { cursor: pointer; }
 .spoolprint { display: flex; justify-content: space-between; gap: 12px; padding: 8px 0; border-top: 1px solid var(--line); color: inherit; text-decoration: none; }
+
+/* Print start steps */
+.start-steps { list-style: none; margin: 0; padding: 0; display: grid; gap: 10px; }
+.sstep { display: flex; gap: 10px; align-items: flex-start; color: var(--muted); }
+.sstep .mark { flex: none; width: 20px; height: 20px; border-radius: 50%; border: 2px solid var(--line); display: grid; place-content: center; margin-top: 1px; }
+.sstep .what { display: grid; gap: 4px; min-width: 0; flex: 1; }
+.sstep small { font-variant-numeric: tabular-nums; }
+.sstep[data-state=active] { color: var(--fg); font-weight: 600; } .sstep[data-state=active] .mark { border-color: var(--accent); }
+.sstep[data-state=active] .mark .spin { width: 10px; height: 10px; border-width: 2px; vertical-align: 0; }
+.sstep[data-state=done] .mark { background: var(--accent); border-color: var(--accent); color: var(--accent-fg); }
+.slice-progress { display: grid; gap: 6px; }

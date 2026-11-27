@@ -34,6 +34,28 @@ def _norm(model: str) -> str:
     return m.removeprefix(GCODE_MODEL_PREFIX)
 
 
+def same_model(a: str, b: str) -> bool:
+    return _norm(a) == _norm(b)
+
+
+def file_model(path: str) -> str | None:
+    """The `; printer_model` header of the first plate, or None."""
+    try:
+        with zipfile.ZipFile(path) as z:
+            plates = sorted((n for n in z.namelist() if _PLATE.fullmatch(n)), key=lambda n: int(_PLATE.fullmatch(n).group(1)))
+            with z.open(plates[0]) as fh:
+                for raw in fh:
+                    line = raw.decode("utf-8", "replace")
+                    if line.startswith("; EXECUTABLE_BLOCK_START"):
+                        return None
+                    m = _MODEL.match(line)
+                    if m:
+                        return m.group(1)
+    except (zipfile.BadZipFile, OSError, IndexError):
+        pass
+    return None
+
+
 def check_gcode_3mf(path: str, printer_model: str | None, use_ams: bool = True) -> list[str]:
     """Return problems found in the first plate of a .gcode.3mf (empty list = safe).
 

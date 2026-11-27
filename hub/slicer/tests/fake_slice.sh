@@ -3,3 +3,5 @@
 set -euo pipefail
 mkdir -p "$2"; cp "$FAKE_RESULT" "$2/$(basename "${1%.*}").gcode.3mf"
 printf '%s\n' "PRINTER=$PRINTER" "PROCESS=$PROCESS" "BED=$BED" "COLOURS=$COLOURS" "FILAMENT=${3:-}" > "$2/../slice-env.txt"
+# A model named steps*: log a step line like the slicer CLI does and take a while, so a test can read the progress.
+if [[ "$(basename "$1")" == steps* ]]; then printf '[info] starting\n 35Generating infill\n' > "$SLICE_LOG"; sleep 3; fi

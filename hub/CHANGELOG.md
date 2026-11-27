@@ -1,6 +1,6 @@
 # Changelog
 
-## 3.3.0 (unreleased)
+## 3.7.0 (unreleased)
 
 - History detail shows all slicing settings of a print: Quality, Strength, Support and adhesion, Speed, Filament, Plate and bed, Printer, and an "All settings" list with every key and a search field. They are read from the sliced file (`Metadata/project_settings.config` and `slice_info.config`) by `hub/slice_settings.py`. `GET /api/history/{id}/settings` is new. The settings are saved when a job is queued, so they stay after the slicer forgot the slice.
 - One primary action on a history item: "New print job with the same settings". It queues the stored file again with the print's target and options (`POST /api/history/{id}/queue` is new). When the file is gone it opens New print with the same printer, options, quality, filament and plate; choose the model again. "Print again" is replaced by this button.
@@ -9,6 +9,31 @@
 - History shows how long each print took: under every entry a bar sits on the day's 00:00 to 24:00 axis, as wide as the print ran (start to end; a running print reaches to now). Colour is the status. A print past midnight is cut at 24:00 and marked, very short prints get a minimum width, and prints without times show no bar.
 - History detail has a download button for the print's model (the STL, 3MF or STEP the slicer still stores), else for the sliced 3MF (Druckwerk's, or the Bambu cloud's). With no stored file the button is not shown. `GET /api/history/{id}/file` is new and follows the same visibility as the history.
 - History detail shows the 3D preview of the print, read from the same stored file as the download (the slicer's sliced file, a file in the share, or the Bambu cloud's 3MF), so prints from the cloud have it too. It loads only when the details open, shows a placeholder while loading and when no file is stored. `GET /api/history/{id}/gcode` is new; `GET /api/history/{id}/settings` now also says `download` and `preview`.
+## 3.6.0 (unreleased)
+
+- Progress from Start to the first layer. Slicing shows its percent and the slicer's step text, in the browser (the engine's progress messages) and on the Pi (step lines from the slicer log, `GET /api/jobs/{id}` has `progress` `{percent, message}`). After Start, a list of steps shows where the print is: upload to the Bambu cloud (percent), the printer downloads the plate (percent from `gcode_file_prepare_percent`), the printer prepares (stage name, such as heating the bed), then printing. The steps are on the printer card, the printer page, the queue row and the job page, and in the Start dialogs while the request runs. `GET /api/printers` adds `start` (the steps, or null) and `start_job` (the job being started, or null).
+- The bridge reads the upload percent from the daemon's `print progress` log lines, so the daemon patch and the base image stay as they are. `GET /api/print-progress/<serial>` on the bridge answers `{stage, percent}` while a print is being sent, else `{}`.
+## 3.5.0 (unreleased)
+
+- Plates inbox. A cloud agent that cannot reach Home Assistant pushes a sliced plate to a private GitHub repo, and the app adds it to the print queue. Two new app options: `plates_repo` (default `marionebl/druckwerk-plates`) and `plates_token` (a GitHub token with Contents read and write on that repo). Without a token the feature is off and the app makes no request.
+- Every 60 s the app lists `plates/` in the repo. Each `plates/<id>/<name>.gcode.3mf` goes through the same path as a plate queued from the web UI (sliced check, grams and print time, plate image) and also through the G-code guard and the printer model check, which now run at queue time. The job waits in the queue like any other. Nothing starts a print by itself.
+- Target printer: `job.json` `printer` (serial), else `job.json` `model`, else the model in the G-code header, queued for any printer of that model. Owner: `job.json` `owner` (an HA user id or name) if that user may add jobs for the printer, else the printer's owner, else nobody (an admin job named "Plates inbox").
+- After the job is queued the app deletes the files of the folder in the repo (one contents API DELETE per file). The taken ids are kept in `/data/plates_taken.json`, so a failed delete never makes a second job; the delete is tried again at the next poll.
+- Files over 100 MB, files that are not sliced, and plates that fail the guard or the model check are logged, skipped and left in the repo. They are not downloaded again until the file changes. The token is never logged.
+- Setup view: the last step shows the repo, the last poll time and the last error. `GET /api/setup` has `plates_inbox: {enabled, repo, last_poll, last_error, taken}`.
+- How an agent pushes a plate is in API.md.
+
+## 3.2.3 (unreleased)
+
+- A camera snapshot no longer restarts the bridge daemon. Before, every "camera URL callback timed out" restarted it, so an automation that took a snapshot every 20 s kept the daemon down and a print start failed with 503 "daemon not reachable". The snapshot now answers 502 and the daemon keeps running.
+- The protection stays, but only for a real stall. A camera timeout marks the printer. The bridge then sends a pushall through the daemon and waits up to 15 s (`DW_PROBE_WAIT`) for the cached status (`sequence_id` or `t_utc`) to change. It restarts the daemon only if the status does not change, or `/health` fails for 60 s. A printer that is idle sends no status by itself, so the bridge never judges by silence and never sends a pushall without a camera timeout. A timeout within 3 minutes of a daemon start (`DW_START_GRACE`) is ignored, because mints fail in that window anyway. At most one restart in 5 minutes (`DW_RESTART_BACKOFF`). It never restarts or probes while a print start or a command runs; it looks again at the next check (every 5 s).
+- The log has one line for each timeout (seconds since the daemon start) and one for each probe result, for example `camera timeout probe: status answered in 2.3s, no restart`.
+- Snapshot cache: a good snapshot younger than 30 s (`DW_SNAPSHOT_CACHE`) is sent again without asking the daemon. Requests for one printer wait for each other, so only one asks the daemon. `GET /api/camera/<serial>/snapshot` adds the header `X-Snapshot-Age` (seconds since the picture was taken, `0.0` for a new one). A failed request is also shared with the requests that waited for it.
+- A print start (`POST /api/print`) and the command routes (light, rfid, pause, drying) wait up to 60 s (`DW_RETRY_WINDOW`) while the daemon is restarting (connection refused), then answer 503 as before. Other errors are not retried, because the daemon may have got the request.
+
+## 3.2.2 (unreleased)
+
+- Fix: starting a print failed with "read file: Error parsing `multipart/form-data` request" for files over 2 MB. The bridge (boo-cloud) used axum's default body limit of 2 MB on `POST /print`. The bridge patch now sets 64 MiB, the same cap as Druckwerk uploads. The patch has a test that posts a 3 MB file.
 
 ## 3.2.1 (unreleased)
 
