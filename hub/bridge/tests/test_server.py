@@ -400,6 +400,40 @@ class MultiAccountTest(unittest.TestCase):
         self.assertEqual(s.req("GET", "/api/status/NOPE")[0], 404)
         self.assertEqual(s.req("POST", "/api/print", {"serial": "NOPE", "filename": "a.3mf", "file_b64": "eA=="})[0], 404)
 
+    def test_02b_tasks_use_the_token_of_the_printers_account(self):
+        s = self.s
+        st, a = s.json("GET", "/api/tasks?serial=SERIAL001&limit=2")
+        self.assertEqual(st, 200)
+        self.assertEqual([t["id"] for t in a], [103, 102])  # limit reaches the cloud and newest comes first
+        self.assertEqual(a[1], {"id": 102, "serial": "SERIAL001", "title": "cube-aexamplecom", "status": "failed", "status_code": "failed",
+                                "started_at": 1795773600, "ended_at": 1795775400, "seconds": 1800, "grams": 4.5,
+                                "cover_url": "https://cdn.example/c.png", "plate": 2, "design_title": "Cube"})
+        self.assertEqual(a[0]["title"], "Vase-aexamplecom")  # the design title stands in for an empty title
+        self.assertIsNone(a[0]["ended_at"])
+        b = s.json("GET", "/api/tasks?serial=SERIALB01")[1]
+        self.assertEqual(b[1]["title"], "cube-bexamplecom")
+        used = {q: e for q, e in self.cloud.task_calls}
+        self.assertEqual(used["/v1/user-service/my/tasks?deviceId=SERIAL001&limit=2"], "a@example.com")
+        self.assertEqual(used["/v1/user-service/my/tasks?deviceId=SERIALB01&limit=50"], "b@example.com")
+        # A numeric code is passed on as it is: this repo does not say what the numbers mean.
+        self.assertEqual((b[2]["status"], b[2]["status_code"]), ("2", 2))
+
+    def test_02c_tasks_errors(self):
+        s = self.s
+        self.assertEqual(s.req("GET", "/api/tasks?serial=NOPE")[0], 404)
+        self.assertEqual(s.req("GET", "/api/tasks")[0], 400)
+        for bad in ("0", "101", "x"):
+            self.assertEqual(s.req("GET", "/api/tasks?serial=SERIAL001&limit=" + bad)[0], 400, bad)
+        st, d = s.json("GET", "/api/tasks?serial=SERIAL002")  # the cloud answers 500
+        self.assertEqual(st, 502)
+        self.assertIn("HTTP 500", d["error"])
+        known = dict(self.cloud.owner)
+        self.cloud.owner.clear()  # the cloud no longer knows any token: 401
+        st, d = s.json("GET", "/api/tasks?serial=SERIAL001")
+        self.cloud.owner.update(known)
+        self.assertEqual(st, 502)
+        self.assertIn("HTTP 401", d["error"])
+
     def test_03_relogin_replaces_token(self):
         s = self.s
         old = self.cloud.tokens["b@example.com"]

@@ -20,6 +20,7 @@ from urllib.parse import parse_qs, urlsplit
 
 import externals
 import filament
+import history
 from ha import HAError
 from queue_access import Access, Caller, Forbidden, Grants, Unauthorized, caller_from_headers
 from queue_engine import WAITING, NotFound, Queue, QueueError
@@ -41,6 +42,7 @@ UI_FILES = r"(index\.html|style\.css|app\.js|api\.js|util\.js|feedback\.js|views
 # A feedback post carries screenshots; every other route keeps the slicer's 8 KB JSON limit.
 FEEDBACK_MAX = 1500000
 MIME = {"html": "text/html; charset=utf-8", "css": "text/css; charset=utf-8", "js": "text/javascript; charset=utf-8"}
+TASKS_TTL = 60  # seconds a printer's cloud task list is reused
 DOMAIN_DEFAULTS = "schedule,input_boolean,binary_sensor,person"
 
 
@@ -136,7 +138,7 @@ class App:
             return val
         try:
             val = fn()
-        except HAError:
+        except (HAError, HttpError):
             if val is None:
                 raise
             return val
@@ -633,6 +635,39 @@ class App:
         ctype, data = self.ha.image("image.%s_cover_image" % p["prefix"])
         h.send(200, data, ctype)
 
+    def cloud_tasks(self, serial):
+        return self._cached("tasks:" + serial, TASKS_TTL, lambda: self.bridge_ok("GET", "/api/tasks?serial=%s&limit=100" % serial, timeout=30))
+
+    def get_history(self, h, m, q, c):
+        def one(name):
+            return (q.get(name) or [""])[0]
+        limit = num(one("limit") or 100, int)
+        if limit is None or not 1 <= limit <= 500:
+            raise ValueError("limit must be a number from 1 to 500")
+        shown = [(p, self.access.role(c, p["serial"])) for p in self.registry.all() if one("printer") in ("", p["serial"])]
+        tasks, unavailable = [], []
+        for p, role in shown:
+            if role:
+                try:
+                    tasks += self.cloud_tasks(p["serial"])
+                except HttpError as e:
+                    log("history %s: %s" % (p["serial"], e))
+                    unavailable.append(p["serial"])
+        owned = history.attribute(tasks, history.jobs_of(self.queue))
+        by_serial = {p["serial"]: (p, role) for p, role in shown}
+        who, out = one("user"), []
+        for t in tasks:
+            p, role = by_serial[t["serial"]]
+            it = history.item(t, owned.get(t["id"]), p)
+            if role == "admin":  # the user filter is for admins; everyone else sees their own prints only
+                if who and (it["user_id"] or "unknown") != who:
+                    continue
+            elif it["user_id"] != c.user_id:
+                continue
+            out.append(it)
+        out.sort(key=lambda i: i["started_at"] or 0, reverse=True)
+        return {"items": out[:limit], "unavailable": unavailable}
+
     # -- slices and jobs --
     def own(self, c, job_id):
         job = self.s.jobs.get(job_id)
@@ -875,6 +910,7 @@ class App:
             ("GET", r"/api/jobs/" + JOB_ID + r"/(plate\.png|plate\.gcode)", self.slicer_job(self.s.get_file)),
             ("POST", r"/api/jobs/" + JOB_ID + r"/print", self.slicer_job(self.s.post_print, self.check_print)),
             ("POST", r"/api/jobs/" + JOB_ID + r"/queue", w(self.queue_job)),
+            ("GET", r"/api/history", w(self.get_history)),
             ("GET", r"/api/spools", w(self.get_spools)),
             ("POST", r"/api/spools", w(self.post_spool)),
             ("PUT", r"/api/spools/([0-9a-f]{12})", w(self.put_spool)),

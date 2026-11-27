@@ -3,10 +3,11 @@
 
 One boocloud-bridge daemon per cloud account (the plugin holds one login per process).
 Routes: GET /, GET /api/health, POST /api/login/start, POST /api/login/code, DELETE /api/accounts/<id>,
-GET /api/printers, GET /api/status/<serial>, GET /api/ams/<serial>, GET /api/camera/<serial>/live, POST /api/print.
+GET /api/printers, GET /api/status/<serial>, GET /api/ams/<serial>, GET /api/camera/<serial>/live, GET /api/tasks?serial=<serial>&limit=<n>, POST /api/print.
 """
 import base64
 import binascii
+from datetime import datetime
 import http.client
 import json
 import os
@@ -339,6 +340,59 @@ def proxy(h, prefix, serial):
     except Upstream:
         return h.send(503, {"error": "daemon not reachable"})
     h.send(status, raw, ctype)
+
+
+# Task status words we can justify from this repo (the printer's gcode_state names). The cloud's numeric codes are not
+# documented here, so they pass through unmapped: add a number to this table once it is confirmed against a real answer.
+TASK_STATUS = {"finish": "finished", "finished": "finished", "success": "finished", "failed": "failed", "fail": "failed",
+               "cancel": "cancelled", "cancelled": "cancelled", "canceled": "cancelled", "running": "running", "printing": "running"}
+
+
+def epoch(value):
+    """Seconds since 1970 from the cloud's ISO time or a number; None when absent or unreadable."""
+    if isinstance(value, (int, float)) and not isinstance(value, bool):
+        return int(value)
+    try:
+        return int(datetime.fromisoformat(str(value).replace("Z", "+00:00")).timestamp())
+    except ValueError:
+        return None
+
+
+def number(value):
+    return value if isinstance(value, (int, float)) and not isinstance(value, bool) else None
+
+
+def normalize_task(t, serial):
+    raw = t.get("status")
+    status = TASK_STATUS.get(str(raw).strip().lower(), str(raw)) if raw is not None else "unknown"
+    return {"id": t.get("id"), "serial": serial, "title": t.get("title") or t.get("designTitle") or "", "status": status,
+            "status_code": raw, "started_at": epoch(t.get("startTime")), "ended_at": epoch(t.get("endTime")),
+            "seconds": number(t.get("costTime")), "grams": number(t.get("weight")), "cover_url": t.get("cover") or "",
+            "plate": t.get("plateIndex"), "design_title": t.get("designTitle") or ""}
+
+
+def get_tasks(h, m, body):
+    q = parse_qs(urlsplit(h.path).query)
+    serial = (q.get("serial") or [""])[0]
+    if not SERIAL.fullmatch(serial):
+        raise ValueError("serial is required")
+    try:
+        limit = int((q.get("limit") or ["50"])[0])
+    except ValueError:
+        limit = 0
+    if not 1 <= limit <= 100:
+        raise ValueError("limit must be a number from 1 to 100")
+    acc = owner(serial)
+    if not acc:
+        return h.send(404, {"error": "unknown printer"})
+    token = read_cloud(acc.creds).get("token")  # the token of the account that owns this printer
+    if not token:
+        raise Upstream("No cloud login for this printer's account")
+    data = cloud("GET", "/v1/user-service/my/tasks?deviceId=%s&limit=%d" % (serial, limit), token=token)
+    hits = data.get("hits") if isinstance(data, dict) else None
+    if not isinstance(hits, list):
+        raise Upstream("%s cloud sent no task list" % externals.CLOUD_NAME)
+    h.send(200, [normalize_task(t, serial) for t in hits if isinstance(t, dict)])
 
 
 def camera(h, kind, serial):
@@ -866,6 +920,7 @@ ROUTES = [
     ("GET", r"/api/camera/" + SER + r"/url", lambda h, m, b: camera(h, "url", m.group(1)), 0),
     ("GET", r"/api/camera/" + SER + r"/live", lambda h, m, b: get_live(h, m.group(1)), 0),
     ("GET", r"/api/camera/" + SER + r"/snapshot", lambda h, m, b: camera(h, "snapshot", m.group(1)), 0),
+    ("GET", r"/api/tasks", get_tasks, 0),
     ("POST", r"/api/login/start", post_login_start, MAX_SMALL_BODY),
     ("POST", r"/api/login/code", post_login_code, MAX_SMALL_BODY),
     ("DELETE", r"/api/accounts/([a-z0-9_]{1,64})", delete_account, 0),

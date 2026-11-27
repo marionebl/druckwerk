@@ -36,6 +36,7 @@ export const api = {
   printers: () => get('api/printers'),
   startNext: (serial) => post(`api/printers/${q(serial)}/start-next`, { plate_clear: true }),
   startJob: (serial, job_id) => post(`api/printers/${q(serial)}/start`, { job_id, plate_clear: true }),
+  history: (query) => get('api/history' + (query ? '?' + query : '')),
   // queue
   queue: () => get('api/queue'),
   jobAction: (id, action, body) => post(`api/queue/${q(id)}/${action}`, body),

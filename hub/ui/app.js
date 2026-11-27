@@ -5,6 +5,7 @@ import { h, clear, icon, fail, empty } from './util.js';
 const VIEWS = {
   printers: () => import('./views/printers.js'),
   queue: () => import('./views/queue.js'),
+  history: () => import('./views/history.js'),
   new: () => import('./views/newprint.js'),
   filament: () => import('./views/filament.js'),
   access: () => import('./views/access.js'),
@@ -24,7 +25,7 @@ const app = document.getElementById('app');
 let main, tabs, menuPop;
 
 function shell() {
-  const nav = [['printers', 'Printers', 'printer'], ['queue', 'Queue', 'queue'], ['new', 'New print', 'plus'], ['filament', 'Filament', 'spool']];
+  const nav = [['printers', 'Printers', 'printer'], ['queue', 'Queue', 'queue'], ['history', 'History', 'clock'], ['new', 'New print', 'plus'], ['filament', 'Filament', 'spool']];
   if (ctx.isAdmin()) nav.push(['access', 'Access', 'key']);
   tabs = h('nav', { class: 'tabs', 'aria-label': 'Sections' },
     nav.map(([id, label, ic]) => h('a', { href: '#/' + id, 'data-id': id }, icon(ic), h('span', null, label))));

@@ -53,6 +53,13 @@ The secret reaches the integration through Supervisor discovery: on start the ap
 - `GET /api/queue/{id}/plate.png` → the job's plate image (kept with the job after the slice is pruned); visible to whoever sees the job.
 - The job also carries `filament_grams` (per filament), `print_seconds` (slice estimate), `spools_used` (`[{spool_id, grams}]`, after done).
 
+## History (hub/history.py)
+
+- `GET /api/history?user=&printer=&limit=` → `{items, unavailable}`. The Bambu cloud's task list is the source of truth (per printer, via the bridge's `GET /api/tasks?serial=&limit=<=100`, cached 60 s). Druckwerk jobs only say who started a task: same printer, same file or title name (extension and case ignored) and the task started 60 s before to 15 min after the job; the closest start wins, each task and job once.
+- item = `{id, serial, printer_name, title, status, status_code, started_at, ended_at, seconds, grams, cover_url, plate, design_title, job_id, user_id, user_name, cost, source}`; times are epoch seconds. `source` is `druckwerk` (a job matched) or `cloud` (started at the slicer or printer; `user_id`, `user_name`, `job_id`, `cost` are null). `status` is `finished|failed|cancelled|running`, or the raw cloud value when it is not known; `status_code` is always the raw value.
+- Newest first. HA admins and printer owners see all items of their printers and may filter by `user` (an HA user id or `unknown`) and `printer`. Other users see only items attributed to themselves; `user` is ignored for them. `unavailable` lists serials whose cloud answer failed (items of the others still come).
+- Bridge: `GET /api/tasks?serial=<serial>&limit=<1..100, default 50>` uses the token of the account that owns the printer; 404 unknown printer, 502 when the cloud fails or refuses the token.
+
 ## Slicing
 
 - Existing slicer routes: `POST /api/jobs` (upload), `POST /api/jobs/{id}/slice`, `GET /api/jobs/{id}` (a done slice also carries `cost_estimate`: filament from the matching spool plus electricity, same formula as the final job cost; `null` when it cannot be read), `GET /api/jobs/{id}/(plate.png|plate.gcode)`, `POST /api/jobs/{id}/print` (direct print, admin of the printer only; the queue is the normal path).

@@ -88,6 +88,41 @@ HISTORY = [
         error="printer reported a failed print", finished_at=NOW() - 3600 * 47),
     job("b00000000003", "lens_cap.gcode.3mf", P1S, "u-alex", "cancelled", age=70, finished_at=NOW() - 3600 * 70),
 ]
+# Cloud tasks: (id, title, printer, hours ago, status, minutes, grams, user id or None for "not started here", cost)
+TASKS = [
+    (9, "gridfinity_bin_4x2", H2S, 0.9, "running", 0, 0, "u-alex", None),
+    (8, "cable_clip_set", H2S, 3.5, "finished", 42, 12.5, "u-lena", 0.31),
+    (7, "Slicer plate 1", P1S, 5, "finished", 95, 61.0, None, None),
+    (6, "phone_stand_v3", H2S, 20, "finished", 130, 55.0, "u-jonas", 1.2),
+    (5, "benchy_test", H2S, 28, "finished", 61, 14.0, "u-lena", 0.35),
+    (4, "hook_wall_large", P1S, 47, "failed", 12, 3.1, "u-jonas", 0.08),
+    (3, "lens_cap", P1S, 70, "cancelled", 4, 0.6, "u-alex", None),
+    (2, "calibration cube", P1S, 75, "finished", 28, 6.2, None, None),
+    (1, "drawer_divider_s", H2S, 150, "finished", 20, 8.9, "u-alex", 0.22),
+]
+
+
+def history_out(ident, q):
+    """Same rules as the hub: admins see all and may filter; others only their own prints on their printers."""
+    admin, uid = IDENT[ident]["is_admin"], IDENT[ident]["user_id"]
+    out = []
+    for id_, title, serial, ago, status, minutes, grams, user, cost in TASKS:
+        if serial not in visible(ident) or (q.get("printer") and q["printer"][0] != serial):
+            continue
+        if admin:
+            if q.get("user") and q["user"][0] != (user or "unknown"):
+                continue
+        elif user != uid:
+            continue
+        started = NOW() - ago * 3600
+        out.append({"id": id_, "serial": serial, "title": title, "status": status, "status_code": status, "started_at": int(started),
+                    "ended_at": None if status == "running" else int(started + minutes * 60), "seconds": minutes * 60 or None,
+                    "grams": grams or None, "cover_url": f"api/history-cover/{id_}.svg" if id_ % 2 else "", "plate": 1, "design_title": "",
+                    "printer_name": PRINTERS[serial]["name"], "job_id": None, "user_id": user, "user_name": USERS.get(user),
+                    "cost": cost, "source": "druckwerk" if user else "cloud"})
+    return {"items": out, "unavailable": []}
+
+
 SPOOLS = [
     {"id": "s1", "brand": "Acme", "type": "PLA", "colour": "F2F2F2", "name": "White", "grams_left": 880, "grams_total": 1000, "price_per_kg": 19.99, "printer": H2S, "unit": 0, "slot": 0},
     {"id": "s2", "brand": "Prusament", "type": "PETG", "colour": "1F6FEB", "name": "Blue", "grams_left": 610, "grams_total": 1000, "price_per_kg": 27.5, "printer": H2S, "unit": 0, "slot": 1},
@@ -448,7 +483,13 @@ class H(BaseHTTPRequestHandler):
                 raise Err(400, "unknown user or printer")
             name = "Druckwerk %s %s" % (who, pr["name"] if pr else "All printers")
             return ok({"entity_id": "input_boolean." + re.sub(r"[^a-z0-9]+", "_", name.lower()), "name": name, "state": "off"})
+        if path == "api/history":
+            return ok(history_out(ident, q))
+        r = re.fullmatch(r"api/history-cover/(\d+)\.svg", path)
+        if r:
+            return svg(plate_svg(r.group(1)))
         if path == "api/ha/users":
+            need_admin()
             return ok(HA_USERS)
         if path == "api/ha/entities":
             doms = (q.get("domains") or [""])[0].split(",")
