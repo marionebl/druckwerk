@@ -64,12 +64,12 @@ function placeOnBed(pos, machine) {
 }
 
 // One variant: slice in the (warm) engine, then hand the G-code to the app, which packs and checks it like a Pi slice.
-// opts: file, jobId, model, serial, tray, bed, quality, onProgress. Returns the job and the slice time.
+// opts: file, jobId, model, serial, fil, bed, quality, onProgress. Returns the job and the slice time.
 export async function sliceVariant(eng, opts) {
-  const { file, jobId, model, serial, tray, bed, quality } = opts;
+  const { file, jobId, model, serial, fil, bed, quality } = opts;  // fil: {tray} or a library spool, see api.engineFilament
   cache.presets[model] ||= await (await fetch(`engine/presets/${model}.json`)).json();
   const presets = cache.presets[model];
-  const [{ filament: name }, buf] = await Promise.all([api.engineFilament(serial, tray), file.arrayBuffer()]);
+  const [{ filament: name }, buf] = await Promise.all([api.engineFilament(serial, fil), file.arrayBuffer()]);
   const filament = presets.filaments.find((f) => f.name === name);
   if (!filament) throw new Error('No filament preset ' + name);
   // Orca refuses PETG on its default Cool Plate, so the plate must be set.
@@ -81,7 +81,7 @@ export async function sliceVariant(eng, opts) {
     objects: [{ name: file.name, mesh: { positions } }], output: { toolpaths: false },
   }, (p) => opts.onProgress?.(p), [positions.buffer]);
   const sliceMs = performance.now() - t0, st = r.stats;
-  const qs = new URLSearchParams({ serial, quality, tray, bed, filament: name, seconds: st.printTimeSeconds ?? 0, grams: st.filamentG ?? 0,
+  const qs = new URLSearchParams({ serial, quality, ...fil, bed, filament: name, seconds: st.printTimeSeconds ?? 0, grams: st.filamentG ?? 0,
     metres: (st.filamentMm ?? 0) / 1000, engine: eng.variant, slice_s: (sliceMs / 1000).toFixed(1) });
   const job = await api.uploadGcode(jobId, qs, r.gcode);
   return { job, sliceMs };

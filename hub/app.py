@@ -377,7 +377,8 @@ class App:
             "bed_temp": b.get("bed_temp"), "bed_target": b.get("bed_target"), "chamber_temp": b.get("chamber_temp"),
             "task_name": b.get("task_name"),
             "cover_url": "api/printers/%s/cover" % serial if b.get("task_name") else None,
-            "camera_url": "api/printers/%s/camera" % serial,
+            "camera_url": "api/printers/%s/camera" % serial, "account": p.get("account"),
+            "light": self.integration.light(v),
             "active_tray": {"unit": tray["unit"], "slot": tray["slot"]} if tray else None,
             "drying": self.drying(serial) or [],
             "ams": self.ams(serial, status=v), "external": b.get("external"), "hms": b.get("hms", []),
@@ -762,7 +763,7 @@ class App:
         printer = self.registry.get(serial) or {}
         use = filament.slice_usage(job["result"])
         tray = (job.get("settings") or {}).get("tray")
-        hint = (int(tray["ams"]), int(tray["id"])) if tray and len(use["filaments"]) == 1 else None
+        hint = (int(tray["ams"]), int(tray["id"])) if tray and tray.get("ams") is not None and len(use["filaments"]) == 1 else None
         prices, library = [], self.printer_spools(serial)
         for f in use["filaments"]:
             sp = filament.match(library, serial, f["type"], f["colour"], hint)
@@ -836,7 +837,9 @@ class App:
         with self.queue.lock:
             added.update(grams=use["grams"], filament_grams=[f["grams"] for f in use["filaments"]],
                          print_seconds=use["seconds"], plate_png=png,
-                         slice_tray=[int(tray["ams"]), int(tray["id"])] if tray else None)
+                         slice_tray=[int(tray["ams"]), int(tray["id"])] if tray and tray.get("ams") is not None else None,
+                         slice_spool={k: tray.get(k) for k in ("spool_id", "brand", "type", "name", "colour")}
+                         if tray and tray.get("ams") is None else None)
             self.queue._save()
         return added
 
@@ -911,6 +914,17 @@ class App:
                     self.queue.jobs.remove(job)
                 self.queue._save()
             raise
+
+    def post_printer_light(self, h, m, q, c):
+        serial = m.group(1)
+        self.printer_access(c, serial)
+        if self.access.role(c, serial) != "admin":
+            raise Forbidden("rule: only an admin of the printer can switch its light")
+        on = (h.json() or {}).get("on")
+        if not isinstance(on, bool):
+            raise ValueError('Body must be {"on": true|false}.')
+        self.bridge_ok("POST", "/api/light/" + serial, {"on": on}, timeout=60)
+        return {"on": on}
 
     def post_drying_stop(self, h, m, q, c):
         serial = m.group(1)
@@ -1286,6 +1300,7 @@ class App:
             ("POST", r"/api/queue", w(self.post_queue)),
             ("POST", r"/api/printers/([^/]+)/drying", w(self.post_drying)),
             ("POST", r"/api/printers/([^/]+)/drying/stop", w(self.post_drying_stop)),
+            ("POST", r"/api/printers/([^/]+)/light", w(self.post_printer_light)),
             ("POST", r"/api/jobs", self.post_job),
             ("GET", r"/api/jobs/" + JOB_ID, self.get_slice),
             ("POST", r"/api/jobs/" + JOB_ID + r"/slice", self.slicer_job(self.s.post_slice, self.check_slice)),

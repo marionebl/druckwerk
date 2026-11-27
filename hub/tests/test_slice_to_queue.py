@@ -58,3 +58,17 @@ def test_queue_from_slice_refused_leaves_no_file(hub):
     assert not os.path.exists(hub.s.SHARE) or os.listdir(hub.s.SHARE) == []
     hub.grant(USER, SERIAL)
     assert hub.req("POST", "/api/jobs/%s/queue" % jid, {}, user=USER)[0] == 400
+
+
+def test_library_spool_choice_is_recorded_on_the_queue_job(hub):
+    hub.setup_printers()
+    hub.grant(USER, SERIAL)
+    jid = hub.sliced(owner=USER)
+    spool = {"ams": None, "id": None, "type": "PETG", "idx": "", "brand": "Bambu Lab", "name": "PETG HF", "colour": "#ADB1B2", "spool_id": "42"}
+    hub.s.jobs[jid]["settings"]["tray"] = spool  # a slice made for a spool that is not in the AMS
+    assert hub.req("GET", "/api/jobs/" + jid, user=USER)[0] == 200  # the cost estimate takes no tray hint from it
+    st, job = hub.req("POST", "/api/jobs/%s/queue" % jid, {"target": SERIAL}, user=USER)
+    assert st == 200 and job["slice_tray"] is None
+    assert job["slice_spool"] == {"spool_id": "42", "brand": "Bambu Lab", "type": "PETG", "name": "PETG HF", "colour": "#ADB1B2"}
+    plain = hub.req("POST", "/api/jobs/%s/queue" % hub.sliced(owner=USER), {"target": SERIAL}, user=USER)[1]
+    assert plain["slice_tray"] == [0, 0] and plain["slice_spool"] is None

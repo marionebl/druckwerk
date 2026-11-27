@@ -136,8 +136,9 @@ def preview(path):
         with zipfile.ZipFile(path, "a", zipfile.ZIP_DEFLATED) as z:
             z.writestr("Metadata/plate_1.png", png)
 
-def filament_for(root, printer, idx, ftype):
-    """The system filament profile for an AMS tray: same filament_id, else Generic of the same type."""
+def filament_for(root, printer, idx, ftype, want=""):
+    """The system filament profile for an AMS tray: same filament_id, else a name with every word of `want` (library spool), else Generic of the same type."""
+    words = want.lower().split()
     b = json.load(open(os.path.join(root, externals.PROFILE_ROOT_FILE)))
     sub = {e["name"]: e["sub_path"] for e in b["filament_list"]}
     raw = {}
@@ -158,7 +159,9 @@ def filament_for(root, printer, idx, ftype):
             continue
         t = field(name, "filament_type")
         t = t[0] if isinstance(t, list) else t
-        rank = 0 if idx and field(name, "filament_id") == idx else 1 if name.startswith("Generic ") and t == ftype else None
+        rank = (0 if idx and field(name, "filament_id") == idx
+                else 1 if words and t == ftype and all(w in name.lower().split(" @")[0] for w in words)
+                else 2 if name.startswith("Generic ") and t == ftype else None)
         if rank is not None:  # fewest compatible printers = the profile made for this printer
             best.setdefault((rank, len(d["compatible_printers"]), name), name)
     if not best:
@@ -173,4 +176,4 @@ def put(path, key, value):
 if __name__ == "__main__":
     a = sys.argv[1:]
     {"flatten": lambda: flatten(*a[1:5]), "set": lambda: put(*a[1:4]), "fixup": lambda: fixup(*a[1:3]),
-     "preview": lambda: preview(a[1]), "filament-for": lambda: print(filament_for(*a[1:5]))}[a[0]]()
+     "preview": lambda: preview(a[1]), "filament-for": lambda: print(filament_for(*a[1:6]))}[a[0]]()

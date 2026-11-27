@@ -42,7 +42,7 @@ PRINTERS = {
     H2S: {"serial": H2S, "name": "Workshop H2S", "model": "H2S", "online": True, "status": "running", "stage": "printing",
           "progress": 42, "remaining_min": 95, "layer": 128, "total_layers": 300, "nozzle_temp": 249, "nozzle_target": 250,
           "bed_temp": 59.6, "bed_target": 60, "chamber_temp": 38, "task_name": "Gridfinity bin 4x2",
-          "active_tray": {"unit": 0, "slot": 1},
+          "active_tray": {"unit": 0, "slot": 1}, "light": False,
           "ams": [{"unit": 0, "humidity_index": 4, "temp": 27, "trays": [
               tray(0, "PLA", "F2F2F2", "Acme PLA White", 88, "5000"), tray(1, "PETG", "1F6FEB", "Prusament PETG Blue", 61, "5001"),
               tray(2, "PLA", "E4572E", "Sunlu PLA Red", 14, "5002"), tray(3, "", "", "", -1)]},
@@ -63,6 +63,8 @@ PRINTERS = {
                    "url": "https://example.com/hms/0300_0100_0001_0007"}]},
 }
 T0 = {H2S: NOW() - 58 * 60}
+# Test hooks the UI check switches: a printer whose camera answers 502, one whose AMS slots are all empty, what was sent.
+CAMERA_DOWN, EMPTY_AMS, MOCK_SLICES, MOCK_LIGHT = set(), set(), [], []
 # AMS units with a dryer, per serial; a drying unit counts down from "until".
 DRYING = {H2S: {0: {"name": "AMS 2 Pro", "lo": 45, "hi": 65, "until": None, "filament": "", "temp": None},
                 128: {"name": "AMS HT", "lo": 45, "hi": 85, "until": None, "filament": "", "temp": None}}}
@@ -269,6 +271,11 @@ def printer_out(ident, p):
     p = json.loads(json.dumps(p))
     s = p["serial"]
     p["role"] = "admin" if IDENT[ident]["is_admin"] else USER_PRINTERS.get(s)
+    p["account"] = "acc1"
+    if s in EMPTY_AMS:
+        for u in p["ams"]:
+            u["trays"] = [tray(t["slot"], "", "", "", -1) for t in u["trays"]]
+        p["active_tray"] = None
     if p["status"] == "running":
         elapsed = (NOW() - T0[s]) / 60
         p["remaining_min"] = max(1, int(95 - (elapsed - 58)))
@@ -455,10 +462,30 @@ class H(BaseHTTPRequestHandler):
             return ok([printer_out(ident, PRINTERS[s]) for s in visible(ident)])
         if path == "api/_mock/queued":
             return ok(MOCK_QUEUED)
+        if path == "api/_mock/hook":  # ?set=camera_down|empty_ams&serial=..&on=1|0
+            target = {"camera_down": CAMERA_DOWN, "empty_ams": EMPTY_AMS}[q["set"][0]]
+            (target.add if (q.get("on") or ["1"])[0] == "1" else target.discard)(q["serial"][0])
+            return ok({})
+        if path == "api/_mock/slices":
+            return ok(MOCK_SLICES)
+        if path == "api/_mock/light":
+            return ok(MOCK_LIGHT)
+        r = re.fullmatch(r"api/printers/([^/]+)/light", path)
+        if r and m == "POST":
+            b = J()
+            if r.group(1) not in visible(ident):
+                raise Err(404, "no such printer")
+            if not admin:
+                raise Err(403, "rule: only an admin of the printer can switch its light")
+            PRINTERS[r.group(1)]["light"] = b["on"]
+            MOCK_LIGHT.append({"serial": r.group(1), "on": b["on"]})
+            return ok({"on": b["on"]})
         r = re.fullmatch(r"api/printers/([^/]+)/(camera|cover)", path)
         if r:
             if r.group(1) not in visible(ident):
                 raise Err(404, "no such printer")
+            if r.group(1) in CAMERA_DOWN:
+                raise Err(502, "waiting for camera URL callback")
             return svg(camera_svg(PRINTERS[r.group(1)]))
         r = re.fullmatch(r"api/printers/([^/]+)/(start-next|start)", path)
         if r and m == "POST":
@@ -530,6 +557,7 @@ class H(BaseHTTPRequestHandler):
                 b = J()
                 if b.get("quality") not in QUALITY:
                     raise Err(400, "Unknown quality or plate.")
+                MOCK_SLICES.append(b)
                 sl.update(sliced_at=NOW(), quality=b["quality"], tray=b.get("tray"), bed=b.get("bed"), serial=b.get("serial"))
                 return (202, {**sl, "state": "queued"}, "application/json")
             if what == "plate" and r.group(3) == "png":

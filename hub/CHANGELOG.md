@@ -1,5 +1,13 @@
 # Changelog
 
+## 3.1.1 (unreleased)
+
+- No broken images on the printer cards and the printer page: the camera image stays hidden until a frame has loaded, and the placeholder says "Loading camera image…" or "No camera image". Before, the `<img>` had no source until the first snapshot arrived (10 to 60 s through the bridge, or never when the snapshot fails), so it showed its alt text. The plate image on New print is removed when it fails to load.
+- An AMS whose slots are all empty has no tray row on the printer card and the printer page; they say "AMS empty". Units with at least one spool still show all their slots.
+- New print, Filament: choose from the AMS trays ("In the AMS", the first loaded tray is selected) or from the spools of the printer's cloud account that are in no printer ("From your library"). With an empty AMS the library is the list and the page says "The AMS is empty." A library spool is sliced with the preset named like its brand and name, else Generic of its type. It is not loaded, so the page says so and offers "Ask to load" (load request). The queue job records the choice as `slice_spool`.
+- `GET /api/engine/filament`, `POST /api/jobs/{id}/slice` and `POST /api/jobs/{id}/gcode` take `type`, `brand`, `name`, `colour`, `spool` instead of `tray`. `GET /api/printers` adds `light` (chamber light on, off, or null) and `account`.
+- Chamber light switch on the printer card and the printer page: `POST /api/printers/{serial}/light` `{on}` (admin of the printer, as the other controls).
+
 ## 3.0.1 (unreleased)
 
 - Make the app image about 70 % smaller, so updates download faster.

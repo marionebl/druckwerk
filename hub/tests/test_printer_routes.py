@@ -58,3 +58,19 @@ def test_camera_and_cover_proxies_need_a_grant(hub):
     assert hub.req("GET", "/api/printers/%s/camera?mode=snapshot" % SERIAL, user=USER)[1].endswith(b"/snapshot")
     assert hub.req("GET", "/api/printers/%s/cover" % SERIAL, user=OTHER)[0] == 403
     assert hub.req("GET", "/api/printers/NOPE/camera", user=USER)[0] == 404
+
+
+def test_printer_light_is_for_admins_of_the_printer(hub):
+    hub.setup_printers()
+    url = "/api/printers/%s/light" % SERIAL
+    assert hub.req("GET", "/api/printers", user=ADMIN)[1][0]["light"] is True  # lights_report: chamber_light on
+    assert hub.req("POST", url, {"on": False}, user=USER)[0] == 403  # no grant
+    hub.grant(USER, SERIAL)
+    assert hub.req("POST", url, {"on": False}, user=USER)[0] == 403  # a plain user
+    assert hub.req("POST", url, {"on": "no"}, user=ADMIN)[0] == 400
+    assert hub.req("POST", url, {"on": False}, user=ADMIN) == (200, {"on": False})
+    assert ("/api/light/" + SERIAL, {"on": False}) in FakeBridge.log
+    hub.grant(OTHER, SERIAL, role="owner")
+    assert hub.req("POST", url, {"on": True}, user=OTHER)[0] == 200
+    hub.set_print(lights_report=[])
+    assert hub.req("GET", "/api/printers", user=ADMIN)[1][0]["light"] is None
