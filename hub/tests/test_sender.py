@@ -147,3 +147,9 @@ def test_the_browser_slice_prints_through_the_app_too(hub):
     FakeBridge.printer_extra = {SERIAL: {"print_status": "RUNNING"}}
     status, body = hub.req("POST", "/api/jobs/%s/print" % jid, {"confirm": True}, user="u-admin")
     assert status == 409 and "refusing to send a new print" in body["error"]
+
+
+def test_a_file_in_the_slicers_share_is_allowed_by_absolute_path(hub):
+    path = make_3mf(os.path.join(hub.app.share, "sliced.gcode.3mf"), gcode=GCODE)
+    status, _ = run(hub, file=path)
+    assert status == 200

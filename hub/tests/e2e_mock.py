@@ -149,6 +149,8 @@ class H(BaseHTTPRequestHandler):
             return self.reply(200, {"state": "need_code", "account": "acc1"})
         if self.path == "/api/login/code":
             return self.reply(200, {"state": "done", "account": "acc1"})
+        if self.path == "/api/print":  # the app sends prints to the bridge itself
+            return self.reply(200, {"result": "sent"})
         if self.path.startswith("/core/services/"):
             return self.reply(200, {"service_response": {"result": "sent"}})
         self.reply(200, {})  # supervisor discovery

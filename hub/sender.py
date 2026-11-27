@@ -54,7 +54,8 @@ class Sender:
         serial = data.get("serial") or data.get("device_id")
         if not serial:
             raise ValueError("must contain at least one of device_id, serial.")
-        path = files.resolve(data["file"], self.app.media_dir, self.app.media_roots)
+        # The slicer writes sliced prints into the app share, which is not always /share.
+        path = files.resolve(data["file"], self.app.media_dir, self.app.media_roots + [self.app.share])
         filename = os.path.basename(path)
         printer = next((p for p in self.app.bridge_printers() if p.get("serial") == serial), {})
         status = str(printer.get("print_status") or "").upper()
