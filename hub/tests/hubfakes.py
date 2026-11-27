@@ -3,6 +3,7 @@ import http.client
 import importlib.util
 import json
 import os
+import re
 import sys
 import threading
 import zipfile
@@ -51,6 +52,8 @@ class FakeHA:
     def __init__(self):
         self.users, self.devices, self.entities = USERS, DEVICES, ENTITIES
         self.calls, self.fail = [], {}
+        self.commands = []  # websocket commands that change HA: (type, fields)
+        self.entries = []  # config entries as HA lists them
         self.s = {
             "sensor.lab_h2s_print_status": st("running"), "sensor.lab_h2s_current_stage": st("printing"),
             "sensor.lab_h2s_print_progress": st("42"), "sensor.lab_h2s_remaining_time": st("73"),
@@ -77,6 +80,13 @@ class FakeHA:
         return dict({k: dict(v, entity_id=k) for k, v in self.s.items()})
 
     def command(self, type_, **kw):
+        if type_ == "config_entries/get":
+            if "config_entries/get" in self.fail:
+                raise RuntimeError("websocket down")
+            return [e for e in self.entries if e["domain"] == kw.get("domain", e["domain"])]
+        if type_ == "input_boolean/create":
+            self.commands.append((type_, kw))
+            return dict(kw, id=re.sub(r"[^a-z0-9]+", "_", kw["name"].lower()).strip("_"))  # HA slugifies the name
         return {"config/auth/list": self.users, "config/device_registry/list": self.devices,
                 "config/entity_registry/list": self.entities}[type_]
 

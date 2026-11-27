@@ -74,7 +74,7 @@ COPY hub/slicer/slice.sh hub/slicer/bs.py hub/externals.py hub/externals.env /op
 COPY hub/slicer/server.py /srv/slicer_server.py
 COPY hub/externals.py /srv/
 COPY hub/hub.py /srv/
-COPY hub/ui/index.html hub/ui/style.css hub/ui/app.js hub/ui/api.js hub/ui/util.js /srv/ui/
+COPY hub/ui/index.html hub/ui/style.css hub/ui/app.js hub/ui/api.js hub/ui/util.js hub/ui/feedback.js /srv/ui/
 COPY hub/ui/views /srv/ui/views
 COPY hub/app.py hub/ha.py hub/filament.py hub/queue/queue_*.py /srv/
 COPY hub/run.sh /run.sh

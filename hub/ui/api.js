@@ -59,6 +59,7 @@ export const api = {
   grants: () => get('api/grants'),
   addGrant: (g) => post('api/grants', g),
   deleteGrant: (id) => del('api/grants/' + q(id)),
+  createSwitch: (user_id, printer) => post('api/ha/switches', { user_id, printer }),
   haUsers: () => get('api/ha/users'),
   haEntities: (domains) => get('api/ha/entities?domains=' + q(domains.join(','))),
 };

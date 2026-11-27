@@ -72,9 +72,10 @@ Before anything is sent, `druckwerk.print_file` and the Start button check the f
 
 `force` only overrides the "printer is busy" check, not this guard.
 
-## Druckwerk integration (v0.10)
+## Druckwerk integration (v0.12)
 
-- Setup finds the app through the Supervisor (a slug ending in `_druckwerk`); the URL can be set by hand in the options.
+- The integration sets itself up: the app announces host, ports and secret through Supervisor discovery, and Home Assistant creates the entry without a question. Install it from the Marketplace (HACS) and restart Home Assistant. The app's setup page shows whether the integration is connected; the URL and secret are there only as a manual fallback.
+- Printers need no setup step either: the app registers every printer that the printer integration in Home Assistant already has. Remove one on the setup page and it stays removed.
 - Options: hub secret (normally delivered by the app through Supervisor discovery, which also keeps URLs and secret current; paste it by hand otherwise), notification recipients as a map `person.<name>: notify.<service>`.
 - Todo list `Queue` per printer: queued and pending jobs (owner in the description). Deleting an item cancels the job, moving it reorders; adding is not supported (a job needs a sliced file).
 - Events: the hub is polled every 5 s and fires `druckwerk_job_done`, `_job_failed`, `_job_started`, `_approval_needed`, `_queue_changed` with the hub's payload.
@@ -103,6 +104,7 @@ On amd64 the bridge and the vendor plugin run natively, on aarch64 under `qemu-x
 
 The image does not contain the printer vendor's proprietary network plugin. At app start `hub/bridge/plugin.py` downloads it from the vendor's CDN to your device (`/data/plugin/<version>/`), checks its SHA-256 against the value pinned in the repository and installs only the five libraries the bridge loads. Until that has succeeded, `GET /api/health` on the bridge reports `plugin.state` `downloading` or `failed` (with the error and the next retry; retries back off up to 10 minutes) and no login daemon is started. By using the app you download that plugin from the vendor under its terms. The bridge is built from [boo-cloud](https://github.com/estampo/boo-cloud) (MIT, notice in `/usr/share/licenses/boo-cloud/` in the image) plus a patch (`hub/bridge/bridge.patch.xz`); the printer certificate comes from the vendor's AGPL slicer repository. All vendor-owned names, URLs and identifiers are collected in `hub/externals.py`. `hub/tests/no_vendor_libs.sh` (run by `hub/tests/image_test.sh` and CI) fails if a vendor library is found in the image.
 Ingress serves the slicer UI; the bridge page and API are proxied under `api/bridge/`. The bridge also answers on port 8098 inside the Home Assistant network.
+The web UI has the feedback button (purple, bottom right, or key F): click an element, write a message and send. It adds an item with the context and a screenshot to the to-do list `todo.feedback` (`POST api/feedback`). In the Access view, "Create switch" makes an `input_boolean` helper for the chosen user and printer and puts it in the condition field (`POST api/ha/switches`, HA admins). Both routes are in `hub/API.md`.
 The app hostname is `<repository hash>-druckwerk`. Supervisor derives the hash from the repository URL (`c9a833d4` for `https://github.com/marionebl/druckwerk`), and `ha apps info` or the Supervisor API (`/addons/<slug>/info`, field `hostname`) shows it.
 
 Tests: `hub/tests/image_test.sh` builds the image and checks it (no vendor libs, plugin download from a local fake CDN with a right and a wrong hash, bridge health, a test plate sliced through the API). CI runs it on both architectures (`.github/workflows/hub.yml`) and pushes `ghcr.io/marionebl/druckwerk-<arch>:<version>` from main. Raise `version` in `hub/config.yaml` with every change.

@@ -37,7 +37,9 @@ SENSORS = {"status": "print_status", "stage": "current_stage", "progress": "prin
            "bed_t": "bed_target_temperature", "chamber": "chamber_temperature", "tray": "active_tray",
            "task": "task_name"}
 BRIDGE_STATE = {"RUNNING": "running", "FINISH": "finish", "FAILED": "failed", "IDLE": "idle", "PAUSE": "pause"}
-UI_FILES = r"(index\.html|style\.css|app\.js|api\.js|util\.js|views/[a-z]+\.js)"
+UI_FILES = r"(index\.html|style\.css|app\.js|api\.js|util\.js|feedback\.js|views/[a-z]+\.js)"
+# A feedback post carries screenshots; every other route keeps the slicer's 8 KB JSON limit.
+FEEDBACK_MAX = 1500000
 MIME = {"html": "text/html; charset=utf-8", "css": "text/css; charset=utf-8", "js": "text/javascript; charset=utf-8"}
 DOMAIN_DEFAULTS = "schedule,input_boolean,binary_sensor,person"
 
@@ -90,6 +92,7 @@ class App:
         self.queue = Queue(self.registry, data_dir, ha.state, self._call_service, self.get_trays, clock=clock,
                            job_allowed=self.access.job_allowed)
         self.secret = self._load_secret()
+        self._auto_at = None
         self._cache = {}
         self._cache_lock = threading.Lock()
         # Events: seq starts at the boot time so it keeps growing across restarts (pollers hold the last seq they saw).
@@ -414,7 +417,32 @@ class App:
         return {"service": "druckwerk", "config": {"host": self.hostname_fn(), "bridge_port": self.bridge[1],
                                                        "hub_port": self.port, "secret": self.secret}}
 
+    def auto_register(self, listed=None):
+        """Register printers that the bridge lists and HA already has, so an admin needs no setup step."""
+        for d in listed if listed is not None else self.bridge_ok("GET", "/api/printers", timeout=20):
+            serial = d["serial"]
+            if self.registry.get(serial) or self.registry.is_removed(serial):
+                continue
+            prefix = self.suggested_prefix(serial)
+            if prefix and "sensor.%s_print_status" % prefix in self.ha.states():
+                self.registry.put(serial, name=d.get("name") or serial,
+                                  model=d.get("dev_product_name") or d.get("dev_model_name") or "", account=d.get("account"),
+                                  prefix=prefix, plate_type="", nozzle="", pause_entities=[], electricity_kwh_price=0)
+                log("registered printer %s as %s" % (serial, prefix))
+
+    def try_auto_register(self, every=60, listed=None):
+        # Throttled: the bridge or HA may be down, and each try costs two calls.
+        now = self.clock()
+        if self._auto_at is not None and now - self._auto_at < every:
+            return
+        self._auto_at = now
+        try:
+            self.auto_register(listed)
+        except Exception as e:  # noqa: BLE001 - bridge and HA errors must not stop the ticker
+            log("auto register: %s" % e)
+
     def tick_all(self):
+        self.try_auto_register()
         for p in self.registry.all():
             try:
                 self.queue.tick(p["serial"])
@@ -426,6 +454,7 @@ class App:
             log("sync: %s" % e)
 
     def run_ticker(self, stop, every=10):
+        self.try_auto_register()  # at startup, before the first wait
         while not stop.wait(every):
             self.tick_all()
 
@@ -513,6 +542,7 @@ class App:
     def get_setup(self, h, m, q, c):
         health = self.bridge_ok("GET", "/api/health", timeout=10)
         listed = self.bridge_ok("GET", "/api/printers", timeout=20)
+        self.try_auto_register(every=0, listed=listed)
         printers = []
         for d in listed:
             serial = d["serial"]
@@ -564,10 +594,16 @@ class App:
         if not self.registry.get(m.group(1)):
             raise NotFound("unknown printer")
         self.registry.remove(m.group(1))
+        self.registry.mark_removed(m.group(1))
         return {"removed": m.group(1)}
 
     def get_integration(self, h, m, q, c):
-        return {"url": "http://%s:%s" % (self.hostname_fn(), self.port), "secret": self.secret}
+        try:
+            connected = bool(self.ha.command("config_entries/get", domain="druckwerk"))
+        except Exception as e:  # noqa: BLE001 - the page must still show the manual values
+            log("config entries: %s" % e)
+            connected = False
+        return {"url": "http://%s:%s" % (self.hostname_fn(), self.port), "secret": self.secret, "connected": connected}
 
     def get_printers(self, h, m, q, c):
         states = self.ha.states()
@@ -772,6 +808,37 @@ class App:
         b = h.json()
         return self.grant_view(self.access.bind(self.queue, c).grants_add(**{k: b[k] for k in GRANT_FIELDS if k in b}))
 
+    def create_switch(self, h, m, q, c):
+        """An input_boolean for the grant condition, named after the grant's user and printer (needs HA admin, like grants)."""
+        b = h.json()
+        user = self.get_user(b.get("user_id") or "")
+        if not user:
+            raise ValueError("user_id must be an active Home Assistant user")
+        printer = self.registry.get(b.get("printer") or "")
+        if b.get("printer") != "*" and not printer:
+            raise ValueError("printer must be a known serial or *")
+        name = "Druckwerk %s %s" % (user["name"], printer["name"] if printer else "All printers")
+        made = self.ha.command("input_boolean/create", name=name, icon="mdi:printer-3d")
+        return {"entity_id": "input_boolean." + made["id"], "name": name, "state": "off"}  # not in the states cache yet
+
+    def post_feedback(self, h, m, q, c):
+        """The feedback button: one item of the to-do list todo.feedback, which an HA automation turns into a Claude session."""
+        length = int(h.headers.get("Content-Length") or 0)
+        err = "expected {\"item\": ..., \"description\": ...} of at most %d bytes" % FEEDBACK_MAX
+        if not 0 < length <= FEEDBACK_MAX:
+            if length <= 4 * FEEDBACK_MAX:  # read the rest so the client gets the 400, not a reset connection
+                h.rfile.read(length)
+            raise ValueError(err)
+        try:
+            req = json.loads(h.rfile.read(length))
+            item, description = req["item"], req["description"]
+            if not isinstance(item, str) or not 0 < len(item) <= 300 or not isinstance(description, str) or not description:
+                raise TypeError
+        except (ValueError, KeyError, TypeError, AttributeError):
+            raise ValueError(err)
+        self.ha.call_service("todo", "add_item", {"entity_id": "todo.feedback", "item": item, "description": description})
+        return {"ok": True}
+
     def get_events(self, h, m, q, c):
         self.sync()
         if "since" not in q:
@@ -814,6 +881,8 @@ class App:
             ("DELETE", r"/api/spools/([0-9a-f]{12})", w(self.delete_spool)),
             ("GET", r"/api/ha/users", w(self.get_ha_users, "ha_admin")),
             ("GET", r"/api/ha/entities", w(self.get_ha_entities, "ha_admin")),
+            ("POST", r"/api/ha/switches", w(self.create_switch, "ha_admin")),
+            ("POST", r"/api/feedback", w(self.post_feedback)),
             ("GET", r"/api/events", w(self.get_events, "internal")),
             ("GET", r"/api/grants", w(self.get_grants)),
             ("POST", r"/api/grants", w(self.post_grants)),

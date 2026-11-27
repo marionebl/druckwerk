@@ -82,14 +82,7 @@ class DruckwerkConfigFlow(ConfigFlow, domain=DOMAIN):
         await self.async_set_unique_id(DOMAIN)
         # An existing entry takes the new url/secret; its update listener reloads it.
         self._abort_if_unique_id_configured(updates=self._discovered, reload_on_update=False)
-        return await self.async_step_hassio_confirm()
-
-    async def async_step_hassio_confirm(
-        self, user_input: dict[str, Any] | None = None
-    ) -> ConfigFlowResult:
-        if user_input is not None:
-            return self.async_create_entry(title="Druckwerk", data=self._discovered)
-        return self.async_show_form(step_id="hassio_confirm")
+        return self.async_create_entry(title="Druckwerk", data=self._discovered)
 
 
 class DruckwerkOptionsFlow(OptionsFlow):

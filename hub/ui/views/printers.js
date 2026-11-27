@@ -48,7 +48,9 @@ async function grid(ctx, root) {
       const sig = JSON.stringify(ps);
       if (sig === last) return;
       last = sig;
-      clear(list, ps.length ? ps.map(card) : empty('No printers yet. An admin can grant you access, or add printers in the setup wizard.'));
+      clear(list, ps.length ? ps.map(card) : ctx.isAdmin()
+        ? h('div', { class: 'empty' }, 'No printers yet. They appear here automatically when the printer integration in Home Assistant has the printer. ', h('a', { href: '#/setup' }, 'Open setup'), '.')
+        : empty('No printers yet. An admin can grant you access, or add printers in the setup wizard.'));
     } catch (e) { if (!last) clear(list, empty(e.message)); }
   });
 }

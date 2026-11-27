@@ -24,7 +24,8 @@ The secret reaches the integration through Supervisor discovery: on start the ap
 - `PUT /api/setup/printers/{serial}` `{name, ha_prefix, plate, nozzle, pause_entities: [entity_id], electricity_kwh_price?: number}` → `{serial, name, model, account, ha_prefix, plate, nozzle, pause_entities, electricity_kwh_price}`.
   `model` and `account` come from the bridge; 400 if HA has no `sensor.<ha_prefix>_print_status`, 404 if no bridge account has the serial.
 - `DELETE /api/setup/printers/{serial}`
-- `GET /api/integration` → `{url, secret}` (HA admins; fallback for the config flow, same data as the discovery message)
+- `GET /api/integration` → `{url, secret, connected}` (HA admins; fallback for the config flow, same data as the discovery message). `connected` is true when HA has a `druckwerk` config entry (read over the HA websocket, false on error).
+- Printers register themselves: for each printer the bridge lists, with a `suggested_prefix` whose `sensor.<prefix>_print_status` exists in HA, the app saves default settings. It runs at start, on `GET /api/setup` and every 60 s. A printer removed with `DELETE /api/setup/printers/{serial}` is not registered again until a later `PUT` for it.
 - `/api/bridge/*` proxies the bridge's own page and API (HA admins only).
 
 ## Printers (filtered to printers the caller has an active grant on; HA admins see all)
@@ -70,6 +71,8 @@ The secret reaches the integration through Supervisor discovery: on start the ap
 - `GET/POST /api/grants`, `DELETE /api/grants/{id}` (HA admins; GET also internal). Answers carry `user_name` (HA user name) and `active` (until/condition evaluated now). Grant: `{id, user_id, user_name, printer: serial|"*", role: "owner"|"user", until?, condition_entity?, needs_approval?, active}`.
 - `GET /api/ha/users` → `[{id, name, is_admin}]` (HA admins and internal), from HA `config/auth/list`; system and inactive users are left out.
 - `GET /api/ha/entities?domains=schedule,input_boolean,binary_sensor,person` → `[{entity_id, name, state}]` (HA admins), for the condition picker.
+- `POST /api/ha/switches` `{user_id, printer: serial|"*"}` → `{entity_id, name, state: "off"}` (HA admins, like grants). Creates an `input_boolean` helper through the HA websocket (`input_boolean/create`, icon `mdi:printer-3d`) named `Druckwerk <user name> <printer name or All printers>`. The entity may be missing from `/api/ha/entities` for a moment; a grant accepts it as `condition_entity` anyway. 400 for an unknown user or printer.
+- `POST /api/feedback` `{item, description}` → `{ok: true}` (any HA user; the body may be up to 1500000 bytes, other routes allow 8 KB). Calls HA `todo.add_item` on `todo.feedback`; `item` is 1 to 300 characters, `description` a non-empty string (JSON text with the context and a screenshot). 400 for a bad body. Sent by the feedback button (`hub/ui/feedback.js`).
 
 ## Events for the integration
 
