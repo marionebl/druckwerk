@@ -3,22 +3,22 @@ import { api } from '../api.js';
 import { h, clear, icon, btn, pill, field, swatch, empty, attempt, toast, fail, durSec, money, hex } from '../util.js';
 import { gcodePreview } from './preview.js';
 import { warm, sliceVariant } from './browserslice.js';
+import { promote } from './promote.js';
 
 const QUALITIES = [['good', 'Good', 'Fastest, visible layers'], ['better', 'Better', 'Balanced'], ['best', 'Best', 'Finest detail, slowest']];
 const BEDS = ['Textured PEI Plate', 'Cool Plate', 'Engineering Plate', 'High Temp Plate', 'Supertack Plate'];
 const TRI = { on: true, off: false, auto: 'auto' };
 const BED_TYPES = [['auto', 'Auto'], ['cool_plate', 'Cool Plate'], ['eng_plate', 'Engineering Plate'], ['hot_plate', 'High Temp Plate'], ['textured_plate', 'Textured PEI Plate'], ['supertack_plate', 'Supertack Plate'], ['3d_effect_plate', '3D Effect Plate']];
-const ACCEPT = /\.(stl|3mf|step|stp|obj)$/i;
+const ACCEPT = /\.stl$/i;
 
 export async function mount(ctx, root) {
+  if (promote()) return;  // the top window is moving to this page, where threads work
   let libErr = '';
   const [printers, spools, requests] = await Promise.all([api.printers(), api.spools().catch((e) => { libErr = e.message; return []; }), api.loadRequests().catch(() => [])]);
   // tray: "unit:slot" of a loaded AMS tray; spool: id of a library spool. At most one of them is set.
   const S = { file: null, target: null, tray: null, spool: null, bed: BEDS[0], variants: null, pick: null,
     options: { timelapse: false, bed_leveling: true, use_ams: true, flow_cali: true, vibration_cali: true, layer_inspect: false, nozzle_offset_cali: false, bed_type: 'auto', ext_change_assist: false },
-    name: '', busy: false,
-    // Threads need a cross-origin isolated page; without it the Pi is quicker, so it is the default there.
-    slice_on: crossOriginIsolated ? 'device' : 'pi', engine: null };
+    name: '', busy: false, engine: null };
   const box = h('div', { class: 'stack' });
   root.append(h('div', { class: 'page-head' }, h('div', null, h('h1', null, 'New print'), h('div', { class: 'sub' }, 'Upload, compare three slices, then queue'))), box);
 
@@ -47,8 +47,6 @@ export async function mount(ctx, root) {
   }
   const pickFil = (tray, spool) => () => { S.tray = tray; S.spool = spool; S.variants = null; draw(); };
 
-  // The browser slices STL only; other models slice on the Pi.
-  const where = () => (S.slice_on === 'device' && (!S.file || /\.stl$/i.test(S.file.name)) ? 'device' : 'pi');
   function startEngine() {
     const e = S.engine = { state: 'loading' };
     warm().then((x) => Object.assign(e, x, { state: 'ready' }), (x) => Object.assign(e, { state: 'error', error: x.message }))
@@ -58,7 +56,7 @@ export async function mount(ctx, root) {
 
   function pickFile(f) {
     if (!f) return;
-    if (!ACCEPT.test(f.name)) return toast('Upload an STL, 3MF or STEP file.', 'error');
+    if (!ACCEPT.test(f.name)) return toast('Upload an STL file.', 'error');
     S.file = f; S.variants = null; S.pick = null; draw();
   }
 
@@ -68,14 +66,14 @@ export async function mount(ctx, root) {
   }
 
   function fileCard() {
-    const input = h('input', { type: 'file', accept: '.stl,.3mf,.step,.stp,.obj', hidden: true, onchange: (e) => pickFile(e.target.files[0]) });
+    const input = h('input', { type: 'file', accept: '.stl', hidden: true, onchange: (e) => pickFile(e.target.files[0]) });
     const drop = h('div', { class: 'drop', tabindex: '0', role: 'button', onclick: () => input.click(),
       onkeydown: (e) => (e.key === 'Enter' || e.key === ' ') && input.click(),
       ondragover: (e) => { e.preventDefault(); drop.classList.add('over'); }, ondragleave: () => drop.classList.remove('over'),
       ondrop: (e) => { e.preventDefault(); drop.classList.remove('over'); pickFile(e.dataTransfer.files[0]); } },
       icon('upload', 28),
       S.file ? h('b', null, S.file.name) : h('b', null, 'Drop a model here or tap to choose'),
-      h('small', null, S.file ? `${(S.file.size / 1048576).toFixed(1)} MB · tap to replace` : 'STL, 3MF or STEP'), input);
+      h('small', null, S.file ? `${(S.file.size / 1048576).toFixed(1)} MB · tap to replace` : 'STL'), input);
     return h('section', { class: 'card' }, h('h2', null, '1 · Model'), drop);
   }
 
@@ -89,11 +87,7 @@ export async function mount(ctx, root) {
           h('button', { class: 'chip', 'aria-pressed': String(S.target === v), onclick: () => { S.target = v; S.tray = null; S.spool = null; S.variants = null; draw(); } },
             l, h('small', null, sub))))),
       S.target && filamentPicker(),
-      S.target && h('div', null, h('div', { class: 'tag', style: 'margin-bottom:6px' }, 'Slice on'), h('div', { class: 'chips', id: 'where' },
-        [['device', 'This device'], ['pi', 'Pi (Bambu Studio)']].map(([v, l]) => h('button', { class: 'chip', 'aria-pressed': String(where() === v),
-          disabled: v === 'device' && S.file && !/\.stl$/i.test(S.file.name),
-          onclick: () => { S.slice_on = v; if (v === 'device' && !S.engine) startEngine(); draw(); } }, l))),
-        h('small', { class: 'muted' }, S.file && !/\.stl$/i.test(S.file.name) ? 'Slicing on this device needs an STL; this file slices on the Pi.' : engineNote())),
+      S.target && engineNote(),
       S.target && field('Build plate', h('select', { onchange: (e) => (S.bed = e.target.value) }, BEDS.map((b) => h('option', { selected: b === S.bed }, b)))),
       btn(S.busy ? [h('span', { class: 'spin' }), ' Slicing three variants…'] : 'Slice good, better and best', sliceAll, 'primary',
         { disabled: !(S.file && S.target && (S.tray || S.spool)) || S.busy }));
@@ -121,8 +115,8 @@ export async function mount(ctx, root) {
 
   function engineNote() {
     const e = S.engine;
-    if (where() !== 'device' || !e) return '';
-    const note = h('span', { id: 'engine-info', 'data-state': e.state });
+    if (!e) return '';
+    const note = h('small', { class: 'muted', id: 'engine-info', 'data-state': e.state });
     if (e.state === 'ready') Object.assign(note.dataset, { variant: e.variant, loadMs: Math.round(e.loadMs), isolated: String(crossOriginIsolated) });
     note.append(e.state === 'loading' ? 'Starting the slicing engine…'
       : e.state === 'error' ? 'The slicing engine did not start: ' + e.error
@@ -131,7 +125,7 @@ export async function mount(ctx, root) {
   }
 
   // The three variants one after another in the warm engine: each multi-thread slice already uses every core.
-  async function sliceAllHere() {
+  async function sliceAll() {
     const ref = refPrinter();
     S.busy = true; S.pick = null;
     S.variants = QUALITIES.map(([q]) => ({ q, state: 'queued' }));
@@ -151,7 +145,7 @@ export async function mount(ctx, root) {
             try { r = await sliceVariant(S.engine, opts); break; } catch (e) { if (attempt) throw e; dropEngine(); startEngine(); }
           }
           Object.assign(v, r.job, { state: 'done', slice_ms: Math.round(r.sliceMs), engine_variant: S.engine.variant });
-        } catch (e) { Object.assign(v, { state: 'failed', error: e.message, retry_on_pi: true }); } finally { clearInterval(ticker); draw(); }
+        } catch (e) { Object.assign(v, { state: 'failed', error: e.message }); } finally { clearInterval(ticker); draw(); }
       }
     } catch (e) { fail(e); S.variants = null; }
     S.busy = false;
@@ -159,30 +153,6 @@ export async function mount(ctx, root) {
     const ok = S.variants?.find((v) => v.q === (S.prefQ || 'better') && v.state === 'done') || S.variants?.find((v) => v.q === 'better' && v.state === 'done');
     if (ok && !S.pick) S.pick = ok.q;
     draw();
-  }
-
-  async function sliceAll() {
-    if (where() === 'device') return sliceAllHere();
-    const ref = refPrinter();
-    S.busy = true; S.pick = null;
-    S.variants = QUALITIES.map(([q]) => ({ q, state: 'queued' }));
-    draw();
-    try {
-      await Promise.all(S.variants.map(async (v) => {
-        const job = await api.upload(S.file);
-        v.id = job.id;
-        await api.slice(job.id, { serial: ref.serial, quality: v.q, ...filChoice(), bed: S.bed });
-      }));
-    } catch (e) { fail(e); S.busy = false; S.variants = null; draw(); return; }
-    const tick = async () => {
-      if (!box.isConnected) return;
-      for (const v of S.variants) if (v.state === 'queued' || v.state === 'slicing') Object.assign(v, await api.job(v.id).catch((e) => ({ state: 'failed', error: e.message })));
-      S.busy = S.variants.some((v) => v.state === 'queued' || v.state === 'slicing');
-      draw();
-      if (S.busy) setTimeout(tick, 1500);
-      else if (!S.pick) { const ok = S.variants.find((v) => v.q === (S.prefQ || 'better') && v.state === 'done') || S.variants.find((v) => v.q === 'better' && v.state === 'done'); if (ok) { S.pick = ok.q; draw(); } }
-    };
-    tick();
   }
 
   const costOf = (v) => {
@@ -196,8 +166,7 @@ export async function mount(ctx, root) {
     const fastest = done.length > 1 && done.reduce((a, b) => (a.info.seconds <= b.info.seconds ? a : b)).q;
     const cards = S.variants.map((v) => {
       const [, name, sub] = QUALITIES.find((x) => x[0] === v.q);
-      if (v.state === 'failed') return h('div', { class: 'variant' }, h('b', null, name), h('small', { style: 'color:var(--err)' }, v.error || 'Slicing failed'),
-        v.retry_on_pi ? btn('Slice on the Pi instead', () => { S.slice_on = 'pi'; sliceAll(); }) : null);
+      if (v.state === 'failed') return h('div', { class: 'variant' }, h('b', null, name), h('small', { style: 'color:var(--err)' }, v.error || 'Slicing failed'));
       if (v.state !== 'done') return h('div', { class: 'variant' }, h('b', null, name), h('small', null, h('span', { class: 'spin' }), ' ', v.state === 'slicing' ? `Slicing… ${v.elapsed || 0} s` : 'Waiting for the slicer'));
       const [cost, est] = costOf(v);
       return h('button', { class: 'variant', 'aria-pressed': String(S.pick === v.q), onclick: () => { S.pick = v.q; draw(); } },
@@ -277,6 +246,6 @@ export async function mount(ctx, root) {
     api.jobModel(rs.slice_job).then((blob) => { S.file = new File([blob], rs.model || 'model.stl'); S.variants = null; S.pick = null; draw(); },
       () => toast('The model is no longer stored. Choose it again.', 'error'));
   }
-  if (where() === 'device') startEngine();
+  startEngine();
   draw();
 }
