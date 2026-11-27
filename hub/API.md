@@ -100,16 +100,211 @@ While Home Assistant restarts (HTTP 502, 503, 504 or no answer), a route that ne
 - `GET /api/events?since=<seq>` (internal) → `{seq, manifest_revision, events: [{seq, type: "job_done"|"job_failed"|"job_started"|"approval_needed"|"queue_changed", serial, job}]}`.
   Without `since` the answer is `{seq: <current>, manifest_revision, events: []}` (no backlog). `manifest_revision` is the `revision` of `GET /api/integration/manifest`. `job` is the full job object (always with `id, file, owner_name, target, printer`; `printer` is null until a printer took it); `serial` is the job's printer or fixed target, `""` for `queue_changed` (then `job` is null) and for `any` jobs not yet placed.
   `job_started` fires when the print was sent, `job_failed` when a started job failed. Events are kept in memory (last 500); `seq` starts at the boot time in seconds, so it keeps growing across restarts.
-  The integration polls this every 5 s and fires the notifications.
+  The app fires the HA bus events and the notifications itself since 2.8.0 (see "Generic integration"). An integration that still polls this and fires them too doubles them.
 
 ## Integration manifest, actions and tools (thin integration)
 
 Goal: the `druckwerk` integration (HACS, a Home Assistant restart on every update) only forwards. What it offers is described by the app, which HA updates without a restart. All routes here are internal: `X-Hub-Secret` is required, `X-Druckwerk-Act-As` is optional and works as everywhere else (see the top of this file).
 
-- `GET /api/integration/manifest` → `{api_version: 1, revision, actions: [...], llm: {prompt, tools: [...]}}`. `revision` is the first 12 hex digits of the SHA-256 of the rest, so it changes only when the content changes. The integration polls it with the events poll (`GET /api/events` also returns `manifest_revision`) and re-registers when it differs. `api_version` is an integer; the integration states the highest it speaks and raises a repair issue when the app's is higher.
+- `GET /api/integration/manifest` → `{api_version: 1, revision, actions: [...], entities: [...], llm: {prompt, tools: [...]}}`. `revision` is the first 12 hex digits of the SHA-256 of the rest, so it changes only when the content changes. The integration polls it with the events poll (`GET /api/events` also returns `manifest_revision`) and re-registers when it differs. `api_version` is an integer; the integration states the highest it speaks and raises a repair issue when the app's is higher.
 - The revision hashes `json.dumps(rest, sort_keys=True, separators=(",", ":"))`.
 - An action = `{name, title, description, response: "none"|"optional"|"only", serial_fields: [field names], fields: {<field>: {required: bool, default?: any, title, description, example?, selector?: <HA selector object>, advanced?: true}}}`. `title` is the name the HA UI shows, `advanced` marks a field HA hides behind "show more options". Names, field names, requiredness, defaults and `response` of the 16 current actions (`print_file`, `get_printers`, `get_queue`, `add_to_queue`, `slice`, `get_slice`, `cancel_job`, `reorder_job`, `move_job`, `skip_job`, `approve_job`, `reject_job`, `retry_job`, `start_next`, `start_job`, `camera_snapshot`) are a contract: `custom_components/druckwerk` has a golden test (`tests/golden/contract.json`) for them. `serial_fields` lists fields whose value may be an HA device id; the integration replaces such a value with the printer serial before it forwards the call (the app cannot read the HA device registry).
-- `print_file` is in the manifest so the UI can show it, but it runs in the integration (it needs the printer state and the G-code guard). `POST /api/actions/print_file` answers `400 {error: "print_file runs in the integration"}`.
+- `print_file` is a real action since 2.8.0: the app sends the file itself (see "Generic integration").
 - `POST /api/actions/<name>` with the action's data as JSON (the app validates and coerces: booleans, `"auto"` for tri-state options, ranges) → `200 {result: <object>}` (`{}` when the action has no response). `400 {error}` is a validation error, `403 {error: "rule: ..."}` an access rule, `404` an unknown action or job, `504` a slice wait that ran out, other errors as elsewhere. A validation error text follows the format of Home Assistant's schema errors, for example `required key not provided @ data['job_id']`. A call with `wait` (slice) can take 30 minutes, so the integration must not time out earlier. The act-as user applies exactly as for the web UI. Actions that wrote files before (`camera_snapshot`, plate images of `get_slice`/`slice`) now write them in `/media/druckwerk/` themselves (`map` has `media:rw`) and answer the same fields as before.
 - `llm.tools` = `[{name, description, parameters: <JSON schema, type object>, annotations: {read_only, destructive, idempotent, open_world}}]`, the 15 tools `druckwerk_<action>` of the LLM API "druckwerk" (names are a contract, see the golden file). `POST /api/tools/<name>` with the tool arguments → `200 {result: <object>}`; errors as for actions. `llm.prompt` is the API prompt text.
 - Anything the integration needs from HA stays in the integration: the device id lookup (`serial_fields`) and the HA user id.
+
+## Generic integration: entities, print, files, upload, options
+
+Goal: the `druckwerk` integration holds no logic of its own. It renders what the app describes, and forwards. All routes here are internal: `X-Hub-Secret` is required (401 without identity or secret, 403 `rule: only the Home Assistant integration can do this` with an identity but no secret). `X-Druckwerk-Act-As` is ignored on them, except on `POST /api/actions/*` and `POST /api/tools/*`, where it works as above. Errors are `{error: <text>}`. The integration maps 400 to `ServiceValidationError` and every other status to `HomeAssistantError`, both with the `error` text, and a connection failure to `HomeAssistantError("Druckwerk not reachable: ...")`.
+
+Two base URLs: `hub_url` is the app on port 8099 (every route below). `bridge_url` is the bridge on port 8098, same host. Only the camera stream (see Camera) uses the bridge URL.
+
+### Routes
+
+| Route | What it does |
+| --- | --- |
+| `GET /api/integration/manifest` | Actions, LLM tools and the entity table. |
+| `GET /api/integration/state` | What every entity shows, per printer. |
+| `PUT /api/integration/options` | The integration pushes its options. |
+| `POST /api/actions/print_file` | Send a file to a printer. |
+| `GET /api/files` | The print files. |
+| `PUT /api/upload/<name>` | Store an uploaded print file. |
+| `GET /api/integration/printers/<serial>/image` | The picture of the current print (PNG). |
+| `GET /api/integration/printers/<serial>/snapshot` | The camera still (JPEG). |
+| `POST /api/integration/printers/<serial>/light` | Switch the chamber light. |
+| `POST /api/integration/printers/<serial>/rfid` | Make the AMS read a slot's tag again. |
+| `POST /api/queue/<id>/cancel`, `POST /api/queue/<id>/reorder` | The existing queue routes, used by the todo entity. |
+
+`<serial>` matches `[A-Za-z0-9_-]{1,40}`.
+
+### Manifest: `entities`
+
+The manifest has a new key `entities`, an ordered list. It is part of `revision`, so a change reaches the integration through `manifest_revision` as before. `api_version` stays 1: the change only adds a key.
+
+```json
+{"key": "start_print", "platform": "button", "name": "Start cloud print",
+ "press": {"path": "/api/actions/print_file",
+           "body": {"serial": "$serial", "file": "$print_file", "timelapse": "$timelapse",
+                    "bed_leveling": "$bed_leveling", "use_ams": true},
+           "needs": {"print_file": "Select a print file first"}}}
+```
+
+One entry makes one entity per printer.
+
+| Field | Type | Meaning |
+| --- | --- | --- |
+| `key` | string | The unique id is `<serial>_<key>`. These ids must not change, or HA creates new entities. The keys are `print_file`, `timelapse`, `bed_leveling`, `start_print`, `reread_slot_1` to `reread_slot_4`, `cloud_sender`, `cloud_camera`, `current_print`, `chamber_light`, `queue`. |
+| `platform` | string | `select`, `switch`, `button`, `sensor`, `camera`, `light`, `image` or `todo`. The integration skips a platform it does not know. |
+| `name` | string | The English entity name. Set it as the entity name with `has_entity_name = True`. Do not set a `translation_key`. The entity id derives from it (`button.<device>_start_cloud_print`). |
+| `icon` | string, optional | An `mdi:` icon. Only the re-read buttons have one. |
+| `state` | `"local"` or `"app"`, optional | `local`: HA holds the state and restores it after a restart (select, two switches). `app`: the state comes from `GET /api/integration/state`. Buttons have no `state`. |
+| `default` | bool, optional | Start value of a local switch when nothing can be restored. |
+| `options` | object, optional | Sensor only. Its keys are the states (`idle`, `sent`, `error`) and the values their English labels. The state of the sensor is one of the keys. |
+| `press` | object, optional | Button only, see below. |
+| `command` | string, optional | Light only: the path to POST a switch to. `$serial` stands for the printer serial. |
+
+The names of today's entities are fixed by this table: `Print file`, `Print timelapse`, `Print bed leveling`, `Start cloud print`, `Re-read slot 1` to `Re-read slot 4`, `Cloud sender`, `Cloud camera`, `Current print`, `Chamber light (cloud)`, `Queue`. A test compares them with `tests/golden/contract.json`. Existing entities keep their entity ids in the HA registry whatever the name does later. There are no translations: the integration has only English today.
+
+### State: `GET /api/integration/state`
+
+One answer holds everything the entities show. The integration polls it every 5 s (what the events poll did). One call asks the bridge for its printers (which includes the live camera state), HA for its states (cached 3 s) and the media folder (cached 5 s), so a faster poll gains nothing.
+
+```json
+{
+  "manifest_revision": "a1b2c3d4e5f6",
+  "printers": {
+    "0000TEST0000001": {
+      "name": "My H2S",
+      "model": "H2S",
+      "entities": {
+        "print_file": {"options": ["benchy.gcode.3mf", "sub/cube.gcode.3mf"]},
+        "cloud_sender": {"state": "sent", "attributes": {"account_email": "me@example.com", "last_file": "benchy.gcode.3mf",
+                         "last_time": "2026-11-27T19:00:00+00:00", "last_error": null}},
+        "cloud_camera": {"online": true, "stream": "/api/camera/0000TEST0000001/live", "transcode": false,
+                         "snapshot": "/api/integration/printers/0000TEST0000001/snapshot"},
+        "current_print": {"token": "3f2a9c01d4be", "file_path": "/media/druckwerk/benchy.gcode.3mf", "has_preview": true},
+        "chamber_light": {"on": false},
+        "queue": {"items": [{"uid": "a1b2c3d4e5f6", "summary": "Benchy",
+                             "description": "File: benchy.gcode.3mf\nOwner: Anna (needs approval)"}]}
+      }
+    }
+  }
+}
+```
+
+- `manifest_revision` is the `revision` of the manifest. The integration reads the manifest again when it differs (the same job as `manifest_revision` in `GET /api/events`).
+- `printers` has one key per printer the bridge knows (any HA account), not only the printers set up in the app. A printer that is not in the answer makes its entities unavailable. A failed call makes all entities of the integration unavailable.
+- `name` and `model` (`dev_product_name`, else `dev_model_name`, else null) are for the device info, used only when no vendor device exists for the serial.
+- `entities` has one value per `app` entity and for `print_file`. The values per key are in the next section.
+
+### What the integration does for each platform
+
+Every entity is created for each serial in `printers`, now and when a new serial shows up later, with unique id `<serial>_<key>` and the name from the entity table. The device is the vendor's device for `(VENDOR_DOMAIN, serial)` when it exists; else the integration registers a device with that identifier, `name`, `model`, `serial_number` and the vendor manufacturer (the attach logic of `entity.py` stays as it is).
+
+**select `print_file`** (`state: local`). The options are `entities.print_file.options` (file names relative to `/media/druckwerk`, sorted, subfolders as `sub/name.gcode.3mf`). Selecting stores the option in HA only. After a restart, restore the last state when it is in the options. `current_option` is the stored value when it is in the options, else None; a value whose file vanished is remembered if it returns.
+
+**switch `timelapse`, `bed_leveling`** (`state: local`). On and off change HA state only. Restore the last state after a restart, else `default`.
+
+**button `start_print`**. On press: run `press` (below). The values `$print_file`, `$timelapse` and `$bed_leveling` are the local states of the select and the two switches of the same printer. The file is the option string as it is: the app resolves it against `/media/druckwerk`, so the integration no longer checks files or paths.
+
+**button `reread_slot_1` to `reread_slot_4`**. On press: run `press`. It posts `{ams_id: 0, slot_id: <n - 1>}` to `/api/integration/printers/<serial>/rfid`.
+
+How to run `press = {path, body?, needs?}`:
+1. `needs` maps a local entity key to an error text. If that entity has no value (select without option), raise `HomeAssistantError(text)` and call nothing.
+2. In `path`, replace `$serial` with the serial. In `body`, replace each string value that equals `$serial` with the serial and each string value that equals `$<key>` with the value of the local entity `<key>` (a string for the select, a boolean for a switch). All other values are literal.
+3. `POST hub_url + path` with the body as JSON and `X-Hub-Secret`. When `path` starts with `/api/actions/` or `/api/tools/`, add `X-Druckwerk-Act-As: <context.user_id>` when there is one. Use a timeout of at least 400 s: a print send waits up to 300 s for the bridge.
+4. Errors as in the first paragraph, then poll the state at once.
+
+**sensor `cloud_sender`**. `native_value` is `entities.cloud_sender.state`, `extra_state_attributes` is `entities.cloud_sender.attributes` (`account_email`, `last_file`, `last_time`, `last_error`). Device class enum with the keys of `options` as options. The state is per printer and also survives an app restart.
+
+**camera `cloud_camera`**. The entity is the live view plus stills.
+- `online` is `entities.cloud_camera.online`. It is also the attribute `online`. Features: `STREAM` when online, else none.
+- `stream_source()`: when online, `bridge_url + stream`; when `transcode` is true, `ffmpeg:<that url>#video=h264`. When offline, None. The stream path is a bridge route, so it uses `bridge_url`, not `hub_url`.
+- `async_camera_image()`: `GET hub_url + snapshot` with `X-Hub-Secret` and a timeout of 120 s. Answer 200 with `image/jpeg` is the image. While the printer is offline, the app answers the placeholder picture at once, so the integration needs neither a local placeholder nor a check. Any other answer is a failure: keep the last image and set the attribute `last_error` to `HTTP <status>: <first 300 characters of the body>`.
+- The integration keeps its own frame cache (serve the last image, refresh in the background after 5 s, wait for a new frame when the last one is older than 60 s) and the attributes `frame_time` (time of the last good frame) and `last_error`. They are HA-side behavior of the entity and have no app state.
+
+**light `chamber_light`**. `is_on` is `entities.chamber_light.on` (true, false, or null for unknown). The app copies it from the vendor integration's light entity. It changes at the next poll, up to 5 s after a switch. Turn on and off: `POST hub_url + command` (with `$serial` replaced) and body `{"on": true|false}`; 200 `{"sent": 2}` or the error text. The integration does not look up or follow the vendor light entity any more. Color mode on/off only.
+
+**image `current_print`**. Content type `image/png`. When `entities.current_print.token` changes, set `image_last_updated` to now and drop the cached image; when it is null, the last-updated value is None and `async_image()` returns None. `async_image()`: `GET hub_url + /api/integration/printers/<serial>/image` with the secret; 200 is a PNG, 404 means no picture. Attributes: `file_path` and `has_preview` from `entities.current_print`. The integration no longer follows the vendor's task sensor, finds files or restores `last_path`: the app does all that. The app chooses the file like this: the file named like the printer's reported task (`<task>.gcode.3mf`, top-level copy first), else the file of the last send; the picture is the slicer's own plate image from the file, else drawn from its G-code. The token changes with the file or with the file's modification time.
+
+**todo `queue`**. Features: `DELETE_TODO_ITEM` and `MOVE_TODO_ITEM`. No create and no update. Items come from `entities.queue.items`, in order, each `TodoItem(uid=uid, summary=summary, description=description, status=NEEDS_ACTION)`. They are the waiting jobs (`queued` and `pending_approval`) with that printer as target or printer. Jobs for `any` are not listed.
+- Delete one or more uids: for each uid `POST /api/queue/<uid>/cancel` with body `{}`. Then poll the state at once.
+- Move `uid` after `previous_uid` (None means to the top): `waiting` is the uids of the current items without `uid`; `position` is 0 when `previous_uid` is None, else `waiting.index(previous_uid) + 1` when `previous_uid` is in `waiting`, else `len(waiting)`. Then `POST /api/queue/<uid>/reorder` with `{"position": position, "scope": <serial>}`. Then poll the state at once.
+- Both calls go without `X-Druckwerk-Act-As`, as today (the todo list is for HA users who can see it). Errors are shown as `HomeAssistantError("Druckwerk: <text>")`. The cancel and reorder rules and answers are in "Queue".
+
+### Print: `POST /api/actions/print_file`
+
+The fields, names, defaults and `response: optional` are those of the manifest action `print_file` (golden contract). Body example: `{"serial": "0000TEST0000001", "file": "benchy.gcode.3mf", "timelapse": false, "bed_leveling": "on", "use_ams": true, "force": false}`. Answer: `200 {result: <the bridge's answer, for example {"result": "sent"}>}`.
+
+- Serial: `serial`, else `device_id`. The integration replaces a device id by the serial before it forwards (`serial_fields: ["device_id"]`), and the app takes the value as the serial. Neither: `400 must contain at least one of device_id, serial.`
+- File: a path relative to `/media/druckwerk`, or an absolute path under `/media` or `/share`. The real path (symlinks resolved) must stay inside. 400 texts: `Path <file> is outside the allowed folders (/media, /share)`, `Path <file> is outside the druckwerk media folder`, `Only .gcode.3mf files can be printed`, `File not found: <file>`.
+- Busy check: the app reads the printer's `print_status` fresh from the bridge. `RUNNING` or `PAUSE` without `force` is `409 Printer <serial> is <STATUS>; refusing to send a new print`.
+- G-code guard (`hub/gcode_guard.py`): not skipped by `force`. A file that would print air is `409 Refusing to send <file>: <problems>`. With `use_ams: false` only the AMS load check is skipped.
+- Send: the app posts the file (base64, up to 64 MB, 300 s) to the bridge `POST /api/print` with `serial, filename, file_b64, timelapse, bed_leveling, use_ams` and the advanced options that were given. `on` and `off` for a tri option become `true` and `false`; `auto` stays. A bridge failure is `502` with the bridge's text (`error`, `message` or `detail`), else `Add-on answered HTTP <status>: <body>`; a bridge that does not answer is `502 Add-on not reachable: <reason>`.
+- Result: every try sets the printer's result for the `cloud_sender` sensor: `result` `sent` or `error`, `last_file`, `last_time`, `last_error`, and after a success `last_path`. It is kept in `/data/sender.json`.
+- After a success with `use_ams: true`, the app watches the print (see "Watchdog").
+- The queue's own start and the web UI's `POST /api/jobs/<id>/print` call the same function inside the app. They do not call Home Assistant.
+- No grant rule applies, as before with the HA service: any internal caller prints. The HA service `druckwerk.print_file` is registered from the manifest like the other actions and forwards here.
+
+### Watchdog
+
+After a send with `use_ams: true` the app reads three sensors of the vendor integration through HA (unique ids `<serial>_print_status`, `<serial>_stage`, `<serial>_active_tray`) and pauses a print that runs without filament. It checks every 10 s (`CHECK_EVERY`). Active tray `none` with stage `printing` or `idle` for 120 s (`AIR_FOR`) while the status is `running` pauses the print once (`POST /api/pause/<serial>` on the bridge) and creates the persistent notification `druckwerk_air_<serial>` titled `Print without filament` in HA. A watch ends when the status leaves `running` (except `pause`), when a filament change finishes with a tray loaded, or after 15 min (`GIVE_UP_WAITING`) without `running`. No watch starts when the three sensors are not found. A watch is lost when the app restarts.
+
+### Events and notifications
+
+The app fires every event of `GET /api/events` on the HA bus as `druckwerk_<type>` (`druckwerk_job_done`, `druckwerk_job_started`, `druckwerk_job_failed`, `druckwerk_approval_needed`, `druckwerk_queue_changed`) with the event as data (`{seq, type, serial, job}`), through `POST /api/events/<type>` of the HA REST API. It sends them from its own thread, so a slow HA never holds up a request.
+
+Notifications go to the recipients the integration pushed (next section):
+- `job_done` with a next job waiting (the first queued job for that printer or for `any`, not a drying): `Plate clear? Start next: <job name or file>` with one button `{action: "DRUCKWERK_START_<serial>", title: "Plate clear, start"}`.
+- `approval_needed`: `<owner name or "Someone"> needs approval to <print|dry> <job name or file>`, no button.
+- Who gets it: a recipient whose person entity has state `home` and an attribute `user_id` that is an HA admin or an active owner of that printer (or of all printers). Title `Druckwerk`; the call is `notify.<service>` with `{title, message, data: {actions}}`.
+- The button: the app subscribes to the HA event `mobile_app_notification_action`. An action that starts with `DRUCKWERK_START_` starts the next job of that serial with `plate_clear` (the same as `POST /api/printers/<serial>/start-next` as an internal caller). A refusal is only logged.
+
+The integration must remove its own firing of bus events, its notifications and its listener for `mobile_app_notification_action`, or everything happens twice. `GET /api/events` stays as it is.
+
+### Options: `PUT /api/integration/options`
+
+Body `{recipients: {<person entity id>: <notify service name>}}`, for example `{"recipients": {"person.anna": "notify.mobile_app_annas_phone"}}`. The service name may have the `notify.` prefix or not. Answer: `200 {recipients: {...}}` (what is stored). `400` when `recipients` is not an object of strings. The app stores it in `/data/integration.json` and reads it for every notification. The whole object is replaced on each push; an empty object turns notifications off. Until the first push no notification goes out.
+
+The integration pushes at setup (also on every reload and when the app answers again after being down) and in its options update listener. The integration keeps `recipients` as its option (config flow) and the hub and upload secrets.
+
+### Files: `GET /api/files`
+
+`200 {files: [...]}`: the names of all `*.gcode.3mf` files (case-insensitive suffix) below `/media/druckwerk`, relative with `/`, subfolders included, sorted. The same list is in `entities.print_file.options`.
+
+### Upload: `PUT /api/upload/<name>`
+
+The integration keeps the HTTP view `/api/druckwerk/upload/<name>` (HA's IP ban hook is HA only) and the check of `X-Druckwerk-Secret` against its upload secret option (403 and 401 texts as today). When the secret is right it forwards: `PUT hub_url/api/upload/<name URL-encoded>[?overwrite=1]` with `X-Hub-Secret`, the body streamed as it comes and `Content-Length` set (the app answers `411 Content-Length is required.` without it, and does not read chunked bodies). It then passes the status and the answer on (map `{error}` to HA's `{message}`) and polls the state, so the select lists the new file.
+
+Checks, in this order: name, size, content.
+- Name must match `[A-Za-z0-9][A-Za-z0-9._ -]{0,118}\.gcode\.3mf` (after URL decoding), else `400 Name must be letters, digits, '._ -' and end in .gcode.3mf.`
+- `Content-Length` above 64 MiB is `413 File too large (limit 67108864 bytes).` The app answers before it reads the body, so check `content_length` in the view first and answer 413 yourself.
+- The body must be a zip with a `Metadata/plate_<n>.gcode` entry: `400 Body is not a 3MF (zip) file.` or `400 The 3MF has no sliced plate (Metadata/plate_N.gcode); export it as .gcode.3mf.`
+- An existing file without `?overwrite=1` is `409 File exists; add ?overwrite=1 to replace it.`
+
+The file is stored as `/media/druckwerk/<name>` (mode 0644, replaced atomically). Answer `200 {file: <stored name>, bytes: <size>, sha256: <hex>}`.
+
+### Picture and camera still
+
+- `GET /api/integration/printers/<serial>/image`: `200 image/png`, or `404 {error: "no preview"}`.
+- `GET /api/integration/printers/<serial>/snapshot`: `200 image/jpeg`. Online printer: the bridge's snapshot is passed through, with the bridge's status and text on failure (it waits up to 90 s). Offline printer: the placeholder picture. `404` for a serial the bridge does not know.
+
+### Commands
+
+- `POST /api/integration/printers/<serial>/light` with `{"on": true|false}` (else 400 `Body must be {"on": true|false}.`) switches the chamber light through the bridge (`POST /api/light/<serial>`). Answer `{"sent": 2}`.
+- `POST /api/integration/printers/<serial>/rfid` with `{"slot_id": 0-3, "ams_id": 0-7}` (`ams_id` default 0) makes the AMS read that slot's tag again, like the button did. Answer `{"sent": 1}`.
+- Both pass the bridge's refusal on: 400, 404 and 409 with its text, other failures as 502.
+
+### What stays in the integration
+
+- Config flow, options flow and the options `hub_url`/`url`, hub secret, upload secret and `recipients`. Pushing `recipients` (above).
+- Device handling: the link to the vendor device (`VENDOR_DOMAIN`, serial), its attach logic and the device info fallback. The resolution of a device id to a serial (`serial_fields`) and the HA user id for `X-Druckwerk-Act-As`.
+- The restore of state for the select and the two switches, and the HA entity classes themselves, built from the entity table.
+- The upload view with the secret check and the IP ban, as a forwarder.
+- Registering the HA services and the LLM API from the manifest, and the repair issue for a higher `api_version`.
+- The camera frame cache and the attributes `frame_time` and `last_error`.
+
+### What the app owns now
+
+The G-code guard, the plate picture, the print send with its busy check, the per-printer send result, the watchdog, the notifications and the bus events, the notification button, the file list and path rules, the upload checks, and the entity state. The integration can delete `gcode_guard.py`, `preview.py`, `watchdog.py`, `upload.py` checks, `api.scan_files`, `api.resolve_file`, `api.read_b64`, `api.plate_png`, `coordinator.async_print`, the notification code of `hub.py`, `offline.jpg` and the entity names of `strings.json`.

@@ -6,6 +6,12 @@
 - Add `POST /api/actions/<name>` and `POST /api/tools/<name>`.
 - Add `manifest_revision` to `GET /api/events`.
 - Write camera snapshots and plate images to `/media/druckwerk` from the app. The app maps `media` read-write now.
+- Send prints from the app: busy check, G-code guard, bridge call and result per printer. `print_file` is a real action now. The queue and the New print page call it directly.
+- Watch prints that run without filament and pause them. The app does it now, not the integration.
+- Send the notifications and the `druckwerk_<type>` bus events from the app. The recipients come from `PUT /api/integration/options`. Read the button press from the HA event stream.
+- Add `PUT /api/upload/<name>` and `GET /api/files` for the integration.
+- Add `GET /api/integration/state` and the `entities` table in the manifest. Add routes for the camera snapshot, the plate picture, the chamber light and the slot re-read.
+- Install Pillow in the image to draw a plate picture when the file has none.
 - Make the app image about 70 % smaller, so updates download faster.
 - Remove unused slicer files, the full qemu package and the full ffmpeg package.
 

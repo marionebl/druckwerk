@@ -191,24 +191,32 @@ class HA:
         finally:
             ws.close()
 
-    def watch_state_changes(self, callback, stop):
-        """Blocking loop: calls callback(entity_id, new_state) per state_changed; reconnects until stop is set."""
+    def fire_event(self, event_type, data):
+        self._rest("POST", "/events/" + event_type, data, timeout=15)
+
+    def watch_events(self, event_type, callback, stop):
+        """Blocking loop: calls callback(event data) per event of this type; reconnects until stop is set."""
         pause = 2
         while not stop.is_set():
             try:
                 ws = self._connect(timeout=None)  # idle is normal here
                 try:
-                    ws.send({"id": 1, "type": "subscribe_events", "event_type": "state_changed"})
+                    ws.send({"id": 1, "type": "subscribe_events", "event_type": event_type})
                     pause = 2
                     while not stop.is_set():
                         m = ws.recv()
                         if m.get("type") == "event":
-                            d = m["event"]["data"]
-                            new = d.get("new_state")
-                            if new:
-                                callback(d["entity_id"], new["state"])
+                            callback(m["event"]["data"])
                 finally:
                     ws.close()
             except (HAError, OSError, ValueError, KeyError):
                 stop.wait(pause)
                 pause = min(pause * 2, 60)
+
+    def watch_state_changes(self, callback, stop):
+        """Like watch_events for state_changed: callback(entity_id, new_state)."""
+        def one(d):
+            new = d.get("new_state")
+            if new:
+                callback(d["entity_id"], new["state"])
+        self.watch_events("state_changed", one, stop)

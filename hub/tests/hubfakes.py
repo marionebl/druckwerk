@@ -36,10 +36,15 @@ ENTITIES = [
 SLICE_INFO = open(os.path.join(HERE, "fixtures", "slice_info.config")).read()
 
 
-def make_3mf(path, slice_info=SLICE_INFO):
+# A start G-code the guard accepts for the H2S: stage markers, AMS load, heated nozzle, then an extruding move.
+GCODE = ("; printer_model = Bambu Lab H2S\n; EXECUTABLE_BLOCK_START\nM1002 gcode_claim_action : 4\nM620 S0A\nT0\nM621 S0A\n"
+         "M109 S245\n; CHANGE_LAYER\nG1 X1 Y1 E5\n")
+
+
+def make_3mf(path, slice_info=SLICE_INFO, gcode=GCODE):
     with zipfile.ZipFile(path, "w") as z:
         z.writestr("Metadata/slice_info.config", slice_info)
-        z.writestr("Metadata/plate_1.gcode", "; CHANGE_LAYER\nG1 X1 Y1 E1\n")
+        z.writestr("Metadata/plate_1.gcode", gcode)
         z.writestr("Metadata/plate_1.png", b"\x89PNG\r\n\x1a\nfake")
     return str(path)
 
@@ -53,6 +58,7 @@ class FakeHA:
         self.users, self.devices, self.entities = USERS, DEVICES, ENTITIES
         self.calls, self.fail = [], {}
         self.commands = []  # websocket commands that change HA: (type, fields)
+        self.events = []  # bus events fired through the REST API: (type, data)
         self.entries = []  # config entries as HA lists them
         self.s = {
             "sensor.lab_h2s_print_status": st("running"), "sensor.lab_h2s_current_stage": st("printing"),
@@ -98,6 +104,11 @@ class FakeHA:
             self.s[data["entity_id"]] = st("on" if service == "turn_on" else "off")
         return {}
 
+    def fire_event(self, event_type, data):
+        if "fire_event" in self.fail:
+            raise RuntimeError(self.fail["fire_event"])
+        self.events.append((event_type, data))
+
     def image(self, eid):
         return "image/jpeg", b"JPEGDATA"
 
@@ -115,6 +126,8 @@ class FakeBridge(BaseHTTPRequestHandler):
     task_calls = []
     drying = []  # what GET /api/drying/<serial> answers
     drying_fail = {}  # path -> (status, error) for POSTs that the bridge refuses
+    printer_extra = {}  # serial -> fields merged into GET /api/printers (print_status, live)
+    post_answer = {}  # path -> (status, body) instead of the usual answer
 
     def reply(self, code, body, ctype="application/json"):
         data = body if isinstance(body, bytes) else json.dumps(body).encode()
@@ -129,8 +142,9 @@ class FakeBridge(BaseHTTPRequestHandler):
             return self.reply(200, {"server": "ok", "accounts": [{"id": "a_x", "email": "a@example.invalid", "logged_in": True,
                                                                   "daemon": {"running": True}}]})
         if self.path == "/api/printers":
-            return self.reply(200, [{"serial": SERIAL, "name": "Lab", "dev_product_name": "H2S", "account": "a_x"},
-                                    {"serial": SERIAL2, "name": "Other", "dev_product_name": "P1S", "account": "a_x"}])
+            return self.reply(200, [dict(p, **FakeBridge.printer_extra.get(p["serial"], {})) for p in (
+                {"serial": SERIAL, "name": "Lab", "dev_product_name": "H2S", "account": "a_x", "email": "a@example.invalid"},
+                {"serial": SERIAL2, "name": "Other", "dev_product_name": "P1S", "account": "a_x"})])
         if self.path.startswith("/api/tasks?"):
             serial = self.path.split("serial=")[1].split("&")[0]
             FakeBridge.task_calls.append(self.path)
@@ -149,6 +163,13 @@ class FakeBridge(BaseHTTPRequestHandler):
     def do_POST(self):
         body = json.loads(self.rfile.read(int(self.headers.get("Content-Length") or 0)) or b"{}")
         FakeBridge.log.append((self.path, body))
+        if self.path in FakeBridge.post_answer:
+            code, answer = FakeBridge.post_answer[self.path]
+            return self.reply(code, answer)
+        if self.path == "/api/print":
+            return self.reply(200, {"result": "sent"})
+        if re.fullmatch(r"/api/(pause|light|rfid)/[A-Za-z0-9_-]+", self.path):
+            return self.reply(200, {"sent": 1})
         if "/drying" in self.path and self.path in FakeBridge.drying_fail:
             code, text = FakeBridge.drying_fail[self.path]
             return self.reply(code, {"error": text})
@@ -179,12 +200,18 @@ class Hub:
         self.ha = FakeHA()
         FakeBridge.log, FakeBridge.tasks, FakeBridge.task_fail, FakeBridge.task_calls = [], {}, set(), []
         FakeBridge.drying, FakeBridge.drying_fail = [], {}
+        FakeBridge.printer_extra, FakeBridge.post_answer = {}, {}
         self.bridge = ThreadingHTTPServer(("127.0.0.1", 0), FakeBridge)
         threading.Thread(target=self.bridge.serve_forever, kwargs={"poll_interval": 0.02}, daemon=True).start()
         from app import App
         self.app = App(self.ha, str(tmp_path / "data"), self.s.SHARE, ("127.0.0.1", self.bridge.server_address[1]), self.s,
                        lambda: "hub-host", 8099, clock=lambda: self.now, trusted_ips=["127.0.0.1"],
                        ui_dir=os.path.join(REPO, "hub", "ui"))
+        media = tmp_path / "media"
+        (media / "druckwerk").mkdir(parents=True)
+        self.media = media
+        self.app.media_roots = [os.path.realpath(media), os.path.realpath(self.s.SHARE)]
+        self.app.media_dir = str(media / "druckwerk")
         self.app.install()
         self.server = ThreadingHTTPServer(("127.0.0.1", 0), self.s.Handler)
         threading.Thread(target=self.server.serve_forever, kwargs={"poll_interval": 0.02}, daemon=True).start()
@@ -206,6 +233,16 @@ class Hub:
             return r.status, json.loads(out)
         except ValueError:
             return r.status, out
+
+    def seed_share(self):
+        """a, b, c and d .gcode.3mf in the share: a start sends the real file, so tests that start jobs need them."""
+        os.makedirs(self.s.SHARE, exist_ok=True)
+        for name in "abcd":
+            make_3mf(os.path.join(self.s.SHARE, name + ".gcode.3mf"))
+
+    def sent(self):
+        """The prints the bridge received, as their JSON bodies without the file."""
+        return [dict(b, file_b64="...") for path, b in FakeBridge.log if path == "/api/print"]
 
     def setup_printers(self):
         self.app.registry.put(SERIAL, name="Lab", model="H2S", account="a_x", prefix="lab_h2s", electricity_kwh_price=0.4)

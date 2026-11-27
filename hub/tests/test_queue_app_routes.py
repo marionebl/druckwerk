@@ -65,6 +65,7 @@ def test_user_reorder_stays_inside_own_slots_with_scope(hub):
 
 def test_start_needs_plate_clear_and_printer_admin(hub):
     hub.setup_printers()
+    hub.seed_share()
     hub.grant(USER, SERIAL)
     add(hub, USER)
     hub.ha.s["sensor.lab_h2s_print_status"]["state"] = "idle"
@@ -72,6 +73,6 @@ def test_start_needs_plate_clear_and_printer_admin(hub):
     assert hub.req("POST", "/api/printers/%s/start-next" % SERIAL, {}, user=ADMIN)[0] == 409
     st, job = hub.req("POST", "/api/printers/%s/start-next" % SERIAL, {"plate_clear": True}, user=ADMIN)
     assert st == 200 and job["state"] == "starting"
-    domain, service, data = hub.ha.calls[-1]
-    # The queue holds a bare name; the integration needs the path inside /share.
-    assert (domain, service, data["file"], data["force"]) == ("druckwerk", "print_file", os.path.join(hub.s.SHARE, "a.gcode.3mf"), True)
+    # The queue holds a bare name: the app sends the file from the share to the bridge itself, no HA service call.
+    assert [s["filename"] for s in hub.sent()] == ["a.gcode.3mf"]
+    assert not [c for c in hub.ha.calls if c[0] == "druckwerk"]

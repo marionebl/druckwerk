@@ -16,22 +16,29 @@ import sys
 import threading
 import time
 import zipfile
-from urllib.parse import parse_qs, urlsplit
+from urllib.parse import parse_qs, unquote, urlsplit
 
 import actions
 import externals
+import files
 import filament
 import history
 from ha import HAError, HAUnavailable
 from queue_access import Access, Caller, Forbidden, Grants, Unauthorized, caller_from_headers
 from queue_engine import WAITING, NotFound, Queue, QueueError
 from queue_registry import Registry
+from integration import Integration
+from notify import Notifier
+from sender import Sender
+from watchdog import Watchdog
 
 HOP = {"connection", "keep-alive", "transfer-encoding", "content-length", "server", "date"}
 SECRET_HEADER = "X-Hub-Secret"
 ACT_AS_HEADER = "X-Druckwerk-Act-As"
 IDENTITY_HEADERS = ("X-Remote-User-Id", "X-Remote-User-Name", "X-Remote-User-Display-Name")
 JOB_ID = r"([0-9a-f]{12})"
+SERIAL = r"([A-Za-z0-9_-]{1,40})"
+OFFLINE_JPEG = os.path.join(os.path.dirname(os.path.abspath(__file__)), "offline.jpg")
 # Sensor names of the vendor HA integration after the printer prefix (verified against its translations/en.json).
 SENSORS = {"status": "print_status", "stage": "current_stage", "progress": "print_progress",
            "remaining": "remaining_time", "end": "end_time", "layer": "current_layer", "total": "total_layer_count",
@@ -54,10 +61,7 @@ def log(msg):
     print("druckwerk: " + msg, file=sys.stderr, flush=True)
 
 
-class HttpError(Exception):
-    def __init__(self, status, text):
-        super().__init__(text)
-        self.status = status
+HttpError = actions.ActionError  # one error type for a failure with an HTTP status
 
 
 def slug(text):
@@ -125,9 +129,10 @@ class App:
         self.grants = Grants(self.registry, data_dir, self._grant_state, clock)
         self.access = Access(self.registry, self.grants, self.get_user)
         self.queue = Queue(self.registry, data_dir, ha.state, self._call_service, self.get_trays, clock=clock,
-                           job_allowed=self.access.job_allowed, dry=Drying(self))
+                           job_allowed=self.access.job_allowed, dry=Drying(self), send_print=self.send_print)
         self.media_roots = list(MEDIA_ROOTS)
         self.media_dir = MEDIA_DIR
+        self.sender, self.watchdog, self.notifier, self.integration = Sender(self), Watchdog(self), Notifier(self), Integration(self)
         self.secret = self._load_secret()
         self._auto_at = None
         self._track_at = None
@@ -330,10 +335,33 @@ class App:
             conn.close()
 
     def _call_service(self, domain, service, data):
+        return self.ha.call_service(domain, service, data)
+
+    def send_print(self, data):
+        """The queue's print: no Home Assistant round trip. A file name is a file in the share."""
         data = dict(data)
-        if (domain, service) == ("druckwerk", "print_file") and not os.path.isabs(data["file"]):
+        if not os.path.isabs(data["file"]):
             data["file"] = os.path.join(self.share, data["file"])
-        return self.ha.call_service(domain, service, data, response=(domain == "druckwerk"))
+        return self.sender.print_file(data)
+
+    def bridge_printers(self):
+        """The bridge's printers with their live state; empty when it cannot say."""
+        try:
+            return self.bridge_ok("GET", "/api/printers", timeout=10)
+        except HttpError:
+            return []
+
+    def safe_states(self):
+        try:
+            return self.ha.states()
+        except HAError:
+            return {}
+
+    def ha_users(self):
+        users = self.ha.command("config/auth/list")
+        return [{"id": u["id"], "name": u.get("name") or "",
+                 "is_admin": bool(u.get("is_owner") or "system-admin" in u.get("group_ids", []))}
+                for u in users if u.get("is_active", True) and not u.get("system_generated")]
 
     # -- printers --
     def entity(self, p, key):
@@ -414,8 +442,9 @@ class App:
     def emit(self, type_, serial, job):
         self.seq += 1
         # job always carries id, file, owner_name, target and printer (None until a printer took it).
-        self.events.append({"seq": self.seq, "type": type_, "serial": serial or "",
-                            "job": dict({"printer": None}, **job) if job else None})
+        event = {"seq": self.seq, "type": type_, "serial": serial or "", "job": dict({"printer": None}, **job) if job else None}
+        self.events.append(event)
+        self.notifier.put(event)
 
     def sync(self):
         """Turn queue changes into events, and settle a finished job's spools and cost exactly once."""
@@ -509,6 +538,10 @@ class App:
             log("track filament: %s" % e)
 
     def tick_all(self):
+        try:
+            self.watchdog.tick()
+        except Exception as e:  # noqa: BLE001 - HA may be down; the next tick follows
+            log("watchdog: %s" % e)
         self.try_auto_register()
         self.try_track_filament()
         for p in self.registry.all():
@@ -527,6 +560,7 @@ class App:
             self.tick_all()
 
     def on_state(self, entity_id, state):
+        self.watchdog.on_state(entity_id, state)
         for p in self.registry.all():
             if entity_id == self.entity(p, "stage"):
                 self.queue.observe(p["serial"], state)
@@ -988,10 +1022,7 @@ class App:
 
     # -- HA lookups, events --
     def get_ha_users(self, h, m, q, c):
-        users = self.ha.command("config/auth/list")
-        return [{"id": u["id"], "name": u.get("name") or "",
-                 "is_admin": bool(u.get("is_owner") or "system-admin" in u.get("group_ids", []))}
-                for u in users if u.get("is_active", True) and not u.get("system_generated")]
+        return self.ha_users()
 
     def get_ha_entities(self, h, m, q, c):
         domains = set(((q.get("domains") or [DOMAIN_DEFAULTS])[0]).split(","))
@@ -1062,6 +1093,61 @@ class App:
         self.internal_caller(h)
         h.send(200, actions.manifest())
 
+    # -- generic integration: state, files, upload, options, commands
+    def get_integration_state(self, h, m, q):
+        self.internal_caller(h)
+        h.send(200, self.integration.state())
+
+    def put_integration_options(self, h, m, q):
+        self.internal_caller(h)
+        h.send(200, self.notifier.set_options(h.json()))
+
+    def get_files(self, h, m, q):
+        self.internal_caller(h)
+        h.send(200, {"files": self.integration.file_list()})
+
+    def put_upload(self, h, m, q):
+        self.internal_caller(h)
+        try:
+            h.send(200, files.store(self.media_dir, unquote(m.group(1)), h.rfile, int(h.headers.get("Content-Length") or 0),
+                                    q.get("overwrite") == ["1"]))
+        except files.UploadError as e:
+            raise HttpError(e.status, str(e))
+
+    def get_image(self, h, m, q):
+        self.internal_caller(h)
+        serial = m.group(1)
+        path = self.integration.wanted(serial, self.sender.result(serial)["last_path"], self.safe_states())
+        png = self.integration.preview(serial, path)[1]
+        if not png:
+            raise NotFound("no preview")
+        h.send(200, png, "image/png")
+
+    def get_snapshot(self, h, m, q):
+        """The camera's still image; a placeholder while the printer is offline, as a fetch could only fail then."""
+        self.internal_caller(h)
+        serial = m.group(1)
+        printer = next((p for p in self.bridge_printers() if p.get("serial") == serial), None)
+        if not printer:
+            raise NotFound("unknown printer")
+        if not self.integration.camera(serial, printer)["online"]:
+            with open(OFFLINE_JPEG, "rb") as f:
+                return h.send(200, f.read(), "image/jpeg")
+        self.proxy(h, "/api/camera/%s/snapshot" % serial)
+
+    def post_light(self, h, m, q):
+        self.internal_caller(h)
+        on = h.json().get("on")
+        if not isinstance(on, bool):
+            raise ValueError('Body must be {"on": true|false}.')
+        h.send(200, self.bridge_ok("POST", "/api/light/" + m.group(1), {"on": on}, timeout=60))
+
+    def post_rfid(self, h, m, q):
+        self.internal_caller(h)
+        b = h.json()
+        h.send(200, self.bridge_ok("POST", "/api/rfid/" + m.group(1),
+                                   {"ams_id": b.get("ams_id", 0), "slot_id": b.get("slot_id")}, timeout=60))
+
     def post_operation(self, run):
         def route(h, m, q):
             self.internal_caller(h)
@@ -1071,7 +1157,7 @@ class App:
             def call(method, path, body=None, data=None, binary=False, timeout=30):
                 return self.local_call(port, act_as, method, path, body, data, binary, timeout)
             try:
-                result = run(m.group(1), h.json(), actions.Ops(call, self.media_roots, self.media_dir))
+                result = run(m.group(1), h.json(), actions.Ops(call, self.media_roots, self.media_dir, self.sender.print_file))
             except actions.ActionError as e:
                 raise HttpError(e.status, str(e))
             h.send(200, {"result": result})
@@ -1144,6 +1230,14 @@ class App:
             ("POST", r"/api/feedback", w(self.post_feedback)),
             ("GET", r"/api/events", w(self.get_events, "internal")),
             ("GET", r"/api/integration/manifest", self.get_manifest),
+            ("GET", r"/api/integration/state", self.get_integration_state),
+            ("PUT", r"/api/integration/options", self.put_integration_options),
+            ("GET", r"/api/integration/printers/" + SERIAL + r"/image", self.get_image),
+            ("GET", r"/api/integration/printers/" + SERIAL + r"/snapshot", self.get_snapshot),
+            ("POST", r"/api/integration/printers/" + SERIAL + r"/light", self.post_light),
+            ("POST", r"/api/integration/printers/" + SERIAL + r"/rfid", self.post_rfid),
+            ("GET", r"/api/files", self.get_files),
+            ("PUT", r"/api/upload/([^/]+)", self.put_upload),
             ("POST", r"/api/actions/([a-z_]+)", self.post_operation(actions.run_action)),
             ("POST", r"/api/tools/([a-z_]+)", self.post_operation(actions.run_tool)),
             ("GET", r"/api/grants", w(self.get_grants)),
@@ -1162,6 +1256,7 @@ class App:
         s, mine = self.s, self.routes()
         taken = {(meth, rx) for meth, rx, _ in mine}
         s.ROUTES[:] = mine + [r for r in s.ROUTES if (r[0], r[1]) not in taken and r[:2] != ("GET", "/api/printers")]
+        s.PRINT = self.sender.print_file
         s.Handler.dispatch = lambda h, method: self.dispatch(h, method, s.ROUTES)
         s.Handler.do_PUT = lambda h: h.dispatch("PUT")
         s.Handler.do_DELETE = lambda h: h.dispatch("DELETE")

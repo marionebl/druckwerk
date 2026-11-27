@@ -57,7 +57,7 @@ RUN apt-get update && apt-get install -y --no-install-recommends qemu-user-stati
 
 # libunistring5: the slicer's runtime links it but does not ship it; it used to arrive with the ffmpeg package.
 FROM debian:trixie-slim AS base
-RUN apt-get update && apt-get install -y --no-install-recommends python3 ca-certificates libunistring5 && rm -rf /var/lib/apt/lists/*
+RUN apt-get update && apt-get install -y --no-install-recommends python3 python3-pil ca-certificates libunistring5 && rm -rf /var/lib/apt/lists/*
 COPY --from=ffmpeg /out/bin/ffmpeg /usr/local/bin/ffmpeg
 
 # aarch64: run the x86_64 bridge and plugin under qemu in an x86_64 rootfs (COPY only, the Pi has no amd64 binfmt).
@@ -107,6 +107,7 @@ COPY hub/ui/views /srv/ui/views
 COPY hub/ui/vendor/three.module.min.js /srv/ui/vendor/
 COPY hub/ui/vendor/LICENSE-three.txt /usr/share/licenses/three/LICENSE
 COPY hub/app.py hub/actions.py hub/ha.py hub/filament.py hub/history.py hub/queue/queue_*.py /srv/
+COPY hub/entities.py hub/files.py hub/gcode_guard.py hub/integration.py hub/notify.py hub/preview.py hub/sender.py hub/watchdog.py hub/offline.jpg /srv/
 COPY hub/run.sh /run.sh
 ENV DW_DAEMON_CMD=/opt/bridge/bridge.sh DW_CERT=/opt/bridge/slicer_base64.cer \
     SLICER_SENDER_URL=http://127.0.0.1:8098 SLICER_PORT=8099 SLICER_ENGINE=/srv/engine \

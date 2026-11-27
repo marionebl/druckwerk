@@ -54,6 +54,7 @@ def test_act_as_user_sees_only_own_printers(hub):
 
 def test_act_as_ha_admin_can_do_admin_things(hub):
     hub.setup_printers()
+    hub.seed_share()
     hub.grant(USER, SERIAL, needs_approval=True)
     job = add(hub, USER)
     assert job["state"] == "pending_approval"

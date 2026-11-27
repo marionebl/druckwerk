@@ -27,6 +27,12 @@ class Fake:
             self.states[data["entity_id"]] = "on" if service == "turn_on" else "off"
 
 
+    def send_print(self, data):
+        self.calls.append(("druckwerk", "print_file", data))
+        if ("druckwerk", "print_file") in self.fail:
+            raise RuntimeError(self.fail[("druckwerk", "print_file")])
+
+
 @pytest.fixture
 def fake():
     return Fake()
@@ -42,5 +48,5 @@ def make(tmp_path, fake):
         fake.states["sensor.%s_print_status" % p] = "idle"
     fake.states["automation.snap"] = "on"
     q = Queue(reg, str(tmp_path), fake.get_state, fake.call_service,
-              lambda s: fake.trays.get(s, []), clock=lambda: fake.now)
+              lambda s: fake.trays.get(s, []), clock=lambda: fake.now, send_print=fake.send_print)
     return q

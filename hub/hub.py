@@ -42,6 +42,9 @@ def main():
     stop = threading.Event()
     threading.Thread(target=app.run_ticker, args=(stop,), daemon=True).start()
     threading.Thread(target=ha.watch_state_changes, args=(app.on_state, stop), daemon=True).start()
+    threading.Thread(target=app.notifier.run, args=(stop,), daemon=True).start()
+    threading.Thread(target=ha.watch_events, args=("mobile_app_notification_action", app.notifier.on_action, stop),
+                     daemon=True).start()
 
     def announce():
         while not stop.is_set():
