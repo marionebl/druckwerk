@@ -123,8 +123,8 @@ def run_case(br, name, base, ident, framed=None, manual_device=False, feedback=F
         fail(f"{name}: variants ran on {[e for e, _ in times]}, engine was {engine}")
     root.locator(".variant[aria-pressed=true]").wait_for()
     if not framed:
-        root.locator("canvas.layer").wait_for()
-        root.get_by_text(re.compile(r"Layer \d+ of")).first.wait_for(timeout=60000)
+        root.locator('.preview3d[data-ready="1"]').wait_for(timeout=60000)  # the 3D preview parsed the browser G-code
+        root.get_by_text(re.compile(r"Layers 1 to (\d+) of \1")).first.wait_for(timeout=60000)
         # Queue the picked variant against the mocks, like a Pi slice.
         root.get_by_role("button", name="Add Better to queue").click()
         root.locator(".job").first.wait_for()

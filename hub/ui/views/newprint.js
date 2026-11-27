@@ -1,7 +1,7 @@
 // New print: upload, pick printer + filament, slice good/better/best side by side, choose, queue.
 import { api } from '../api.js';
 import { h, clear, icon, btn, pill, field, swatch, empty, attempt, toast, fail, durSec, money, hex } from '../util.js';
-import { layerPreview } from './gcode.js';
+import { gcodePreview } from './preview.js';
 import { warm, sliceVariant } from './browserslice.js';
 
 const QUALITIES = [['good', 'Good', 'Fastest, visible layers'], ['better', 'Better', 'Balanced'], ['best', 'Best', 'Finest detail, slowest']];
@@ -184,7 +184,7 @@ export async function mount(ctx, root) {
 
   function queueCard() {
     const v = S.variants.find((x) => x.q === S.pick);
-    const prev = layerPreview();
+    const prev = gcodePreview();
     api.gcode(v.id).then((t) => prev.load(t)).catch((e) => prev.fail(e.message));
     const opt = (key, label, hint) => h('label', { class: 'check' },
       h('input', { type: 'checkbox', checked: S.options[key], onchange: (e) => (S.options[key] = e.target.checked) }),
