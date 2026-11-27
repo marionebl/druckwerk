@@ -81,6 +81,7 @@ def test_done_takes_grams_off_the_spool_and_prices_the_job(hub):
 
 
 def test_done_without_a_matching_spool_still_finishes(hub):
+    hub.app._track_at = 10 ** 12  # the hub would otherwise record the loaded tray as a spool first
     finish_a_print(hub)
     done = hub.req("GET", "/api/queue", user=ADMIN)[1]["history"][0]
     assert done["state"] == "done" and done["spools_used"] == [] and done["cost"] == 0.12  # electricity only: 0.124 at 0.40

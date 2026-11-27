@@ -28,12 +28,14 @@ from .externals import VENDOR_DOMAIN
 from .coordinator import SenderCoordinator
 from .hub import HubCoordinator
 from . import llm_api
-from .services import async_register_services
+from .services import BED_TYPES, TRI, async_register_services
 from .upload import UploadView
 from .watchdog import PrintWatchdog
 
 _LOGGER = logging.getLogger(__name__)
 PLATFORMS = ["select", "switch", "button", "sensor", "camera", "light", "image", "todo"]
+
+ADVANCED = ("flow_cali", "vibration_cali", "layer_inspect", "nozzle_offset_cali", "bed_type", "ext_change_assist")
 
 PRINT_FILE_SCHEMA = vol.All(
     vol.Schema(
@@ -42,8 +44,15 @@ PRINT_FILE_SCHEMA = vol.All(
             vol.Optional("serial"): cv.string,
             vol.Required("file"): cv.string,
             vol.Optional("timelapse", default=False): cv.boolean,
-            vol.Optional("bed_leveling", default=True): cv.boolean,
+            vol.Optional("bed_leveling", default=True): TRI,
             vol.Optional("use_ams", default=True): cv.boolean,
+            # Advanced options: left out, the bridge keeps its defaults.
+            vol.Optional("flow_cali"): TRI,
+            vol.Optional("vibration_cali"): cv.boolean,
+            vol.Optional("layer_inspect"): cv.boolean,
+            vol.Optional("nozzle_offset_cali"): TRI,
+            vol.Optional("bed_type"): vol.In(BED_TYPES),
+            vol.Optional("ext_change_assist"): cv.boolean,
             vol.Optional("force", default=False): cv.boolean,
         }
     ),
@@ -70,6 +79,7 @@ async def async_setup(hass: HomeAssistant, config: ConfigType) -> bool:
             bed_leveling=data["bed_leveling"],
             use_ams=data["use_ams"],
             force=data["force"],
+            advanced={k: data[k] for k in ADVANCED if k in data},
         )
 
     hass.services.async_register(

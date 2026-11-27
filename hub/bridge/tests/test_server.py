@@ -245,6 +245,93 @@ class FlowTest(unittest.TestCase):
         self.assertEqual(self.s.json("POST", "/api/pause/NOPE", {})[0], 404)
         self.assertEqual(len(self.s.daemon(self.s.base, "/commands")), before + 1)
 
+    def sent_params(self, **options):
+        body = {"serial": "SERIAL001", "filename": "opt.gcode.3mf", "file_b64": base64.b64encode(b"x").decode()}
+        st, d = self.s.json("POST", "/api/print", dict(body, **options))
+        return st, (self.s.daemon(self.s.base, "/prints")[-1]["params"] if st == 200 else d)
+
+    def test_05e_print_options_reach_the_daemon(self):
+        # Defaults send exactly what the bridge sent before the options existed.
+        st, got = self.sent_params()
+        self.assertEqual(got, {"device_id": "SERIAL001", "filename": "opt.gcode.3mf", "project_name": "opt",
+                               "bed_leveling": True, "flow_cali": True, "vibration_cali": True, "timelapse": False,
+                               "use_ams": True})
+        # "auto" is bool false plus the vendor slicer's integer 2; nozzle offset has no bool, only the integer.
+        st, got = self.sent_params(bed_leveling="auto", flow_cali=False, nozzle_offset_cali="auto", vibration_cali=False,
+                                   layer_inspect=True, bed_type="textured_plate", ext_change_assist=True,
+                                   timelapse=True, use_ams=False)
+        self.assertEqual(got, {
+            "device_id": "SERIAL001", "filename": "opt.gcode.3mf", "project_name": "opt",
+            "bed_leveling": False, "auto_bed_leveling": 2, "flow_cali": False, "auto_offset_cali": 2,
+            "vibration_cali": False, "layer_inspect": True, "bed_type": "textured_plate", "ext_change_assist": True,
+            "timelapse": True, "use_ams": False})
+        st, got = self.sent_params(flow_cali="auto", nozzle_offset_cali=True, bed_leveling=False)
+        self.assertEqual((got["flow_cali"], got["auto_flow_cali"], got["auto_offset_cali"], got["bed_leveling"]),
+                         (False, 2, 1, False))
+        self.assertNotIn("auto_bed_leveling", got)
+
+    def test_05f_print_options_are_validated(self):
+        n = len(self.s.daemon(self.s.base, "/prints"))
+        for bad in ({"bed_leveling": "maybe"}, {"flow_cali": 2}, {"bed_type": "gold_plate"}, {"layer_inspect": "yes"},
+                    {"vibration_cali": "auto"}, {"ext_change_assist": 1}, {"nozzle_offset_cali": None}):
+            st, d = self.sent_params(**bad)
+            self.assertEqual(st, 400, bad)
+            self.assertIn(list(bad)[0], d["error"])
+        self.assertEqual(len(self.s.daemon(self.s.base, "/prints")), n)  # nothing reached the daemon
+
+    def test_05g_drying_status_lists_units_with_a_dryer(self):
+        st, d = self.s.json("GET", "/api/drying/SERIAL001")
+        self.assertEqual(st, 200)
+        self.assertEqual(d, [
+            {"ams_id": 0, "name": "AMS 2 Pro", "status": "drying", "active": True, "left_min": 90, "filament": "PLA",
+             "temp": 45, "hours": 12, "temp_min": 45, "temp_max": 65},
+            {"ams_id": 128, "name": "AMS HT", "status": "off", "active": False, "left_min": 0, "filament": "",
+             "temp": None, "hours": None, "temp_min": 45, "temp_max": 85}])
+        self.assertEqual(self.s.json("GET", "/api/drying/SERIAL002")[1], [])  # fun2 bit 5 off: no remote drying
+        self.assertEqual(self.s.req("GET", "/api/drying/NOPE")[0], 404)
+
+    def test_05h_drying_start_and_stop_payloads(self):
+        before = len(self.s.daemon(self.s.base, "/commands"))
+        st, _ = self.s.json("POST", "/api/ams/SERIAL001/drying", {"ams_id": 0, "temp": 55, "hours": 8, "filament": "PLA"})
+        self.assertEqual(st, 200)
+        st, _ = self.s.json("POST", "/api/ams/SERIAL001/drying", {"ams_id": 128, "temp": 80, "hours": 12, "filament": "PA",
+                                                                  "rotate_tray": True, "cooling_temp": 60})
+        self.assertEqual(st, 200)
+        st, _ = self.s.json("POST", "/api/ams/SERIAL001/drying/stop", {"ams_id": 0})
+        self.assertEqual(st, 200)
+        # The payloads of the vendor slicer's DevDryer::CtrlStartDrying and CtrlStopDrying.
+        self.assertEqual(self.s.daemon(self.s.base, "/commands")[before:], [
+            {"print": {"command": "ams_filament_drying", "sequence_id": "0", "ams_id": 0, "zone_id": 0, "mode": 1,
+                       "filament": "PLA", "temp": 55, "duration": 8, "humidity": 0, "rotate_tray": False,
+                       "cooling_temp": 50, "close_power_conflict": False}},
+            {"print": {"command": "ams_filament_drying", "sequence_id": "0", "ams_id": 128, "zone_id": 0, "mode": 1,
+                       "filament": "PA", "temp": 80, "duration": 12, "humidity": 0, "rotate_tray": True,
+                       "cooling_temp": 60, "close_power_conflict": False}},
+            {"print": {"command": "ams_filament_drying", "sequence_id": "0", "ams_id": 0, "mode": 0, "filament": "",
+                       "temp": 0, "duration": 0, "humidity": 0, "rotate_tray": False, "cooling_temp": 0,
+                       "close_power_conflict": False}}])
+
+    def test_05i_drying_rejects_bad_input(self):
+        n = len(self.s.daemon(self.s.base, "/commands"))
+        post = lambda path, body, serial="SERIAL001": self.s.json("POST", "/api/ams/%s/%s" % (serial, path), body)[0]
+        good = {"ams_id": 0, "temp": 50, "hours": 6, "filament": "PLA"}
+        self.assertEqual(post("drying", dict(good, temp=44)), 400)  # below the dryer minimum
+        self.assertEqual(post("drying", dict(good, temp=66, filament="PETG")), 400)  # above the AMS 2 Pro maximum (65)
+        self.assertEqual(post("drying", dict(good, ams_id=128, temp=86)), 400)  # above the AMS HT maximum (85)
+        self.assertEqual(post("drying", dict(good, temp=60)), 400)  # above the PLA limit (55)
+        self.assertEqual(post("drying", dict(good, hours=0)), 400)
+        self.assertEqual(post("drying", dict(good, hours=73)), 400)
+        self.assertEqual(post("drying", dict(good, hours=1.5)), 400)
+        self.assertEqual(post("drying", dict(good, temp="50")), 400)
+        self.assertEqual(post("drying", dict(good, ams_id=1)), 400)  # a plain AMS has no dryer
+        self.assertEqual(post("drying", dict(good, ams_id=7)), 400)
+        self.assertEqual(post("drying", dict(good, rotate_tray="yes")), 400)
+        self.assertEqual(post("drying", {}), 400)
+        self.assertEqual(post("drying", good, "SERIAL002"), 400)  # printer without remote drying
+        self.assertEqual(post("drying", good, "NOPE"), 404)
+        self.assertEqual(post("drying/stop", {"ams_id": 300}), 400)
+        self.assertEqual(len(self.s.daemon(self.s.base, "/commands")), n)  # nothing was sent
+
     def test_06_print_delivers_exact_bytes(self):
         blob = bytes(range(256)) * 40 + b"\r\n--boundary\r\n\x00\xff" + os.urandom(2000)
         st, d = self.s.json("POST", "/api/print", {"serial": "SERIAL001", "filename": "cube.gcode.3mf",

@@ -1,5 +1,5 @@
 name: Druckwerk
-version: "2.4.0"
+version: "2.5.0"
 slug: druckwerk
 # Built and pushed by .github/workflows/hub.yml on main; HA pulls <image>:<version>.
 image: ghcr.io/marionebl/druckwerk-{arch}
@@ -15,5 +15,5 @@ panel_icon: mdi:printer-3d
 panel_title: Druckwerk
 homeassistant_api: true
 hassio_api: true
-map: ["share:rw"]
+map: ["share:rw", "media:ro"]
 panel_admin: false

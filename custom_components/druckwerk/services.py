@@ -14,9 +14,16 @@ from homeassistant.helpers import config_validation as cv
 
 from .agent import Ops
 
-OPTIONS = vol.Schema(
-    {vol.Optional(k): cv.boolean for k in ("timelapse", "bed_leveling", "use_ams")}
-)
+# Options of the vendor slicer's print dialog. TRI ones take on, off or "auto"; the others on or off.
+TRI = vol.Any("auto", cv.boolean)
+BED_TYPES = ["auto", "cool_plate", "eng_plate", "hot_plate", "textured_plate", "supertack_plate", "3d_effect_plate"]
+PRINT_OPTIONS = {
+    **{vol.Optional(k): cv.boolean for k in ("timelapse", "use_ams", "vibration_cali", "layer_inspect", "ext_change_assist")},
+    **{vol.Optional(k): TRI for k in ("bed_leveling", "flow_cali", "nozzle_offset_cali")},
+    vol.Optional("bed_type"): vol.In(BED_TYPES),
+}
+OPTIONS = vol.Schema(PRINT_OPTIONS)
+NAME = vol.All(cv.string, vol.Length(max=80))
 CONFIRM = {
     vol.Optional("plate_clear", default=False): cv.boolean,
     vol.Optional("confirmed_by_person", default=False): cv.boolean,
@@ -47,11 +54,12 @@ def async_register_services(hass: HomeAssistant) -> None:
             vol.Optional("target", default="any"): cv.string,
             vol.Optional("model"): cv.string,
             vol.Optional("options"): OPTIONS,
+            vol.Optional("name"): NAME,
         },
         OPTIONAL,
         lambda ops, uid, d: ops.add_to_queue(
             uid, file=d.get("file"), slice_job_id=d.get("slice_job_id"), target=d["target"],
-            model=d.get("model"), options=d.get("options"),
+            model=d.get("model"), options=d.get("options"), name=d.get("name"),
         ),
     )
     _register(

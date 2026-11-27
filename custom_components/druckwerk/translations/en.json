@@ -93,7 +93,7 @@
         },
         "bed_leveling": {
           "name": "Bed leveling",
-          "description": "Level the bed before printing."
+          "description": "Level the bed before printing: on, off or auto (the printer decides)."
         },
         "use_ams": {
           "name": "Use AMS",
@@ -102,6 +102,30 @@
         "force": {
           "name": "Force",
           "description": "Send even if the printer is running or paused."
+        },
+        "flow_cali": {
+          "name": "Flow dynamics calibration",
+          "description": "Calibrate the flow before printing: on, off or auto. Left out, the bridge keeps its default (on)."
+        },
+        "vibration_cali": {
+          "name": "Vibration calibration",
+          "description": "Run the vibration (resonance) calibration. Left out, the bridge keeps its default (on)."
+        },
+        "layer_inspect": {
+          "name": "First layer inspection",
+          "description": "Inspect the first layer with the printer camera. Left out: off."
+        },
+        "nozzle_offset_cali": {
+          "name": "Nozzle offset calibration",
+          "description": "Calibrate the nozzle offset: on, off or auto. For printers with two nozzles. Left out: off."
+        },
+        "bed_type": {
+          "name": "Plate type",
+          "description": "The build plate in the printer. auto means the file decides. Left out: auto."
+        },
+        "ext_change_assist": {
+          "name": "External spool change assist",
+          "description": "Let the printer help when you change the external spool. Left out: off."
         }
       }
     },
@@ -131,7 +155,7 @@
       "fields": {
         "file": {
           "name": "File",
-          "description": "Name of a sliced .gcode.3mf in the share. Use this or slice_job_id."
+          "description": "Name of a sliced .gcode.3mf in the share, or an absolute path under /media or /share to one. Use this or slice_job_id."
         },
         "slice_job_id": {
           "name": "Slice job",
@@ -147,7 +171,11 @@
         },
         "options": {
           "name": "Options",
-          "description": "Print options as booleans: timelapse, bed_leveling, use_ams."
+          "description": "Print options: timelapse, use_ams, vibration_cali, layer_inspect, ext_change_assist as booleans; bed_leveling, flow_cali, nozzle_offset_cali as true, false or auto; bed_type as auto, cool_plate, eng_plate, hot_plate, textured_plate, supertack_plate or 3d_effect_plate."
+        },
+        "name": {
+          "name": "Name",
+          "description": "Name of the print, up to 80 characters. The queue and the live activity show it. Default: the file name without .gcode.3mf."
         }
       }
     },

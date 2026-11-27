@@ -241,3 +241,13 @@ input[type=range] { width: 100%; accent-color: var(--accent); }
 .tl-card .ttl { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; min-width: 0; }
 .tl-card .meta { display: flex; flex-wrap: wrap; gap: 2px 12px; color: var(--muted); font-size: 13px; font-variant-numeric: tabular-nums; }
 .who-tag { display: inline-flex; align-items: center; gap: 4px; }
+
+/* Home Assistant restart notice */
+.restart { position: sticky; top: 0; z-index: 50; padding: 10px 16px; text-align: center; background: var(--warn-soft); color: var(--warn); border-bottom: 1px solid var(--line); font-size: 14px; }
+/* Advanced print options and AMS drying */
+details.adv { border: 1px solid var(--line); border-radius: 10px; padding: 10px 14px; }
+details.adv summary { cursor: pointer; font-weight: 600; }
+details.adv .form { margin-top: 12px; }
+.dry .unit-head { display: flex; justify-content: space-between; gap: 8px; align-items: center; flex-wrap: wrap; }
+.dry .form.two { margin-top: 10px; }
+.dry-state { font-size: 14px; margin: 6px 0; }

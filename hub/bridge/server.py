@@ -3,7 +3,8 @@
 
 One boocloud-bridge daemon per cloud account (the plugin holds one login per process).
 Routes: GET /, GET /api/health, POST /api/login/start, POST /api/login/code, DELETE /api/accounts/<id>,
-GET /api/printers, GET /api/status/<serial>, GET /api/ams/<serial>, GET /api/camera/<serial>/live, GET /api/tasks?serial=<serial>&limit=<n>, POST /api/print.
+GET /api/printers, GET /api/status/<serial>, GET /api/ams/<serial>, GET /api/camera/<serial>/live, GET /api/tasks?serial=<serial>&limit=<n>, POST /api/print,
+GET /api/drying/<serial>, POST /api/ams/<serial>/drying, POST /api/ams/<serial>/drying/stop.
 """
 import base64
 import binascii
@@ -761,6 +762,52 @@ def multipart(fields):
     return out + ("--%s--\r\n" % boundary).encode(), "multipart/form-data; boundary=" + boundary
 
 
+# Send-time options of the vendor slicer's print dialog (PrintParams in bambu_networking.hpp, filled in SelectMachine.cpp).
+# Tri-state options take true, false or "auto"; the daemon gets the slicer's pair: the bool is true only for "on" and the
+# integer (0 off, 1 on, 2 auto) goes in auto_*. Defaults equal what the bridge sent before these options existed.
+BED_TYPES = ("auto", "cool_plate", "eng_plate", "hot_plate", "textured_plate", "supertack_plate", "3d_effect_plate")
+
+
+def _tri(body, key, default):
+    v = body.get(key, default)
+    if v is not True and v is not False and v != "auto":
+        raise ValueError("%s must be true, false or \"auto\"." % key)
+    return v
+
+
+def _bool(body, key, default):
+    v = body.get(key, default)
+    if not isinstance(v, bool):
+        raise ValueError("%s must be true or false." % key)
+    return v
+
+
+def print_options(body):
+    p = {}
+    for key, auto_key, default in (("bed_leveling", "auto_bed_leveling", True), ("flow_cali", "auto_flow_cali", True)):
+        v = _tri(body, key, default)
+        p[key] = v is True
+        if v == "auto":
+            p[auto_key] = 2
+    p["vibration_cali"] = _bool(body, "vibration_cali", True)
+    p["timelapse"] = _bool(body, "timelapse", False)
+    p["use_ams"] = _bool(body, "use_ams", True)
+    # The extra keys are left out at their default, so an older daemon gets the payload it always got.
+    offset = _tri(body, "nozzle_offset_cali", False)
+    if offset is not False:
+        p["auto_offset_cali"] = 2 if offset == "auto" else 1
+    if _bool(body, "layer_inspect", False):
+        p["layer_inspect"] = True
+    bed = body.get("bed_type", "auto")
+    if bed not in BED_TYPES:
+        raise ValueError("bed_type must be one of: " + ", ".join(BED_TYPES) + ".")
+    if bed != "auto":
+        p["bed_type"] = bed
+    if _bool(body, "ext_change_assist", False):
+        p["ext_change_assist"] = True
+    return p
+
+
 def post_print(h, m, body):
     if not isinstance(body, dict):
         return h.send(400, {"error": "Body must be a JSON object."})
@@ -777,9 +824,8 @@ def post_print(h, m, body):
     if not acc:
         return h.send(404, {"error": "unknown printer"})
     filename = os.path.basename(filename)
-    params = {"device_id": serial, "filename": filename, "project_name": re.sub(r"(\.gcode)?\.3mf$", "", filename),
-              "bed_leveling": body.get("bed_leveling", True), "flow_cali": True, "vibration_cali": True,
-              "timelapse": body.get("timelapse", False), "use_ams": body.get("use_ams", True)}
+    params = {"device_id": serial, "filename": filename, "project_name": re.sub(r"(\.gcode)?\.3mf$", "", filename)}
+    params.update(print_options(body))
     data, ctype = multipart([("file", filename, "application/octet-stream", raw),
                              ("params", None, "application/json", json.dumps(params).encode())])
     try:
@@ -843,6 +889,122 @@ def post_pause(h, m, body):
     # Same payload as the vendor slicer's command_task_pause and the vendor HA integration's PAUSE (which the firmware
     # ignores unsigned, hence this route).
     send_command(h, acc, serial, [{"print": {"command": "pause", "sequence_id": "0", "param": ""}}])
+
+
+# AMS drying. Payloads: the vendor slicer's DevDryer::CtrlStartDrying / CtrlStopDrying (DevDryer.cpp). Unit type, status,
+# ranges and the support flag: DevFilaSystem.cpp (info bits 0-3 type, 4-7 status), DevDryer.cpp (temperature ranges per type),
+# DeviceManager.cpp (fun2 bit 5 is_support_remote_dry), AMSDryControl.cpp (1 to 72 hours).
+DRYERS = {3: ("AMS 2 Pro", 45, 65), 4: ("AMS HT", 45, 85)}
+DRY_STATUS = {0: "off", 1: "checking", 2: "drying", 3: "cooling", 4: "stopping", 5: "error", 6: "error", 7: "testing"}
+DRY_ACTIVE = {"checking", "drying", "error"}  # the slicer's is_active_dry_status
+DRY_HOURS = (1, 72)
+# Highest drying temperature per filament family in the vendor filament presets (fdm_filament_*.json,
+# filament_dev_ams_drying_temperature); a type not listed has no limit beyond the dryer's.
+FILAMENT_MAX_TEMP = {"PLA": 55, "PETG": 65, "PET": 65, "ABS": 80, "ASA": 80, "PC": 80, "PA": 85, "TPU": 75}
+
+
+def _hex(v):
+    try:
+        return int(str(v), 16)
+    except ValueError:
+        return None
+
+
+def drying_units(status):
+    """Units with a dryer in a daemon status: [{ams_id, name, status, active, left_min, filament, temp, hours, temp_min, temp_max}]."""
+    p = (status or {}).get("print") or {}
+    fun2 = _hex(p["fun2"]) if "fun2" in p else None
+    if fun2 is not None and not fun2 >> 5 & 1:
+        return []  # the printer does not support remote drying
+    out = []
+    units = p.get("ams", {}).get("ams", []) if isinstance(p.get("ams"), dict) else []
+    for u in units:
+        info = _hex(u.get("info")) if isinstance(u, dict) else None
+        ams_id = int(u["id"]) if isinstance(u, dict) and str(u.get("id", "")).isdigit() else None
+        if info is None or ams_id is None or info & 0xF not in DRYERS:
+            continue
+        name, lo, hi = DRYERS[info & 0xF]
+        state = DRY_STATUS.get(info >> 4 & 0xF, "off")
+        setting = u.get("dry_setting") if isinstance(u.get("dry_setting"), dict) else {}
+        left = u.get("dry_time")
+        out.append({"ams_id": ams_id, "name": name, "status": state, "active": state in DRY_ACTIVE,
+                    "left_min": left if isinstance(left, int) else 0, "filament": setting.get("dry_filament") or "",
+                    "temp": setting.get("dry_temperature") if state != "off" or setting.get("dry_temperature", -1) > 0 else None,
+                    "hours": setting.get("dry_duration") if state != "off" or setting.get("dry_duration", -1) > 0 else None,
+                    "temp_min": lo, "temp_max": hi})
+    return out
+
+
+def _ams_id(body):
+    v = (body or {}).get("ams_id")
+    if isinstance(v, bool) or not isinstance(v, int) or not (0 <= v <= 3 or 128 <= v <= 135):
+        raise ValueError("ams_id must be 0 to 3, or 128 to 135 for an AMS HT.")
+    return v
+
+
+def get_drying(h, m, body):
+    serial, acc = m.group(1), owner(m.group(1))
+    if not acc:
+        return h.send(404, {"error": "unknown printer"})
+    try:
+        status, raw, _ = call("GET", acc.url("/status/" + serial), timeout=20)
+        answer = json.loads(raw) if status == 200 else None
+    except (Upstream, ValueError):
+        answer = None
+    if answer is None:
+        return h.send(503, {"error": "no status from the printer"})
+    h.send(200, drying_units(answer))
+
+
+def post_drying(h, m, body):
+    serial, acc = m.group(1), owner(m.group(1))
+    if not acc:
+        return h.send(404, {"error": "unknown printer"})
+    if not isinstance(body, dict):
+        return h.send(400, {"error": "Body must be a JSON object."})
+    ams_id = _ams_id(body)
+    temp, hours, filament = body.get("temp"), body.get("hours"), body.get("filament", "")
+    if isinstance(temp, bool) or not isinstance(temp, int) or isinstance(hours, bool) or not isinstance(hours, int):
+        raise ValueError("temp and hours must be whole numbers.")
+    if not isinstance(filament, str) or len(filament) > 40:
+        raise ValueError("filament must be text of at most 40 characters.")
+    rotate, cooling = body.get("rotate_tray", False), body.get("cooling_temp", 50)
+    if not isinstance(rotate, bool):
+        raise ValueError("rotate_tray must be true or false.")
+    if isinstance(cooling, bool) or not isinstance(cooling, int) or not 0 <= cooling <= 100:
+        raise ValueError("cooling_temp must be 0 to 100.")
+    if not DRY_HOURS[0] <= hours <= DRY_HOURS[1]:
+        raise ValueError("hours must be %d to %d." % DRY_HOURS)
+    try:
+        status, raw, _ = call("GET", acc.url("/status/" + serial), timeout=20)
+        answer = json.loads(raw) if status == 200 else None
+    except (Upstream, ValueError):
+        answer = None
+    if answer is None:
+        return h.send(503, {"error": "no status from the printer"})
+    unit = next((u for u in drying_units(answer) if u["ams_id"] == ams_id), None)
+    if not unit:
+        raise ValueError("This printer reports no dryer on AMS unit %d." % ams_id)
+    top = unit["temp_max"]
+    family = next((k for k in sorted(FILAMENT_MAX_TEMP, key=len, reverse=True) if filament.upper().replace("-", " ").split(" ")[0].startswith(k)), None)
+    if family:
+        top = min(top, FILAMENT_MAX_TEMP[family])
+    if not unit["temp_min"] <= temp <= top:
+        raise ValueError("temp must be %d to %d for %s%s." % (unit["temp_min"], top, unit["name"], " with " + filament if family else ""))
+    send_command(h, acc, serial, [{"print": {
+        "command": "ams_filament_drying", "sequence_id": "0", "ams_id": ams_id, "zone_id": 0, "mode": 1,
+        "filament": filament, "temp": temp, "duration": hours, "humidity": 0, "rotate_tray": rotate,
+        "cooling_temp": cooling, "close_power_conflict": False}}])
+
+
+def post_drying_stop(h, m, body):
+    serial, acc = m.group(1), owner(m.group(1))
+    if not acc:
+        return h.send(404, {"error": "unknown printer"})
+    send_command(h, acc, serial, [{"print": {
+        "command": "ams_filament_drying", "sequence_id": "0", "ams_id": _ams_id(body), "mode": 0, "filament": "",
+        "temp": 0, "duration": 0, "humidity": 0, "rotate_tray": False, "cooling_temp": 0,
+        "close_power_conflict": False}}])
 
 
 PAGE = """<!doctype html>
@@ -917,6 +1079,7 @@ ROUTES = [
     ("GET", r"/api/printers", get_printers, 0),
     ("GET", r"/api/status/" + SER, lambda h, m, b: proxy(h, "/status/", m.group(1)), 0),
     ("GET", r"/api/ams/" + SER, lambda h, m, b: proxy(h, "/ams/", m.group(1)), 0),
+    ("GET", r"/api/drying/" + SER, get_drying, 0),
     ("GET", r"/api/camera/" + SER + r"/url", lambda h, m, b: camera(h, "url", m.group(1)), 0),
     ("GET", r"/api/camera/" + SER + r"/live", lambda h, m, b: get_live(h, m.group(1)), 0),
     ("GET", r"/api/camera/" + SER + r"/snapshot", lambda h, m, b: camera(h, "snapshot", m.group(1)), 0),
@@ -928,6 +1091,8 @@ ROUTES = [
     ("POST", r"/api/light/" + SER, post_light, MAX_SMALL_BODY),
     ("POST", r"/api/rfid/" + SER, post_rfid, MAX_SMALL_BODY),
     ("POST", r"/api/pause/" + SER, post_pause, MAX_SMALL_BODY),
+    ("POST", r"/api/ams/" + SER + r"/drying", post_drying, MAX_SMALL_BODY),
+    ("POST", r"/api/ams/" + SER + r"/drying/stop", post_drying_stop, MAX_SMALL_BODY),
 ]
 
 

@@ -1,5 +1,5 @@
 // Shell: identity, hash router, tabs, polling.
-import { api } from './api.js';
+import { api, RESTARTING } from './api.js';
 import { h, clear, icon, fail, empty } from './util.js';
 
 const VIEWS = {
@@ -43,6 +43,23 @@ function shell() {
     main);
 }
 
+// Home Assistant restarts: say so once, probe with backoff, then draw the view again.
+let banner = null;
+addEventListener('druckwerk:restarting', () => {
+  if (banner) return;
+  banner = h('div', { class: 'restart', role: 'status', 'aria-live': 'polite' }, h('span', { class: 'spin' }), ' ', RESTARTING);
+  document.body.prepend(banner);
+  let wait = 2000;
+  const probe = async () => {
+    try { await api.me(); } catch (e) {
+      if (e.retry || e.status === 0) { wait = Math.min(wait * 1.6, 20000); setTimeout(probe, wait); return; }
+    }
+    banner.remove(); banner = null;
+    if (ctx.me) route(); else start();
+  };
+  setTimeout(probe, wait);
+});
+
 let seq = 0;
 async function route() {
   ctx.timers.splice(0).forEach(clearInterval);
@@ -60,19 +77,20 @@ async function route() {
     await mod.mount(ctx, main, parts.slice(1));
   } catch (e) {
     if (mine !== seq) return;
-    clear(main, empty('Could not load this screen: ' + e.message));
+    clear(main, e.retry ? h('p', { class: 'muted' }, h('span', { class: 'spin' }), ' ', RESTARTING) : empty('Could not load this screen: ' + e.message));
     fail(e);
   }
 }
 
+let started = false;
 async function start() {
   try { ctx.me = await api.me(); } catch (e) {
-    clear(app, h('main', null, empty('Cannot reach the hub: ' + e.message)));
+    clear(app, h('main', null, e.retry ? h('p', { class: 'muted' }, h('span', { class: 'spin' }), ' ', RESTARTING) : empty('Cannot reach the hub: ' + e.message)));
     return;
   }
   shell();
   if (!location.hash && ctx.isAdmin() && !ctx.me.setup_done) location.hash = '#/setup';
-  addEventListener('hashchange', route);
+  if (!started) { started = true; addEventListener('hashchange', route); }
   route();
 }
 start();

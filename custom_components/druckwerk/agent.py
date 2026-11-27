@@ -145,13 +145,16 @@ class Ops:
         slice_job_id: str | None = None,
         target: str = "any",
         model: str | None = None,
-        options: dict[str, bool] | None = None,
+        options: dict[str, Any] | None = None,
+        name: str | None = None,
     ) -> dict[str, Any]:
         if bool(file) == bool(slice_job_id):
             raise ServiceValidationError("Give exactly one of file (a sliced file in the share) or slice_job_id")
         if target != "any":
             target = await self.serial(user_id, target)
         body: dict[str, Any] = {"target": target, "options": options or {}}
+        if name:
+            body["name"] = name
         if slice_job_id:
             if model:
                 body["model"] = model

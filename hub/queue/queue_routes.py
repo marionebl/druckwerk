@@ -39,8 +39,11 @@ def make_routes(q, access=None, is_internal=lambda h: False, caller_of=None):
 
     def post_queue(h, m, api):
         b = h.json()
+        if b.get("kind") == "dry":
+            return api.add_dry(b.get("target"), b.get("ams_id"), b.get("temp"), b.get("hours"), b.get("filament", ""),
+                               name=b.get("name"))
         return api.add(b.get("file"), b.get("source", ""), b.get("target", "any"), b.get("model", ""),
-                       b.get("filaments"), b.get("options"))
+                       b.get("filaments"), b.get("options"), name=b.get("name"))
 
     def reorder(h, m, api):
         b = h.json()  # the body can be read only once
@@ -57,13 +60,14 @@ def make_routes(q, access=None, is_internal=lambda h: False, caller_of=None):
         return api.move(m.group(1), b.get("target"), b.get("model", ""))
 
     def start_next(h, m, api):
-        return api.start(m.group(1), plate_clear=h.json().get("plate_clear"))
+        b = h.json()
+        return api.start(m.group(1), plate_clear=b.get("plate_clear"), confirmed=b.get("confirmed"))
 
     def start_job(h, m, api):
         b = h.json()
         if not b.get("job_id"):
             raise ValueError("job_id is required")
-        return api.start(m.group(1), plate_clear=b.get("plate_clear"), job_id=b["job_id"])
+        return api.start(m.group(1), plate_clear=b.get("plate_clear"), job_id=b["job_id"], confirmed=b.get("confirmed"))
 
     def grants_add(h, m, api):
         b = h.json()
@@ -82,6 +86,7 @@ def make_routes(q, access=None, is_internal=lambda h: False, caller_of=None):
         ("POST", r"/api/queue/" + ID + r"/approve", guarded(one("approve"))),
         ("POST", r"/api/queue/" + ID + r"/reject", guarded(one("reject"))),
         ("POST", r"/api/queue/" + ID + r"/skip", guarded(one("skip"))),
+        ("POST", r"/api/queue/" + ID + r"/stop", guarded(one("stop_dry"))),
         ("POST", r"/api/printers/([^/]+)/start-next", guarded(start_next)),
         ("POST", r"/api/printers/([^/]+)/start", guarded(start_job)),
         ("GET", r"/api/grants", guarded(lambda h, m, api: api.grants_list())),

@@ -74,7 +74,8 @@ class HubCoordinator(DataUpdateCoordinator[HubData]):
                 and job.get("target") in (serial, "any")
                 and job.get("id") != exclude
             ):
-                return job
+                # start-next takes the first job; a drying there needs its own confirmation, not a plate prompt.
+                return None if job.get("kind") == "dry" else job
         return None
 
     async def _handle(self, event: dict[str, Any]) -> None:
@@ -89,12 +90,12 @@ class HubCoordinator(DataUpdateCoordinator[HubData]):
                 if nxt:
                     await self.notify_admins(
                         serial,
-                        f"Plate clear? Start next: {nxt.get('file')}",
+                        f"Plate clear? Start next: {nxt.get('name') or nxt.get('file')}",
                         actions=[{"action": f"{ACTION_PREFIX}{serial}", "title": "Plate clear, start"}],
                     )
             elif etype == "approval_needed":
                 who = job.get("owner_name") or "Someone"
-                await self.notify_admins(serial, f"{who} needs approval to print {job.get('file')}")
+                await self.notify_admins(serial, f"{who} needs approval to {'dry' if job.get('kind') == 'dry' else 'print'} {job.get('name') or job.get('file')}")
         except (aiohttp.ClientError, TimeoutError, ValueError) as err:
             _LOGGER.warning("Cannot notify for %s: %s", etype, err)
 

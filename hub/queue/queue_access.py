@@ -152,7 +152,8 @@ class Bound:
     def _job(self, job_id):
         return self.q._find(job_id)
 
-    def add(self, file, source="", target="any", model="", filaments=None, options=None):
+    def _add_rule(self, target, model):
+        """(owner fields) for a new job: needs an active grant on the target, and approval if the grants say so."""
         if target == "any":
             serials = [p["serial"] for p in self.a.registry.all() if p["model"].lower() == str(model).lower()]
         else:
@@ -164,8 +165,15 @@ class Bound:
         if role == "user":
             grants = [g for s in serials for g in self.a.grants.active(self.c.user_id, s)]
             pending = all(g.get("needs_approval") for g in grants)
-        return self.q.add(file, source, target, model, filaments, options,
-                          owner_user_id=self.c.user_id or None, owner_name=self.c.display, pending=pending)
+        return dict(owner_user_id=self.c.user_id or None, owner_name=self.c.display, pending=pending)
+
+    def add(self, file, source="", target="any", model="", filaments=None, options=None, name=None):
+        return self.q.add(file, source, target, model, filaments, options, name=name, **self._add_rule(target, model))
+
+    def add_dry(self, target, ams_id, temp, hours, filament="", name=None):
+        if not self.a.registry.get(target):
+            raise ValueError("unknown printer")  # a drying belongs to one printer, never "any"
+        return self.q.add_dry(target, ams_id, temp, hours, filament, name=name, **self._add_rule(target, ""))
 
     def reorder(self, job_id, position, scope=None):
         job = self._job(job_id)
@@ -210,9 +218,13 @@ class Bound:
         self._need_admin(self.a.serials_of(self._job(job_id)), "only an admin of the job's printer can skip a job")
         return self.q.skip(job_id)
 
-    def start(self, serial, plate_clear=False, job_id=None):
-        self._need_admin([serial], "only an admin of the printer can start a print")
-        return self.q.start(serial, plate_clear=plate_clear, job_id=job_id)
+    def start(self, serial, plate_clear=False, job_id=None, confirmed=False):
+        self._need_admin([serial], "only an admin of the printer can start a job")
+        return self.q.start(serial, plate_clear=plate_clear, job_id=job_id, confirmed=confirmed)
+
+    def stop_dry(self, job_id):
+        self._need_admin(self.a.serials_of(self._job(job_id)), "only an admin of the job's printer can stop a drying")
+        return self.q.stop_dry(job_id)
 
     def snapshot(self):
         snap = self.q.snapshot()

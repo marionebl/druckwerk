@@ -154,3 +154,35 @@ def test_history_capped_and_persisted(make, tmp_path, fake):
     from queue_engine import Queue
     again = Queue(make.registry, str(tmp_path), fake.get_state, fake.call_service)
     assert len(again.history) == 200
+
+
+def test_print_options_are_validated_and_defaults_kept(make):
+    job = make.add(F, target="S1")
+    assert job["options"] == {"timelapse": False, "bed_leveling": True, "use_ams": True, "flow_cali": True,
+                              "vibration_cali": True, "layer_inspect": False, "nozzle_offset_cali": False,
+                              "bed_type": "auto", "ext_change_assist": False}
+    job = make.add(F, target="S1", options={"bed_leveling": "auto", "bed_type": "cool_plate", "layer_inspect": True})
+    assert (job["options"]["bed_leveling"], job["options"]["bed_type"], job["options"]["layer_inspect"]) == ("auto", "cool_plate", True)
+    for bad in ({"bed_leveling": "maybe"}, {"vibration_cali": "auto"}, {"bed_type": "gold"}, {"layer_inspect": 1},
+                {"nope": True}, {"nozzle_offset_cali": None}):
+        with pytest.raises(ValueError, match="bad option"):
+            make.add(F, target="S1", options=bad)
+
+
+def test_send_passes_only_advanced_options_that_differ_from_the_default(make, fake):
+    make.add(F, target="S1", options={"flow_cali": "auto", "bed_type": "hot_plate", "bed_leveling": "auto"})
+    make.start("S1", plate_clear=True)
+    data = [c for c in fake.calls if c[1] == "print_file"][0][2]
+    assert data == {"serial": "S1", "file": F, "timelapse": False, "bed_leveling": "auto", "use_ams": True,
+                    "flow_cali": "auto", "bed_type": "hot_plate", "force": True}
+
+
+def test_job_name_defaults_to_the_file_and_is_limited(make):
+    assert make.add("cube_x.gcode.3mf", target="S1")["name"] == "cube_x"
+    assert make.add(F, target="S1", name="  Benchy for Anna ")["name"] == "Benchy for Anna"
+    assert make.add(F, target="S1", name="")["name"] == "a"
+    assert len(make.add(F, target="S1", name="x" * 80)["name"]) == 80
+    with pytest.raises(ValueError, match="name"):
+        make.add(F, target="S1", name="x" * 81)
+    with pytest.raises(ValueError, match="name"):
+        make.add(F, target="S1", name=5)

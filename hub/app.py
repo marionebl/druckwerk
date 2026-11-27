@@ -21,7 +21,7 @@ from urllib.parse import parse_qs, urlsplit
 import externals
 import filament
 import history
-from ha import HAError
+from ha import HAError, HAUnavailable
 from queue_access import Access, Caller, Forbidden, Grants, Unauthorized, caller_from_headers
 from queue_engine import WAITING, NotFound, Queue, QueueError
 from queue_registry import Registry
@@ -42,6 +42,8 @@ UI_FILES = r"(index\.html|style\.css|app\.js|api\.js|util\.js|feedback\.js|views
 # A feedback post carries screenshots; every other route keeps the slicer's 8 KB JSON limit.
 FEEDBACK_MAX = 1500000
 MIME = {"html": "text/html; charset=utf-8", "css": "text/css; charset=utf-8", "js": "text/javascript; charset=utf-8"}
+MEDIA_ROOTS = ("/media", "/share")  # where a queue file may be named by absolute path (config.yaml maps media read-only)
+SLICED = re.compile(r"Metadata/plate_\d+\.gcode")
 TASKS_TTL = 60  # seconds a printer's cloud task list is reused
 DOMAIN_DEFAULTS = "schedule,input_boolean,binary_sensor,person"
 
@@ -80,6 +82,26 @@ class Capture:
         self.out = (status, body, ctype)
 
 
+class Drying:
+    """The queue's view of the bridge's AMS drying routes."""
+
+    def __init__(self, app):
+        self.app = app
+
+    def start(self, serial, d):
+        try:
+            self.app.bridge_ok("POST", "/api/ams/%s/drying" % serial, d, timeout=30)
+        except HttpError as e:
+            raise (ValueError if e.status == 400 else RuntimeError)(str(e))
+
+    def stop(self, serial, ams_id):
+        self.app.bridge_ok("POST", "/api/ams/%s/drying/stop" % serial, {"ams_id": ams_id}, timeout=30)
+
+    def state(self, serial, ams_id):
+        unit = next((u for u in self.app.drying(serial, max_age=0) or [] if u["ams_id"] == ams_id), None)
+        return {"active": unit["active"], "left_min": unit["left_min"]} if unit else None
+
+
 class App:
     def __init__(self, ha, data_dir, share, bridge, slicer, hostname_fn, port, clock=time.time,
                  trusted_ips=(), ui_dir=None):
@@ -92,9 +114,11 @@ class App:
         self.grants = Grants(self.registry, data_dir, self._grant_state, clock)
         self.access = Access(self.registry, self.grants, self.get_user)
         self.queue = Queue(self.registry, data_dir, ha.state, self._call_service, self.get_trays, clock=clock,
-                           job_allowed=self.access.job_allowed)
+                           job_allowed=self.access.job_allowed, dry=Drying(self))
+        self.media_roots = list(MEDIA_ROOTS)
         self.secret = self._load_secret()
         self._auto_at = None
+        self._track_at = None
         self._cache = {}
         self._cache_lock = threading.Lock()
         # Events: seq starts at the boot time so it keeps growing across restarts (pollers hold the last seq they saw).
@@ -182,7 +206,7 @@ class App:
             return main["entity_id"].split(".", 1)[1].removesuffix("_print_status")
         return slug(dev.get("name_by_user") or dev.get("name") or "") or None
 
-    def ams(self, serial, states):
+    def ams(self, serial, states, raw=False):
         """AMS units of one printer from the entity registry: [{unit, humidity_index, temp, trays: [...]}]."""
         devices, entities = self.registries()
         dev_name = {d["id"]: d.get("name") or "" for d in devices}
@@ -212,11 +236,12 @@ class App:
                 empty = a.get("empty") or st["state"] in ("unknown", "unavailable", "Empty", "")
                 spool = self.spools.in_tray(serial, unit, slot)
                 remain = a.get("remain")
+                tray_uid = next((x for x in (a.get("tag_uid"), a.get("tray_uuid")) if x and set(str(x)) - {"0"}), "")
                 trays.append({"slot": slot, "type": "" if empty else a.get("type") or "",
                               "colour": "" if empty else re.sub(r"[^0-9A-Fa-f]", "", a.get("color") or "")[:6].upper(),
                               "name": "" if empty else st["state"],
                               "remain_pct": remain if isinstance(remain, (int, float)) and remain >= 0 else None,
-                              "spool_id": spool["id"] if spool else None})
+                              "spool_id": spool["id"] if spool else None, **({"uid": str(tray_uid)} if raw else {})})
             hum = states.get(u["e"].get("humidity_index", ""))
             temp = states.get(u["e"].get("temperature", ""))
             out.append({"unit": unit, "humidity_index": num(hum and hum["state"], int),
@@ -309,6 +334,13 @@ class App:
             return {}
         return (data or {}).get("print") or {} if status == 200 and isinstance(data, dict) else {}
 
+    def drying(self, serial, max_age=5):
+        """Units with a dryer, from the bridge; None when it cannot say."""
+        try:
+            return self._cached("dry:" + serial, max_age, lambda: self.bridge_ok("GET", "/api/drying/" + serial, timeout=10))
+        except HttpError:
+            return None
+
     def printer_view(self, p, role, states):
         serial, pre = p["serial"], p["prefix"]
 
@@ -351,6 +383,7 @@ class App:
             "camera_url": "api/printers/%s/camera" % serial,
             "active_tray": {"unit": num(ta.get("ams_index"), int), "slot": num(ta.get("tray_index"), int)}
             if ta and ta.get("ams_index") is not None and ta.get("tray_index") is not None else None,
+            "drying": self.drying(serial) or [],
             "ams": self.ams(serial, states), "external": self.external(serial, states), "hms": hms_out,
             "current_job": dict(job) if job else None,
             "queue_length": sum(1 for j in self.queue.jobs if j["state"] in WAITING and serial in self.access.serials_of(j)),
@@ -381,6 +414,8 @@ class App:
                 serial = j.get("printer") or (j["target"] if j["target"] != "any" else "")
                 if state == "pending_approval":
                     self.emit("approval_needed", serial, j)
+                elif j.get("kind") == "dry":
+                    continue  # a drying has no print events, spools or cost
                 elif state == "starting":
                     self.emit("job_started", serial, j)
                 elif state == "done":
@@ -443,8 +478,24 @@ class App:
         except Exception as e:  # noqa: BLE001 - bridge and HA errors must not stop the ticker
             log("auto register: %s" % e)
 
+    def try_track_filament(self, every=60):
+        """Record the filament in the AMS trays as spools; throttled like auto_register."""
+        now = self.clock()
+        if self._track_at is not None and now - self._track_at < every:
+            return
+        self._track_at = now
+        try:
+            states = self.ha.states(max_age=0)
+            for p in self.registry.all():
+                for unit in self.ams(p["serial"], states, raw=True):
+                    for t in unit["trays"]:
+                        self.spools.see(p["serial"], unit["unit"], t["slot"], t, now)
+        except Exception as e:  # noqa: BLE001 - HA may be down; the next try follows
+            log("track filament: %s" % e)
+
     def tick_all(self):
         self.try_auto_register()
+        self.try_track_filament()
         for p in self.registry.all():
             try:
                 self.queue.tick(p["serial"])
@@ -505,6 +556,8 @@ class App:
                 return h.send(409, {"error": str(e)})
             except HttpError as e:
                 return h.send(e.status, {"error": str(e)})
+            except HAUnavailable as e:
+                return h.send(503, {"error": str(e), "retry": True})
             except HAError as e:
                 return h.send(502, {"error": str(e)})
             except ValueError as e:
@@ -750,7 +803,8 @@ class App:
         name = name[:-len(".gcode.3mf")].replace("..", "_") + "_" + secrets.token_hex(3) + ".gcode.3mf"
         added = self.access.bind(self.queue, c).add(
             name, job["filename"], target, model,
-            [{"type": f["type"], "colour": f["colour"]} for f in use["filaments"]], b.get("options"))
+            [{"type": f["type"], "colour": f["colour"]} for f in use["filaments"]], b.get("options"),
+            name=b.get("name") or job["filename"].rsplit(".", 1)[0])
         os.makedirs(self.share, exist_ok=True)
         with open(job["result"], "rb") as src:
             # Written after the job passed the access check, so a refused request leaves nothing in the share.
@@ -769,6 +823,93 @@ class App:
                          slice_tray=[int(tray["ams"]), int(tray["id"])] if tray else None)
             self.queue._save()
         return added
+
+    def resolve_media(self, path):
+        """The real path of a sliced .gcode.3mf under /media or /share, or ValueError. Symlinks are resolved first."""
+        real = os.path.realpath(path)
+        roots = [os.path.realpath(r) for r in self.media_roots]
+        if not any(real == r or real.startswith(r + os.sep) for r in roots):
+            raise ValueError("the file must be under /media or /share")
+        if not real.endswith(".gcode.3mf") or not os.path.isfile(real):
+            raise ValueError("no such .gcode.3mf file")
+        try:
+            with zipfile.ZipFile(real) as z:
+                if not any(SLICED.fullmatch(n) for n in z.namelist()):
+                    raise ValueError("that 3MF is not sliced: it has no Metadata/plate_N.gcode")
+                z.read("Metadata/slice_info.config")
+        except (zipfile.BadZipFile, KeyError):
+            raise ValueError("that file is not a sliced .gcode.3mf")
+        return real
+
+    def post_queue(self, h, m, q, c):
+        """POST /api/queue: the queue's own add, plus a file named by absolute path, which is copied into the share."""
+        b = h.json()
+        f = b.get("file")
+        api = self.access.bind(self.queue, c)
+        if b.get("kind") == "dry" or not (isinstance(f, str) and f.startswith("/")):
+            return self.queue_routes_add(api, b)
+        real = self.resolve_media(f)
+        use = filament.slice_usage(real)
+        base = os.path.basename(real)[:-len(".gcode.3mf")].replace("..", "_")
+        name = base + "_" + secrets.token_hex(3) + ".gcode.3mf"
+        fils = b.get("filaments") or [{"type": x["type"], "colour": x["colour"]} for x in use["filaments"]]
+        added = api.add(name, os.path.basename(real), b.get("target", "any"), b.get("model", ""), fils, b.get("options"),
+                        name=b.get("name") or base)
+        os.makedirs(self.share, exist_ok=True)
+        with open(real, "rb") as src, open(os.path.join(self.share, name), "wb") as dst:  # after the access check
+            dst.write(src.read())
+        png = None
+        with zipfile.ZipFile(real) as z:
+            if "Metadata/plate_1.png" in z.namelist():
+                with open(os.path.join(self.data_dir, "plates", added["id"] + ".png"), "wb") as out:
+                    out.write(z.read("Metadata/plate_1.png"))
+                png = "api/queue/%s/plate.png" % added["id"]
+        with self.queue.lock:
+            added.update(grams=use["grams"], filament_grams=[x["grams"] for x in use["filaments"]],
+                         print_seconds=use["seconds"], plate_png=png)
+            self.queue._save()
+        return added
+
+    @staticmethod
+    def queue_routes_add(api, b):
+        if b.get("kind") == "dry":
+            return api.add_dry(b.get("target"), b.get("ams_id"), b.get("temp"), b.get("hours"), b.get("filament", ""),
+                               name=b.get("name"))
+        return api.add(b.get("file"), b.get("source", ""), b.get("target", "any"), b.get("model", ""),
+                       b.get("filaments"), b.get("options"), name=b.get("name"))
+
+    def post_drying(self, h, m, q, c):
+        """Dry now: a queue job that starts at once, so the busy checks and the queue view are the same as for a queued one."""
+        serial = m.group(1)
+        self.printer_access(c, serial)
+        if self.access.role(c, serial) != "admin":
+            raise Forbidden("rule: only an admin of the printer can dry an AMS")
+        b = h.json()
+        api = self.access.bind(self.queue, c)
+        job = api.add_dry(serial, b.get("ams_id"), b.get("temp"), b.get("hours"), b.get("filament", ""), name=b.get("name"))
+        try:
+            return api.start(serial, job_id=job["id"], confirmed=b.get("confirmed"))
+        except BaseException:
+            with self.queue.lock:  # a refused start leaves no job behind
+                if job in self.queue.jobs:
+                    self.queue.jobs.remove(job)
+                self.queue._save()
+            raise
+
+    def post_drying_stop(self, h, m, q, c):
+        serial = m.group(1)
+        self.printer_access(c, serial)
+        if self.access.role(c, serial) != "admin":
+            raise Forbidden("rule: only an admin of the printer can stop a drying")
+        ams_id = (h.json() or {}).get("ams_id")
+        if isinstance(ams_id, bool) or not isinstance(ams_id, int):
+            raise ValueError("ams_id is required")
+        job = next((j for j in self.queue.jobs if j.get("kind") == "dry" and j["state"] == "drying"
+                    and j.get("printer") == serial and j["dry"]["ams_id"] == ams_id), None)
+        if job:
+            return self.queue.stop_dry(job["id"])
+        self.bridge_ok("POST", "/api/ams/%s/drying/stop" % serial, {"ams_id": ams_id})
+        return {"stopped": ams_id}
 
     def get_plate(self, h, m, q, c):
         jid = m.group(1)
@@ -904,6 +1045,9 @@ class App:
             ("GET", r"/api/printers/([^/]+)/camera", lambda h, m, q: self.get_camera(h, m, q, self.caller(h))),
             ("GET", r"/api/printers/([^/]+)/cover", lambda h, m, q: self.get_cover(h, m, q, self.caller(h))),
             ("GET", r"/api/queue/" + JOB_ID + r"/plate\.png", lambda h, m, q: self.get_plate(h, m, q, self.caller(h))),
+            ("POST", r"/api/queue", w(self.post_queue)),
+            ("POST", r"/api/printers/([^/]+)/drying", w(self.post_drying)),
+            ("POST", r"/api/printers/([^/]+)/drying/stop", w(self.post_drying_stop)),
             ("POST", r"/api/jobs", self.post_job),
             ("GET", r"/api/jobs/" + JOB_ID, self.get_slice),
             ("POST", r"/api/jobs/" + JOB_ID + r"/slice", self.slicer_job(self.s.post_slice, self.check_slice)),

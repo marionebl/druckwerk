@@ -18,6 +18,13 @@ from homeassistant.exceptions import HomeAssistantError
 from homeassistant.helpers import llm
 
 from .agent import CONFIRM_TEXT, Ops
+from .services import BED_TYPES
+
+LLM_OPTIONS = {
+    **{vol.Optional(k): bool for k in ("timelapse", "use_ams", "vibration_cali", "layer_inspect", "ext_change_assist")},
+    **{vol.Optional(k): vol.Any(bool, "auto") for k in ("bed_leveling", "flow_cali", "nozzle_offset_cali")},
+    vol.Optional("bed_type"): vol.In(BED_TYPES),
+}
 
 API_ID = "druckwerk"
 PROMPT = """Druckwerk manages 3D printers: printer status, the print queue, slicing and starting prints.
@@ -103,16 +110,20 @@ class AddToQueue(DruckwerkTool):
             vol.Optional("slice_job_id", description="Slice job id from druckwerk_slice"): str,
             vol.Optional("target", default="any", description="Printer serial or name, or any"): str,
             vol.Optional("model", description="Printer model for target any, e.g. H2S"): str,
-            vol.Optional("options", description="timelapse, bed_leveling, use_ams as booleans"): vol.Schema(
-                {vol.Optional(k): bool for k in ("timelapse", "bed_leveling", "use_ams")}
-            ),
+            vol.Optional(
+                "options",
+                description="Print options: timelapse, use_ams, vibration_cali, layer_inspect, ext_change_assist as "
+                "booleans; bed_leveling, flow_cali, nozzle_offset_cali as true, false or auto; bed_type as auto, cool_plate, "
+                "eng_plate, hot_plate, textured_plate, supertack_plate or 3d_effect_plate",
+            ): vol.Schema(LLM_OPTIONS),
+            vol.Optional("name", description="Name of the print, shown in the queue and the live activity (80 characters)"): vol.All(str, vol.Length(max=80)),
         }
     )
 
     async def run(self, ops, user_id, args):
         return await ops.add_to_queue(
             user_id, file=args.get("file"), slice_job_id=args.get("slice_job_id"), target=args["target"],
-            model=args.get("model"), options=args.get("options"),
+            model=args.get("model"), options=args.get("options"), name=args.get("name"),
         )
 
 

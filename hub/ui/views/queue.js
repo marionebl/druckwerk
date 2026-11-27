@@ -1,9 +1,9 @@
 // Queue: jobs grouped by printer, approvals separate, drag or buttons to reorder, history tab.
 import { api } from '../api.js';
-import { h, clear, icon, btn, pill, empty, modal, field, attempt, dateTime, money, toast } from '../util.js';
+import { h, clear, icon, btn, pill, empty, modal, field, attempt, dateTime, money, toast, dur, clock } from '../util.js';
 
 const WAITING = ['queued', 'pending_approval'];
-const STATE = { pending_approval: ['Needs approval', 'warn'], queued: ['Queued', ''], starting: ['Starting', 'ok'], printing: ['Printing', 'ok'], done: ['Done', 'ok'], failed: ['Failed', 'err'], cancelled: ['Cancelled', ''] };
+const STATE = { pending_approval: ['Needs approval', 'warn'], queued: ['Queued', ''], starting: ['Starting', 'ok'], printing: ['Printing', 'ok'], drying: ['Drying', 'ok'], done: ['Done', 'ok'], failed: ['Failed', 'err'], cancelled: ['Cancelled', ''] };
 
 export async function mount(ctx, root) {
   const state = { tab: 'queue', dragging: null };
@@ -39,7 +39,18 @@ export async function mount(ctx, root) {
     if (n) moveTo(j, n);
   }
 
+  const unitName = (d) => (d.ams_id < 128 ? 'AMS ' + (d.ams_id + 1) : 'AMS HT');
+  function startDryDialog(j) {
+    const d = j.dry;
+    return modal('Start drying?', (close) => h('div', { class: 'body' },
+      h('p', { style: 'margin:0' }, `${label(j.target)}, ${unitName(d)}: ${d.filament || 'any filament'} at ${d.temp}°C for ${d.hours} h.`),
+      h('p', { class: 'muted', style: 'margin:0' }, 'The AMS heats up. Prints on this printer wait until the drying ends or you stop it.'),
+      h('div', { class: 'row', style: 'gap:8px' },
+        btn('Start drying', async () => { if (await attempt(() => api.startJob(j.target, j.id), 'Drying started')) { close(true); refresh(); } }, 'primary'),
+        btn('Cancel', () => close(false)))));
+  }
   function startDialog(j) {
+    if (j.kind === 'dry') return startDryDialog(j);
     const candidates = Object.entries(names).filter(([s]) => ctx.canManage(s) && (j.target === 'any' ? models[s] === j.model : s === j.target));
     return modal('Start this job now', (close) => {
       const sure = h('input', { type: 'checkbox' });
@@ -48,7 +59,7 @@ export async function mount(ctx, root) {
         if (await attempt(() => api.startJob(sel.value, j.id), 'Starting')) { close(true); refresh(); }
       }, 'primary', { disabled: true });
       sure.addEventListener('change', () => (go.disabled = !sure.checked));
-      return h('div', { class: 'body' }, h('p', { class: 'muted', style: 'margin:0' }, j.source),
+      return h('div', { class: 'body' }, h('p', { class: 'muted', style: 'margin:0' }, j.name || j.source),
         j.target === 'any' && field('Printer', sel),
         j.target !== 'any' && h('p', { style: 'margin:0' }, 'Printer: ', h('b', null, label(j.target)), h('span', { hidden: true }, sel)),
         h('label', { class: 'check' }, sure, h('span', null, h('b', null, 'Plate is clear'), h('br'), h('small', null, 'The last print is removed and the right filament is loaded.'))), go);
@@ -76,20 +87,24 @@ export async function mount(ctx, root) {
       h('button', { class: 'icon-btn', 'aria-label': 'Move up', disabled: idx === 0, onclick: () => step(j, group, -1) }, icon('up')),
       h('button', { class: 'icon-btn', 'aria-label': 'Move down', disabled: idx === group.length - 1, onclick: () => step(j, group, 1) }, icon('down')));
     if (pending && admin) acts.push(btn('Approve', () => act(j, 'approve', undefined, 'Approved'), 'sm primary'), btn('Reject', () => act(j, 'reject', undefined, 'Rejected'), 'sm danger'));
-    if (waiting && admin) acts.push(btn('Start', () => startDialog(j), 'sm'), btn('Skip', () => act(j, 'skip', undefined, 'Skipped'), 'sm'), btn('Move…', () => moveDialog(j), 'sm'));
+    if (waiting && admin) acts.push(btn('Start', () => startDialog(j), 'sm'), btn('Skip', () => act(j, 'skip', undefined, 'Skipped'), 'sm'),
+      j.kind !== 'dry' && btn('Move…', () => moveDialog(j), 'sm'));
+    if (j.state === 'drying' && admin) acts.push(btn('Stop drying', () => act(j, 'stop', undefined, 'Drying stopped'), 'sm danger'));
     if (['queued', 'pending_approval', 'starting', 'printing'].includes(j.state) && (admin || own)) acts.push(btn('Cancel', () => act(j, 'cancel', undefined, 'Cancelled'), 'sm danger'));
     if (['failed', 'cancelled'].includes(j.state) && (admin || own)) acts.push(btn('Retry', () => act(j, 'retry', undefined, 'Requeued'), 'sm'));
     const el = h('div', { class: 'job' + (pending ? ' pending' : ''), draggable: canOrder && waiting ? 'true' : null, 'data-id': j.id },
       canOrder && waiting ? h('div', { class: 'grip', title: 'Drag to reorder', 'aria-hidden': 'true' }, icon('grip')) : h('div', { class: 'pos' }, waiting ? idx + 1 : ''),
-      j.plate_png ? h('img', { class: 'thumb', src: j.plate_png, alt: '', loading: 'lazy' }) : h('div', { class: 'thumb' }),
+      j.plate_png ? h('img', { class: 'thumb', src: j.plate_png, alt: '', loading: 'lazy' }) : h('div', { class: 'thumb' }, j.kind === 'dry' ? '♨' : null),
       h('div', { class: 'main' },
-        h('div', { class: 'row between' }, h('span', { class: 'title' }, j.source || j.file), pill(stl, cls)),
+        h('div', { class: 'row between' }, h('span', { class: 'title' }, j.name || j.source || j.file), pill(stl, cls)),
         h('div', { class: 'sub' },
           h('span', { class: 'row', style: 'gap:6px' }, h('span', { class: 'avatar' }, (j.owner_name || '?')[0].toUpperCase()), j.owner_name, own && ' (you)'),
           state.tab === 'history' && h('span', null, label(j.printer || j.target)),
           j.grams != null && h('span', null, j.grams.toFixed(0) + ' g'),
           j.cost != null && h('span', null, money(j.cost)),
+          j.kind === 'dry' && h('span', null, `${unitName(j.dry)} · ${j.dry.temp}°C · ${j.dry.hours} h`),
           j.options?.timelapse && h('span', null, 'timelapse'),
+          j.name && j.file && j.name !== j.file.replace(/\.gcode\.3mf$/, '') && h('span', null, j.source || j.file),
           h('span', null, dateTime(j.finished_at || j.created_at))),
         j.error && h('small', { style: 'color:var(--err)' }, j.error)),
       acts.length ? h('div', { class: 'acts' }, acts) : null);

@@ -61,6 +61,13 @@ Example with `ha_call_service` (or any REST client: `POST /api/services/druckwer
  "data": {"slice_job_id": "a1b2c3d4e5f6", "target": "any", "model": "H2S", "options": {"timelapse": true}}}
 ```
 
+## Print options, name and drying
+
+- `druckwerk.print_file` and the `options` of `druckwerk.add_to_queue` take the options of the vendor slicer's send dialog: `bed_leveling`, `flow_cali`, `nozzle_offset_cali` (`on`, `off` or `auto`), `vibration_cali`, `layer_inspect`, `ext_change_assist`, `timelapse`, `use_ams` (on or off) and `bed_type` (`auto`, `cool_plate`, `eng_plate`, `hot_plate`, `textured_plate`, `supertack_plate`, `3d_effect_plate`). What you leave out keeps today's value. In the web UI they are under "Advanced print options" on the New print page (closed by default). Not every printer supports every option; the printer ignores what it cannot do.
+- `druckwerk.add_to_queue` also takes `name` (up to 80 characters; default: the file name). The queue, the todo list and the live activity show it. `file` may be an absolute path under `/media` or `/share` to a sliced `.gcode.3mf`; the app copies it into its share (it has read-only access to `/media`).
+- AMS drying (AMS 2 Pro, AMS HT): on the printer page an admin starts and stops drying per AMS unit (a confirm dialog comes first) or adds a drying job to the queue. A drying job is a queue job like a print: it waits for its turn, needs a person to start it, and the next print on that printer waits until the drying is over or stopped. The page shows the state and the time left. The control appears only for units that report a dryer and a printer that supports remote drying; an AMS that the status does not show cannot be controlled.
+- The Filament page lists the filament the hub sees in the AMS first, grouped by printer and AMS unit. The hub adds a spool for every loaded tray it does not know (marked "seen") and follows it when it moves.
+
 ## Print guard
 
 Before anything is sent, `druckwerk.print_file` and the Start button check the first plate's G-code (`gcode_guard.py`) and refuse the file, listing every problem, if:
@@ -72,12 +79,12 @@ Before anything is sent, `druckwerk.print_file` and the Start button check the f
 
 `force` only overrides the "printer is busy" check, not this guard.
 
-## Druckwerk integration (v0.12)
+## Druckwerk integration (v0.13)
 
 - The integration sets itself up: the app announces host, ports and secret through Supervisor discovery, and Home Assistant creates the entry without a question. Install it from the Marketplace (HACS) and restart Home Assistant. The app's setup page shows whether the integration is connected; the URL and secret are there only as a manual fallback.
 - Printers need no setup step either: the app registers every printer that the printer integration in Home Assistant already has. Remove one on the setup page and it stays removed.
 - Options: hub secret (normally delivered by the app through Supervisor discovery, which also keeps URLs and secret current; paste it by hand otherwise), notification recipients as a map `person.<name>: notify.<service>`.
-- Todo list `Queue` per printer: queued and pending jobs (owner in the description). Deleting an item cancels the job, moving it reorders; adding is not supported (a job needs a sliced file).
+- Todo list `Queue` per printer: queued and pending jobs (the title is the print's name, the description has the file and the owner). Deleting an item cancels the job, moving it reorders; adding is not supported (a job needs a sliced file).
 - Events: the hub is polled every 5 s and fires `druckwerk_job_done`, `_job_failed`, `_job_started`, `_approval_needed`, `_queue_changed` with the hub's payload.
 - Notifications go to the printer's admins, and only to people whose `person` is `home`. After `job_done` with a next job queued they get "Plate clear? Start next: <job>"; the action starts it (`start-next` with `plate_clear`). `approval_needed` notifies the admins.
 

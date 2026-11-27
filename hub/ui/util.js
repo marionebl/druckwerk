@@ -83,6 +83,7 @@ export function toast(msg, kind = 'info') {
   setTimeout(() => t.remove(), kind === 'error' ? 6500 : 3500);
 }
 export function fail(e) {
+  if (e.retry) return; // the restart banner already says it
   toast(e.status === 403 ? 'Not allowed: ' + e.message : e.message, 'error');
 }
 // Run an async action, toast failures. Returns undefined on failure.

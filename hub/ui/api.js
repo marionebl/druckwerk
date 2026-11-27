@@ -11,10 +11,23 @@ async function call(method, path, body, raw) {
     else { init.body = JSON.stringify(body); init.headers['Content-Type'] = 'application/json'; }
   }
   let r;
-  try { r = await fetch(path, init); } catch (e) { throw new ApiError(0, 'Network error: ' + e.message); }
-  const data = await r.json().catch(() => ({}));
-  if (!r.ok) throw new ApiError(r.status, data.error || 'HTTP ' + r.status);
-  return data;
+  try { r = await fetch(path, init); } catch (e) { throw restarting(new ApiError(0, 'Network error: ' + e.message)); }
+  const data = await r.json().catch(() => null);
+  if (!r.ok) {
+    // Home Assistant answers 502 to 504 while it restarts: the hub marks its own answer retry, the gateway sends a page.
+    const gateway = [502, 503, 504].includes(r.status) && (data === null || data.retry === true);
+    const err = new ApiError(r.status, (data && data.error) || 'HTTP ' + r.status);
+    throw gateway ? restarting(err) : err;
+  }
+  return data ?? {};
+}
+
+export const RESTARTING = 'Home Assistant is restarting. This page tries again in a few seconds.';
+function restarting(err) {
+  err.retry = true;
+  err.message = RESTARTING;
+  dispatchEvent(new CustomEvent('druckwerk:restarting'));
+  return err;
 }
 const get = (p) => call('GET', p);
 const post = (p, b) => call('POST', p, b ?? {});
@@ -34,8 +47,12 @@ export const api = {
   integration: () => get('api/integration'),
   // printers
   printers: () => get('api/printers'),
-  startNext: (serial) => post(`api/printers/${q(serial)}/start-next`, { plate_clear: true }),
-  startJob: (serial, job_id) => post(`api/printers/${q(serial)}/start`, { job_id, plate_clear: true }),
+  // The person confirmed in the UI: the plate is clear (prints) or the drying may start (drying jobs).
+  startNext: (serial) => post(`api/printers/${q(serial)}/start-next`, { plate_clear: true, confirmed: true }),
+  startJob: (serial, job_id) => post(`api/printers/${q(serial)}/start`, { job_id, plate_clear: true, confirmed: true }),
+  dryNow: (serial, body) => post(`api/printers/${q(serial)}/drying`, { ...body, confirmed: true }),
+  stopDrying: (serial, ams_id) => post(`api/printers/${q(serial)}/drying/stop`, { ams_id }),
+  queueDry: (body) => post('api/queue', { ...body, kind: 'dry' }),
   history: (query) => get('api/history' + (query ? '?' + query : '')),
   // queue
   queue: () => get('api/queue'),

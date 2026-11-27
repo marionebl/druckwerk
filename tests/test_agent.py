@@ -113,6 +113,24 @@ async def test_add_to_queue_file_and_slice_job(hass, hub):
     assert post[2] == {"target": "any", "options": {}} and act_as(post) == UID and res["job"]["id"] == "bbbbbbbbbbbb"
 
 
+async def test_add_to_queue_takes_name_and_advanced_options(hass, hub):
+    on(hub, "post", "/api/queue", JOB)
+    opts = {"bed_leveling": "auto", "flow_cali": False, "layer_inspect": True, "bed_type": "cool_plate"}
+    await act(hass, "add_to_queue", {"file": "cube.gcode.3mf", "target": SERIAL, "name": "Benchy for Anna", "options": opts})
+    (post,) = hub_calls(hub, "post", "/api/queue")
+    assert post[2] == {"target": SERIAL, "options": opts, "file": "cube.gcode.3mf", "name": "Benchy for Anna"}
+    with pytest.raises(Exception):
+        await act(hass, "add_to_queue", {"file": "cube.gcode.3mf", "target": SERIAL, "options": {"bed_type": "gold"}})
+    with pytest.raises(Exception):
+        await act(hass, "add_to_queue", {"file": "cube.gcode.3mf", "target": SERIAL, "name": "x" * 81})
+
+
+async def test_add_to_queue_accepts_an_absolute_media_path(hass, hub):
+    on(hub, "post", "/api/queue", JOB)
+    await act(hass, "add_to_queue", {"file": "/media/bambu_sender/plate.gcode.3mf", "target": SERIAL})
+    assert hub_calls(hub, "post", "/api/queue")[0][2]["file"] == "/media/bambu_sender/plate.gcode.3mf"
+
+
 async def test_add_to_queue_any_infers_the_only_model(hass, hub):
     on(hub, "post", "/api/queue", JOB)
     await act(hass, "add_to_queue", {"file": "cube.gcode.3mf"})
