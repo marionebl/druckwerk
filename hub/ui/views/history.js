@@ -2,7 +2,7 @@
 import { api } from '../api.js';
 import { h, clear, icon, pill, empty, field, clock, durSec, money, toDate, fail } from '../util.js';
 
-const STATUS = { finished: ['Finished', 'ok'], failed: ['Failed', 'err'], cancelled: ['Cancelled', ''], running: ['Printing', 'ok'] };
+const STATUS = { finished: ['Finished', 'ok'], failed: ['Failed', 'err'], cancelled: ['Cancelled', ''], stopped: ['Stopped early', 'err'], running: ['Printing', 'ok'] };
 const dayKey = (d) => d.getFullYear() * 10000 + (d.getMonth() + 1) * 100 + d.getDate();
 
 function dayLabel(d) {

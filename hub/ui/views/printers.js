@@ -164,7 +164,8 @@ function dryCard(ctx, p, u, refresh) {
 const plateOk = new Set(); // survives the 5 s redraw
 function startNext(ctx, p, mine, refresh) {
   const next = mine.find((j) => j.state === 'queued');
-  if (next?.kind === 'dry') {
+  if (!next) return null; // nothing to start, so the plate check would only be noise
+  if (next.kind === 'dry') {
     const d = next.dry;
     return h('section', { class: 'card' }, h('h2', null, 'Start next job'),
       h('p', { class: 'muted', style: 'margin-top:0' }, `Next in line: ${next.name} (${next.owner_name})`),
@@ -174,17 +175,16 @@ function startNext(ctx, p, mine, refresh) {
       }, 'primary', { disabled: isPrinting(p) }));
   }
   const sure = h('input', { type: 'checkbox', id: 'plate-clear', checked: plateOk.has(p.serial) });
-  const go = btn([icon('check', 18), next ? `Start “${next.name || next.source}”` : 'Start next'], async () => {
+  const go = btn([icon('check', 18), `Start “${next.name || next.source}”`], async () => {
     if (!sure.checked) return;
     if (await attempt(() => api.startNext(p.serial), 'Starting the next job')) { sure.checked = false; plateOk.delete(p.serial); refresh(); }
-  }, 'primary', { disabled: !sure.checked || !next || isPrinting(p) });
+  }, 'primary', { disabled: !sure.checked || isPrinting(p) });
   sure.addEventListener('change', () => {
     sure.checked ? plateOk.add(p.serial) : plateOk.delete(p.serial);
-    go.disabled = !sure.checked || !next || isPrinting(p);
+    go.disabled = !sure.checked || isPrinting(p);
   });
   return h('section', { class: 'card' }, h('h2', null, 'Start next print'),
-    next ? h('p', { class: 'muted', style: 'margin-top:0' }, `Next in line: ${next.name || next.source} (${next.owner_name})`)
-      : h('p', { class: 'muted', style: 'margin-top:0' }, 'The queue for this printer is empty.'),
+    h('p', { class: 'muted', style: 'margin-top:0' }, `Next in line: ${next.name || next.source} (${next.owner_name})`),
     h('div', { class: 'form' },
       h('label', { class: 'check' }, sure, h('span', null, h('b', null, 'Plate is clear'), h('br'), h('small', null, 'I removed the last print and the right filament is loaded.'))),
       go,

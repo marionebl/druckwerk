@@ -88,12 +88,13 @@ async def test_no_user_means_no_act_as_header(hass, hub):
 
 
 async def test_get_queue_groups_waiting_jobs(hass, hub):
-    jobs = [dict(JOB, id="a" * 12), dict(JOB, id="b" * 12, target="any", model="H2S"),
+    jobs = [dict(JOB, id="a" * 12, name="Benchy for Anna", kind="print"), dict(JOB, id="b" * 12, target="any", model="H2S"),
             dict(JOB, id="c" * 12, state="pending_approval"), dict(JOB, id="d" * 12, state="printing", printer=SERIAL)]
     on(hub, "get", "/api/queue", {"jobs": jobs, "history": [dict(JOB, id="e" * 12, state="done"), dict(JOB, id="f" * 12, state="failed")],
                                   "printers": []})
     res = await act(hass, "get_queue", {"history_limit": 1})
     assert [(j["id"][0], j["position"]) for j in res["waiting"][SERIAL]] == [("a", 0), ("c", 1)]
+    assert (res["waiting"][SERIAL][0]["name"], res["waiting"][SERIAL][0]["kind"]) == ("Benchy for Anna", "print")
     assert [j["id"][0] for j in res["waiting"]["any"]] == ["b"]
     assert [j["id"][0] for j in res["pending_approvals"]] == ["c"] and [j["id"][0] for j in res["running"]] == ["d"]
     assert [j["id"][0] for j in res["history"]] == ["e"]
@@ -123,6 +124,20 @@ async def test_add_to_queue_takes_name_and_advanced_options(hass, hub):
         await act(hass, "add_to_queue", {"file": "cube.gcode.3mf", "target": SERIAL, "options": {"bed_type": "gold"}})
     with pytest.raises(Exception):
         await act(hass, "add_to_queue", {"file": "cube.gcode.3mf", "target": SERIAL, "name": "x" * 81})
+
+
+async def test_add_to_queue_waits_for_the_hub_to_copy_the_file(hass, hub, monkeypatch):
+    from custom_components.druckwerk import hub_api
+    seen, real = [], hub_api.hub_request
+
+    async def spy(*a, **kw):
+        seen.append((a[4], kw.get("timeout")))
+        return await real(*a, **kw)
+
+    monkeypatch.setattr(hub_api, "hub_request", spy)
+    on(hub, "post", "/api/queue", JOB)
+    await act(hass, "add_to_queue", {"file": "/media/bambu_sender/plate.gcode.3mf", "target": SERIAL})
+    assert ("/api/queue", 120) in seen
 
 
 async def test_add_to_queue_accepts_an_absolute_media_path(hass, hub):
