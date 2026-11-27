@@ -1,5 +1,9 @@
 # Changelog
 
+## 3.2.1 (unreleased)
+
+- Deep links work in the Home Assistant panel. The app now uses the panel's own route messages (`home-assistant/subscribe-properties`, `home-assistant/properties`, `home-assistant/navigate`), so the HA address bar shows `/app/<slug>/history/123` and that URL opens the history item. The HA back button moves between app screens. Before, the app wrote its route into the hash of the HA page, which the panel does not keep.
+
 ## 3.2.0 (unreleased)
 
 - One History. The History tab lists the Bambu Cloud tasks with the Druckwerk job merged in (name, owner, cost, options, slice). A finished job that no cloud task explains (never sent, cancelled before the start) is listed too and marked "Druckwerk only". The Queue no longer has a History segment. `GET /api/history` items gain `job`, `when` and `printer_owner`; `source` can be `job`.
