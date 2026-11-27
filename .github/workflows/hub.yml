@@ -22,9 +22,9 @@ jobs:
     timeout-minutes: 90
     steps:
       - uses: actions/checkout@v4
-      - name: Unit tests (fake slicer)
+      - name: Unit tests (slicer server)
         run: pip install -q pytest && python3 -m pytest -q hub/slicer
-      - name: Base image (slicer, engine, qemu, ffmpeg; built once per content hash, reused by every app version)
+      - name: Base image (WASM engine, qemu, ffmpeg, bridge; built once per content hash, reused by every app version)
         env:
           GH_TOKEN: ${{ github.token }}
         run: |
@@ -37,7 +37,7 @@ jobs:
             echo "built $BASE"
           fi
           echo "BASE=$BASE" >> "$GITHUB_ENV"
-      - name: Build the app image, then check it (no vendor libs, plugin download at start, bridge, slicer)
+      - name: Build the app image, then check it (no vendor libs, plugin download at start, bridge, browser G-code upload, size limit)
         run: |
           V=$(sed -n 's/^version: "\(.*\)"/\1/p' hub/config.yaml)
           BUILD_ARGS="--build-arg VERSION=$V --build-arg HASS_ARCH=${{ matrix.arch }}" hub/tests/image_test.sh
@@ -47,9 +47,9 @@ jobs:
           python3 -c "import json,sys;b,a=json.loads(sys.argv[1]),json.loads(sys.argv[2]);print(len(b),'base layers,',len(a)-len(b),'app layers');sys.exit(0 if a[:len(b)]==b and len(a)-len(b)==1 else 1)" "$b" "$a"
       - name: Browser tools for the UI tests
         run: pip install -q playwright && python3 -m playwright install --with-deps chromium
-      - name: UI end-to-end (real hub in the image, fake HA and bridge, Pi slicing)
+      - name: UI end-to-end (real hub in the image, fake HA and bridge, slicing in the browser)
         run: SKIP_BUILD=1 IMG=druckwerk-test hub/tests/ui_e2e.sh
-      - name: Slice in headless Chromium (mt, iframe, not isolated) vs native Bambu Studio, G-code guard
+      - name: Slice in headless Chromium (mt, iframe, not isolated), G-code guard
         run: SKIP_BUILD=1 IMG=druckwerk-test hub/tests/browser_test.sh
       - name: Version must change with the app
         if: github.event_name == 'pull_request'

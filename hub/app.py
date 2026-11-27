@@ -745,7 +745,7 @@ class App:
         return run
 
     def get_slice(self, h, m, q):
-        """The slicer's job answer plus a cost estimate once the slice is done."""
+        """The job answer plus a cost estimate once the browser's G-code is stored."""
         job = self.own(self.caller(h), m.group(1))
         cap = Capture(h)
         self.s.get_job(cap, m, q)
@@ -771,14 +771,8 @@ class App:
         return filament.job_cost([f["grams"] for f in use["filaments"]], prices, use["seconds"], printer.get("model"),
                                  printer.get("electricity_kwh_price") or 0)
 
-    def check_slice(self, h, c, job):
-        body = h.json()
-        h.json = lambda: body  # the slicer handler reads the body again
-        if self.access.role(c, str(body.get("serial"))) is None:
-            raise Forbidden("rule: slicing needs an active grant on the printer")
-
     def check_gcode(self, h, c, job):
-        """Browser-sliced G-code is a slice: same grant rule as POST .../slice, on the printer the query names."""
+        """Browser-sliced G-code needs an active grant on the printer the query names."""
         serial = (parse_qs(urlsplit(h.path).query).get("serial") or [""])[0]
         if self.access.role(c, serial) is None:
             raise Forbidden("rule: slicing needs an active grant on the printer")
@@ -1246,7 +1240,7 @@ class App:
             def call(method, path, body=None, data=None, binary=False, timeout=30):
                 return self.local_call(port, act_as, method, path, body, data, binary, timeout)
             try:
-                result = run(m.group(1), h.json(), actions.Ops(call, self.media_roots, self.media_dir, self.sender.print_file))
+                result = run(m.group(1), h.json(), actions.Ops(call, self.media_dir, self.sender.print_file))
             except actions.ActionError as e:
                 raise HttpError(e.status, str(e))
             h.send(200, {"result": result})
@@ -1303,7 +1297,6 @@ class App:
             ("POST", r"/api/printers/([^/]+)/light", w(self.post_printer_light)),
             ("POST", r"/api/jobs", self.post_job),
             ("GET", r"/api/jobs/" + JOB_ID, self.get_slice),
-            ("POST", r"/api/jobs/" + JOB_ID + r"/slice", self.slicer_job(self.s.post_slice, self.check_slice)),
             ("POST", r"/api/jobs/" + JOB_ID + r"/gcode", self.slicer_job(self.s.post_gcode, self.check_gcode)),
             ("GET", r"/api/engine/filament", self.get_engine_filament),
             ("GET", r"/api/jobs/" + JOB_ID + r"/(plate\.png|plate\.gcode)", self.slicer_job(self.s.get_file)),

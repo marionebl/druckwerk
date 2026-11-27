@@ -206,7 +206,7 @@
     },
     {
       "name": "add_to_queue",
-      "description": "Adds a job to the print queue; it does not start a print. Give exactly one of file (a sliced .gcode.3mf that is already in the share) or slice_job_id (a variant from druckwerk.slice). A person who needs approval creates a job that waits for an admin. Starting is a separate step that needs the person's confirmation.",
+      "description": "Adds a job to the print queue; it does not start a print. The file is a sliced .gcode.3mf that is already in the share. A person who needs approval creates a job that waits for an admin. Starting is a separate step that needs the person's confirmation.",
       "response": "optional",
       "serial_fields": [
         "target"
@@ -214,19 +214,10 @@
       "title": "Add to queue",
       "fields": {
         "file": {
-          "required": false,
+          "required": true,
           "title": "File",
-          "description": "Name of a sliced .gcode.3mf in the share, or an absolute path under /media or /share to one. Use this or slice_job_id.",
+          "description": "Name of a sliced .gcode.3mf in the share, or an absolute path under /media or /share to one.",
           "example": "benchy_better_h2s.gcode.3mf",
-          "selector": {
-            "text": {}
-          }
-        },
-        "slice_job_id": {
-          "required": false,
-          "title": "Slice job",
-          "description": "Job id of a finished slice from druckwerk.slice. Use this or file.",
-          "example": "a1b2c3d4e5f6",
           "selector": {
             "text": {}
           }
@@ -269,91 +260,6 @@
           "example": "Benchy for Anna",
           "selector": {
             "text": {}
-          }
-        }
-      }
-    },
-    {
-      "name": "slice",
-      "description": "Slices a model in good, better and best quality for one printer and AMS tray, and returns print time, filament grams and cost for each variant plus the slice job ids. Long-running: the slicer runs one slice at a time, so expect 1 to 5 minutes per variant and 3 to 15 minutes for the call, which waits up to 30 minutes. With wait false it returns the slice job ids at once; poll them with druckwerk.get_slice. Show the variants to the person, let them choose, then call add_to_queue with the chosen slice_job_id.",
-      "response": "optional",
-      "serial_fields": [
-        "printer"
-      ],
-      "title": "Slice model",
-      "fields": {
-        "model_file": {
-          "required": true,
-          "title": "Model file",
-          "description": "Absolute path of the model (.stl, .3mf, .obj, .step) under /share or /media.",
-          "example": "/media/models/cube.stl",
-          "selector": {
-            "text": {}
-          }
-        },
-        "printer": {
-          "required": true,
-          "title": "Printer",
-          "description": "Printer serial number, printer name or device id. You need an active grant on it.",
-          "selector": {
-            "text": {}
-          }
-        },
-        "tray": {
-          "required": true,
-          "title": "Tray",
-          "description": "Loaded AMS tray as unit:slot, both 0-based, as get_printers lists them. 0:0 is the first slot of the first AMS.",
-          "example": "0:0",
-          "selector": {
-            "text": {}
-          }
-        },
-        "plate": {
-          "required": false,
-          "title": "Build plate",
-          "description": "Build plate type. Empty uses the printer's default.",
-          "example": "Textured PEI Plate",
-          "selector": {
-            "select": {
-              "options": [
-                "Cool Plate",
-                "Engineering Plate",
-                "High Temp Plate",
-                "Textured PEI Plate",
-                "Supertack Plate"
-              ]
-            }
-          }
-        },
-        "wait": {
-          "required": false,
-          "title": "Wait",
-          "description": "Wait for the slices to finish and return their results. False returns the slice job ids immediately.",
-          "default": true,
-          "selector": {
-            "boolean": {}
-          }
-        }
-      }
-    },
-    {
-      "name": "get_slice",
-      "description": "Returns state, print time, grams and cost of slice jobs, for example after druckwerk.slice with wait false. Read-only.",
-      "response": "only",
-      "serial_fields": [],
-      "title": "Get slice results",
-      "fields": {
-        "slice_job_ids": {
-          "required": true,
-          "title": "Slice jobs",
-          "description": "Slice job ids from druckwerk.slice.",
-          "example": [
-            "a1b2c3d4e5f6"
-          ],
-          "selector": {
-            "text": {
-              "multiple": true
-            }
           }
         }
       }
@@ -758,7 +664,7 @@
     }
   ],
   "llm": {
-    "prompt": "Druckwerk manages 3D printers: printer status, the print queue, slicing and starting prints.\nRules:\n- You act as the signed-in Home Assistant user. Home Assistant admins and printer owners are admins of their printers.\n  Users may add jobs on printers they have an active grant for (some grants need an admin's approval), cancel their own jobs\n  and reorder only within their own queue slots. Only admins skip, move, approve, reject, retry and start jobs. A refusal\n  starting with \"rule:\" is final; tell the person, do not try another way round.\n- Slicing takes minutes (one slice at a time, three variants good, better and best). Say so before you start, and use\n  wait false with druckwerk_get_slice_results when your own call timeout is short.\n- Typical flow: druckwerk_get_printers (serial, AMS trays as unit:slot), druckwerk_slice, let the person choose a variant,\n  druckwerk_add_to_queue with its slice_job_id. Adding to the queue never starts a print.\n- Never start a print on your own. Before druckwerk_start_next or druckwerk_start_job, show the person the sliced plate\n  review and a current camera snapshot (druckwerk_camera_snapshot), ask whether the plate is clear and the print may\n  start, and call only after an explicit yes, with plate_clear and confirmed_by_person both true. Without both the call is refused.\n- Printers are named by serial number, printer name or device id. Job ids are 12 hex characters.\n",
+    "prompt": "Druckwerk manages 3D printers: printer status, the print queue and starting prints. Models are sliced in the browser, not by this app.\nRules:\n- You act as the signed-in Home Assistant user. Home Assistant admins and printer owners are admins of their printers.\n  Users may add jobs on printers they have an active grant for (some grants need an admin's approval), cancel their own jobs\n  and reorder only within their own queue slots. Only admins skip, move, approve, reject, retry and start jobs. A refusal\n  starting with \"rule:\" is final; tell the person, do not try another way round.\n- This app has no slice tool. A person slices in the app's New print page, in the browser. You work with sliced\n  .gcode.3mf files that are already in the share.\n- Typical flow: druckwerk_get_printers (serial, AMS trays as unit:slot), druckwerk_add_to_queue with the sliced file\n  name. Adding to the queue never starts a print.\n- Never start a print on your own. Before druckwerk_start_next or druckwerk_start_job, show the person the sliced plate\n  review and a current camera snapshot (druckwerk_camera_snapshot), ask whether the plate is clear and the print may\n  start, and call only after an explicit yes, with plate_clear and confirmed_by_person both true. Without both the call is refused.\n- Printers are named by serial number, printer name or device id. Job ids are 12 hex characters.\n",
     "tools": [
       {
         "name": "druckwerk_get_printers",
@@ -805,7 +711,7 @@
       },
       {
         "name": "druckwerk_add_to_queue",
-        "description": "Add a job to the queue from a sliced file name in the share or from a slice_job_id (give one). Does not start a print.",
+        "description": "Add a job to the queue from a sliced .gcode.3mf name in the share. Does not start a print.",
         "annotations": {
           "read_only": false,
           "destructive": false,
@@ -818,10 +724,6 @@
             "file": {
               "type": "string",
               "description": "Sliced .gcode.3mf name in the share"
-            },
-            "slice_job_id": {
-              "type": "string",
-              "description": "Slice job id from druckwerk_slice"
             },
             "target": {
               "type": "string",
@@ -911,72 +813,8 @@
               "description": "Name of the print, shown in the queue and the live activity (80 characters)"
             }
           },
-          "required": []
-        }
-      },
-      {
-        "name": "druckwerk_slice",
-        "description": "Slice a model (.stl, .3mf, .obj, .step under /share or /media) as good, better and best for one printer and tray; returns time, grams, cost and a slice job id per variant. Takes 3 to 15 minutes; wait false returns the ids at once.",
-        "annotations": {
-          "read_only": false,
-          "destructive": false,
-          "idempotent": false,
-          "open_world": false
-        },
-        "parameters": {
-          "type": "object",
-          "properties": {
-            "model_file": {
-              "type": "string",
-              "description": "Absolute path of the model"
-            },
-            "printer": {
-              "type": "string",
-              "description": "Printer serial number or name"
-            },
-            "tray": {
-              "type": "string",
-              "description": "AMS tray as unit:slot, 0-based, e.g. 0:0"
-            },
-            "plate": {
-              "type": "string",
-              "description": "Build plate type, default is the printer's"
-            },
-            "wait": {
-              "type": "boolean",
-              "description": "Wait for the results",
-              "default": true
-            }
-          },
           "required": [
-            "model_file",
-            "printer",
-            "tray"
-          ]
-        }
-      },
-      {
-        "name": "druckwerk_get_slice_results",
-        "description": "State, print time, grams and cost of slice jobs (after druckwerk_slice with wait false).",
-        "annotations": {
-          "read_only": true,
-          "destructive": false,
-          "idempotent": true,
-          "open_world": false
-        },
-        "parameters": {
-          "type": "object",
-          "properties": {
-            "slice_job_ids": {
-              "type": "array",
-              "items": {
-                "type": "string"
-              },
-              "description": "Slice job ids"
-            }
-          },
-          "required": [
-            "slice_job_ids"
+            "file"
           ]
         }
       },
@@ -1246,5 +1084,5 @@
       }
     ]
   },
-  "revision": "5dbdde582c90"
+  "revision": "46e2411934b2"
 }

@@ -6,10 +6,11 @@
         "model",
         "name",
         "options",
-        "slice_job_id",
         "target"
       ],
-      "required": []
+      "required": [
+        "file"
+      ]
     },
     "druckwerk_approve_job": {
       "properties": [
@@ -46,14 +47,6 @@
         "history_limit"
       ],
       "required": []
-    },
-    "druckwerk_get_slice_results": {
-      "properties": [
-        "slice_job_ids"
-      ],
-      "required": [
-        "slice_job_ids"
-      ]
     },
     "druckwerk_move_job": {
       "properties": [
@@ -101,20 +94,6 @@
         "job_id"
       ]
     },
-    "druckwerk_slice": {
-      "properties": [
-        "model_file",
-        "plate",
-        "printer",
-        "tray",
-        "wait"
-      ],
-      "required": [
-        "model_file",
-        "printer",
-        "tray"
-      ]
-    },
     "druckwerk_start_job": {
       "properties": [
         "confirmed_by_person",
@@ -141,11 +120,12 @@
   "services": {
     "add_to_queue": {
       "fields": {
-        "file": {},
+        "file": {
+          "required": true
+        },
         "model": {},
         "name": {},
         "options": {},
-        "slice_job_id": {},
         "target": {
           "default": "any"
         }
@@ -186,14 +166,6 @@
       "fields": {
         "history_limit": {
           "default": 0
-        }
-      },
-      "response": "only"
-    },
-    "get_slice": {
-      "fields": {
-        "slice_job_ids": {
-          "required": true
         }
       },
       "response": "only"
@@ -270,24 +242,6 @@
       "fields": {
         "job_id": {
           "required": true
-        }
-      },
-      "response": "optional"
-    },
-    "slice": {
-      "fields": {
-        "model_file": {
-          "required": true
-        },
-        "plate": {},
-        "printer": {
-          "required": true
-        },
-        "tray": {
-          "required": true
-        },
-        "wait": {
-          "default": true
         }
       },
       "response": "optional"
