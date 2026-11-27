@@ -704,7 +704,8 @@ class LiveTest(unittest.TestCase):
     @classmethod
     def setUpClass(cls):
         cls.cloud = mock_cloud.start()
-        cls.s = Server(cls.cloud, extra_env={"DW_LIVE_IDLE": str(cls.IDLE)})
+        cls.mint_fail = os.path.join(tempfile.mkdtemp(), "mint_fail")
+        cls.s = Server(cls.cloud, extra_env={"DW_LIVE_IDLE": str(cls.IDLE), "MOCK_LIVE_MINT_FAIL": cls.mint_fail})
         login(cls.s, "a@example.com")
         daemon_up(cls.s, cls.s.base)
 
@@ -766,6 +767,19 @@ class LiveTest(unittest.TestCase):
         self.grab("SERIAL001", 0.3)
         self.grab("SERIAL001", 0.3)
         self.assertEqual(self.events().count("connect"), 2)  # one before, one for the two reopens together
+
+    def test_a_failed_mint_is_retried_once(self):
+        open(self.mint_fail, "w").close()
+        r, data = self.grab("SERIAL001", 1.5)
+        self.assertEqual((r.status, data[:1]), (200, b"\x47"))
+        self.assertEqual(self.events("SERIAL001"), ["mint-timeout", "connect"])
+        self.assertIn("live SERIAL001: camera URL timed out, minting again", self.s.logtext())
+
+    def test_log_has_first_frame_time_and_stalls(self):
+        self.grab("SERIAL001", 1)
+        self.assertRegex(self.s.logtext(), r"live SERIAL001: first frame after \d+\.\ds")
+        self.assertTrue(wait_for(lambda: "live SERIAL001: ended after" in self.s.logtext(), self.IDLE + 5))
+        self.assertRegex(self.s.logtext(), r"live SERIAL001: ended after \d+s, first frame after \d+\.\ds, \d+\.\d MB, 0 stalls over 2s")
 
     def test_jpeg_passes_multipart_through(self):
         c, r = self.open("SERIAL002")
