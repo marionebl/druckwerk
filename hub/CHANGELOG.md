@@ -1,5 +1,13 @@
 # Changelog
 
+## 3.2.3 (unreleased)
+
+- A camera snapshot no longer restarts the bridge daemon. Before, every "camera URL callback timed out" restarted it, so an automation that took a snapshot every 20 s kept the daemon down and a print start failed with 503 "daemon not reachable". The snapshot now answers 502 and the daemon keeps running.
+- The protection stays, but only for a real stall. A camera timeout marks the printer. The bridge then sends a pushall through the daemon and waits up to 15 s (`DW_PROBE_WAIT`) for the cached status (`sequence_id` or `t_utc`) to change. It restarts the daemon only if the status does not change, or `/health` fails for 60 s. A printer that is idle sends no status by itself, so the bridge never judges by silence and never sends a pushall without a camera timeout. A timeout within 3 minutes of a daemon start (`DW_START_GRACE`) is ignored, because mints fail in that window anyway. At most one restart in 5 minutes (`DW_RESTART_BACKOFF`). It never restarts or probes while a print start or a command runs; it looks again at the next check (every 5 s).
+- The log has one line for each timeout (seconds since the daemon start) and one for each probe result, for example `camera timeout probe: status answered in 2.3s, no restart`.
+- Snapshot cache: a good snapshot younger than 30 s (`DW_SNAPSHOT_CACHE`) is sent again without asking the daemon. Requests for one printer wait for each other, so only one asks the daemon. `GET /api/camera/<serial>/snapshot` adds the header `X-Snapshot-Age` (seconds since the picture was taken, `0.0` for a new one). A failed request is also shared with the requests that waited for it.
+- A print start (`POST /api/print`) and the command routes (light, rfid, pause, drying) wait up to 60 s (`DW_RETRY_WINDOW`) while the daemon is restarting (connection refused), then answer 503 as before. Other errors are not retried, because the daemon may have got the request.
+
 ## 3.2.2 (unreleased)
 
 - Fix: starting a print failed with "read file: Error parsing `multipart/form-data` request" for files over 2 MB. The bridge (boo-cloud) used axum's default body limit of 2 MB on `POST /print`. The bridge patch now sets 64 MiB, the same cap as Druckwerk uploads. The patch has a test that posts a 3 MB file.
