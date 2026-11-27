@@ -136,6 +136,7 @@ class App:
         self.access = Access(self.registry, self.grants, self.get_user)
         self.queue = Queue(self.registry, data_dir, self.state, self._call_service, self.get_trays, clock=clock,
                            job_allowed=self.access.job_allowed, dry=Drying(self), send_print=self.send_print)
+        self.plates_inbox = None  # set by hub.py when the app has a plates token
         self.media_roots = list(MEDIA_ROOTS)
         self.media_dir = MEDIA_DIR
         self.sender, self.watchdog, self.notifier, self.integration = Sender(self), Watchdog(self), Notifier(self), Integration(self)
@@ -201,6 +202,17 @@ class App:
         if not u or not u.get("is_active", True):
             return None
         return {"name": u.get("name") or "", "is_admin": bool(u.get("is_owner") or "system-admin" in u.get("group_ids", []))}
+
+    def find_user(self, ref):
+        """(id, name) of the active, non-system HA user whose id or name is `ref` (name: any case), or None."""
+        ref = str(ref or "").strip().lower()
+        try:
+            users = self._cached("users", 30, lambda: self.ha.command("config/auth/list"))
+        except HAError:
+            return None
+        u = next((u for u in users if u.get("is_active", True) and not u.get("system_generated")
+                  and ref in (u["id"].lower(), (u.get("name") or "").lower())), None) if ref else None
+        return (u["id"], u.get("name") or "") if u else None
 
     def _grant_state(self, entity_id):
         try:
@@ -599,7 +611,8 @@ class App:
                              "config": self.config_view(cfg) if cfg else None})
         return {"accounts": [{"id": a["id"], "email": a["email"], "logged_in": a.get("logged_in", True),
                               "daemon_running": bool((a.get("daemon") or {}).get("running"))} for a in health["accounts"]],
-                "printers": printers}
+                "printers": printers,
+                "plates_inbox": self.plates_inbox.status() if self.plates_inbox else {"enabled": False}}
 
     @staticmethod
     def config_view(p):
@@ -898,6 +911,10 @@ class App:
             raise ValueError("the file must be under /media or /share")
         if not real.endswith(".gcode.3mf") or not os.path.isfile(real):
             raise ValueError("no such .gcode.3mf file")
+        return self.check_sliced(real)
+
+    @staticmethod
+    def check_sliced(real):
         try:
             with zipfile.ZipFile(real) as z:
                 if not any(SLICED.fullmatch(n) for n in z.namelist()):
@@ -914,7 +931,10 @@ class App:
         api = self.access.bind(self.queue, c)
         if b.get("kind") == "dry" or not (isinstance(f, str) and f.startswith("/")):
             return self.queue_routes_add(api, b)
-        real = self.resolve_media(f)
+        return self.queue_sliced(api, self.resolve_media(f), b)
+
+    def queue_sliced(self, api, real, b):
+        """Add a sliced .gcode.3mf at `real` to the queue (copied into the share) and return the job; b is the POST body."""
         use = filament.slice_usage(real)
         base = os.path.basename(real)[:-len(".gcode.3mf")].replace("..", "_")
         name = base + "_" + secrets.token_hex(3) + ".gcode.3mf"

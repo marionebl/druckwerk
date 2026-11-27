@@ -1,5 +1,15 @@
 # Changelog
 
+## 3.5.0 (unreleased)
+
+- Plates inbox. A cloud agent that cannot reach Home Assistant pushes a sliced plate to a private GitHub repo, and the app adds it to the print queue. Two new app options: `plates_repo` (default `marionebl/druckwerk-plates`) and `plates_token` (a GitHub token with Contents read and write on that repo). Without a token the feature is off and the app makes no request.
+- Every 60 s the app lists `plates/` in the repo. Each `plates/<id>/<name>.gcode.3mf` goes through the same path as a plate queued from the web UI (sliced check, grams and print time, plate image) and also through the G-code guard and the printer model check, which now run at queue time. The job waits in the queue like any other. Nothing starts a print by itself.
+- Target printer: `job.json` `printer` (serial), else `job.json` `model`, else the model in the G-code header, queued for any printer of that model. Owner: `job.json` `owner` (an HA user id or name) if that user may add jobs for the printer, else the printer's owner, else nobody (an admin job named "Plates inbox").
+- After the job is queued the app deletes the files of the folder in the repo (one contents API DELETE per file). The taken ids are kept in `/data/plates_taken.json`, so a failed delete never makes a second job; the delete is tried again at the next poll.
+- Files over 100 MB, files that are not sliced, and plates that fail the guard or the model check are logged, skipped and left in the repo. They are not downloaded again until the file changes. The token is never logged.
+- Setup view: the last step shows the repo, the last poll time and the last error. `GET /api/setup` has `plates_inbox: {enabled, repo, last_poll, last_error, taken}`.
+- How an agent pushes a plate is in API.md.
+
 ## 3.2.3 (unreleased)
 
 - A camera snapshot no longer restarts the bridge daemon. Before, every "camera URL callback timed out" restarted it, so an automation that took a snapshot every 20 s kept the daemon down and a print start failed with 503 "daemon not reachable". The snapshot now answers 502 and the daemon keeps running.
