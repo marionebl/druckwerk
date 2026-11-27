@@ -38,7 +38,7 @@ SENSORS = {"status": "print_status", "stage": "current_stage", "progress": "prin
            "bed_t": "bed_target_temperature", "chamber": "chamber_temperature", "tray": "active_tray",
            "task": "task_name"}
 BRIDGE_STATE = {"RUNNING": "running", "FINISH": "finish", "FAILED": "failed", "IDLE": "idle", "PAUSE": "pause"}
-UI_FILES = r"(index\.html|style\.css|app\.js|api\.js|util\.js|feedback\.js|views/[a-z]+\.js)"
+UI_FILES = r"(index\.html|style\.css|app\.js|api\.js|util\.js|feedback\.js|views/[a-z]+\.js|vendor/three\.module\.min\.js)"
 # A feedback post carries screenshots; every other route keeps the slicer's 8 KB JSON limit.
 FEEDBACK_MAX = 1500000
 MIME = {"html": "text/html; charset=utf-8", "css": "text/css; charset=utf-8", "js": "text/javascript; charset=utf-8"}

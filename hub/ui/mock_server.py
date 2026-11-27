@@ -212,19 +212,31 @@ def camera_svg(p):
 
 
 def gcode():
+    """Two objects the way Bambu Studio writes them: label markers, ; FEATURE: comments, config tail with the plate."""
     out = ["; mock gcode", "M83"]
+    box = {1: (40, 40, 100, 100, 60), 2: (150, 130, 210, 190, 40)}  # x0, y0, x1, y1, layers
     for n in range(60):
         z = 0.2 * (n + 1)
-        out += [";LAYER_CHANGE", f";Z:{z:.2f}", f"; Z_HEIGHT: {z:.2f}", f"G1 Z{z:.2f}"]
-        for feat, inset in (("Outer wall", 0), ("Inner wall", 0.8)):
-            out.append(f";TYPE:{feat}")
-            a, b = 98 + inset, 158 - inset
-            out.append(f"G1 X{a} Y{a}")
-            for x, y in ((b, a), (b, b), (a, b), (a, a)):
-                out.append(f"G1 X{x} Y{y} E0.05")
-        out.append(";TYPE:Sparse infill")
-        for k in range(100, 156, 6):
-            out += [f"G1 X{k} Y100", f"G1 X{k + (n % 3) * 2} Y156 E0.04"]
+        out += ["; CHANGE_LAYER", f"; Z_HEIGHT: {z:.2f}", f"G1 Z{z:.2f}"]
+        for oid, (x0, y0, x1, y1, layers) in box.items():
+            if n >= layers:
+                continue
+            out += [f"; OBJECT_ID: {oid}", f"; start printing object, unique label id: {oid}", "M624 AQAAAAAAAAA="]
+            out.append(f"G1 X{x0} Y{y0} F9000")  # travel
+            for feat, inset in (("Outer wall", 0), ("Inner wall", 0.8)):
+                out.append(f"; FEATURE: {feat}")
+                a, b, c, d = x0 + inset, y0 + inset, x1 - inset, y1 - inset
+                out.append(f"G1 X{a} Y{b}")
+                for x, y in ((c, b), (c, d), (a, d), (a, b)):
+                    out.append(f"G1 X{x} Y{y} E0.05")
+            out.append("; FEATURE: Top surface" if n == layers - 1 else "; FEATURE: Sparse infill")
+            for k in range(x0 + 4, x1 - 3, 6):
+                out += [f"G1 X{k} Y{y0 + 4}", f"G1 X{k + (n % 3) * 2} Y{y1 - 4} E0.04"]
+            if oid == 2 and n < 8:
+                out.append("; FEATURE: Support")
+                out += [f"G1 X{x0 + 10} Y{y0 + 10}", f"G1 X{x1 - 10} Y{y1 - 10} E0.04"]
+            out += ["; stop printing object, unique label id: " + str(oid), "M625"]
+    out += ["; CONFIG_BLOCK_START", "; printable_area = 0x0,256x0,256x256,0x256", "; CONFIG_BLOCK_END"]
     return "\n".join(out)
 
 

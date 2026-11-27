@@ -10,6 +10,7 @@ the identity headers. --model is uploaded in the new-print step (a real slicer n
 Any HTTP status >= 400 fails the run, except the 403 paths given with --expect-403."""
 import argparse
 import os
+import re
 import subprocess
 import sys
 import time
@@ -25,6 +26,113 @@ MODEL = {"name": "demo_part.stl", "mimeType": "model/stl", "buffer": b"solid x\n
 SLICE_TIMEOUT = 15000
 SIZES = {"390x844": (390, 844), "1440x900": (1440, 900)}
 H2S = "FAKE-H2S-0001"
+
+
+# What is on the 3D canvas: lit pixels (feature colours, not the plate or grid), a checksum, the lit width, and purple (infill) pixels.
+PIXELS = """() => {
+  const c = document.querySelector('canvas.view3d'), t = document.createElement('canvas');
+  t.width = c.width; t.height = c.height;
+  const g = t.getContext('2d'); g.drawImage(c, 0, 0);
+  const d = g.getImageData(0, 0, t.width, t.height).data;
+  let lit = 0, sum = 0, purple = 0, x0 = 1e9, x1 = -1;
+  for (let i = 0, p = 0; i < d.length; i += 4, p++) {
+    const r = d[i], gg = d[i + 1], b = d[i + 2];
+    sum = (sum * 31 + r + gg * 3 + b * 7) % 2147483647;
+    if (Math.max(r, gg, b) > 140) {
+      lit++; const x = p % t.width;
+      if (x < x0) x0 = x; if (x > x1) x1 = x;
+      if (b > 150 && gg < 130 && r > 90) purple++;
+    }
+  }
+  return { lit, sum, purple, w: x1 - x0 };
+}"""
+
+
+def check_viewer(page, shot):
+    """The 3D preview must really draw, and every control must change what is drawn."""
+    page.wait_for_selector('.preview3d[data-ready="1"]', timeout=15000)
+    page.wait_for_timeout(200)
+    read = lambda: (page.wait_for_timeout(200), page.evaluate(PIXELS))[1]
+    text = lambda: page.locator(".preview3d small[aria-live]").inner_text()
+    setrange = lambda name, v: page.evaluate("([n, v]) => { const e = document.querySelector(`.preview3d input[aria-label='${n}']`); e.value = v; e.dispatchEvent(new Event('input', { bubbles: true })); }", [name, v])
+
+    full = read()
+    assert full["lit"] > 800, f"the canvas draws no toolpaths: {full}"
+    assert re.fullmatch(r"Layers 1 to 60 of 60 · Z 0\.20 to 12\.00 mm", text()), text()
+    assert page.locator(".preview3d .legend .key").count() >= 4, "legend lists the features"
+
+    # layer range: the to-handle by script, then the real handle by mouse
+    setrange("To layer", 20)
+    part = read()
+    assert text().startswith("Layers 1 to 21 of 60"), text()
+    assert part["sum"] != full["sum"] and part["lit"] < full["lit"] * 0.8, f"layer range changes nothing: {part} vs {full}"
+    page.locator(".preview3d .range2").scroll_into_view_if_needed()  # mouse coordinates are viewport coordinates
+    r = page.locator(".preview3d .range2").bounding_box()
+    y = r["y"] + r["height"] / 2
+    page.mouse.move(r["x"] + 11 + (r["width"] - 22) * 20 / 59, y)  # on the to-handle (22 px thumb)
+    page.mouse.down(); page.mouse.move(r["x"] + 11 + (r["width"] - 22) * 0.5, y, steps=6); page.mouse.up()
+    assert re.match(r"Layers 1 to (2[6-9]|3\d) of 60", text()), "dragging the to-handle: " + text()
+    setrange("From layer", 40)  # past the to-handle: it pushes it along
+    assert text().startswith("Layer 41 of 60"), text()
+    page.get_by_role("button", name="One layer").click()
+    setrange("From layer", 10)
+    one = read()
+    assert text() == "Layer 11 of 60 · Z 2.20 mm", text()
+    assert one["lit"] < full["lit"] * 0.4, f"one layer should draw much less: {one} vs {full}"
+    if page.viewport_size["width"] < 500:
+        shot("viewer-one-layer")
+    page.get_by_role("button", name="One layer").click()
+    setrange("From layer", 0); setrange("To layer", 59)
+    assert read()["sum"] == full["sum"], "all layers draw the same picture again"
+
+    # feature toggle
+    key = page.locator(".preview3d .legend .key", has_text="Sparse infill")
+    assert full["purple"] > 50, f"infill colour is on screen: {full}"
+    key.click()
+    off = read()
+    assert key.get_attribute("aria-pressed") == "false" and off["sum"] != full["sum"] and off["purple"] < full["purple"] * 0.1, f"infill toggle: {off} vs {full}"
+    key.click()
+    assert read()["sum"] == full["sum"]
+
+    # travel moves are hidden by default
+    page.get_by_role("button", name="Travel moves").click()
+    assert read()["sum"] != full["sum"], "travel toggle changes nothing"
+    page.get_by_role("button", name="Travel moves").click()
+
+    # camera: orbit, wheel, reset
+    page.locator("canvas.view3d").scroll_into_view_if_needed()
+    box = page.locator("canvas.view3d").bounding_box()
+    cx, cy = box["x"] + box["width"] / 2, box["y"] + box["height"] / 2
+    page.mouse.move(cx, cy); page.mouse.down(); page.mouse.move(cx + 80, cy - 30, steps=5); page.mouse.up()
+    orbit = read()
+    assert orbit["sum"] != full["sum"], "orbit changes nothing"
+    page.mouse.wheel(0, -400)
+    assert read()["sum"] != orbit["sum"], "wheel zoom changes nothing"
+    page.get_by_role("button", name="Reset view").click()
+    assert read()["sum"] == full["sum"], "reset view returns to the first picture"
+
+    # explode (the mock plate has two objects)
+    ex = page.locator(".preview3d input[aria-label='Explode']")
+    assert ex.is_enabled(), "explode needs a two-object file"
+    setrange("Explode", 100)
+    boom = read()
+    assert boom["sum"] != full["sum"] and boom["w"] > full["w"] * 1.1, f"explode should spread the objects: {boom} vs {full}"
+    if page.viewport_size["width"] < 500:
+        shot("viewer-exploded")
+    setrange("Explode", 0)
+    assert read()["sum"] == full["sum"]
+
+    # one object: nothing to explode
+    note = page.evaluate("""async () => {
+      const { gcodePreview } = await import(new URL('views/preview.js', location.href));
+      const lines = ['M83'];
+      for (let n = 1; n <= 3; n++) lines.push('; CHANGE_LAYER', '; Z_HEIGHT: ' + n * 0.2, 'G1 Z' + n * 0.2, '; start printing object, unique label id: 7',
+        '; FEATURE: Outer wall', 'G1 X10 Y10', 'G1 X30 Y10 E1', 'G1 X30 Y30 E1', '; stop printing object, unique label id: 7');
+      const p = gcodePreview(); document.body.append(p); await p.load(lines.join('\\n'));
+      const out = { disabled: p.querySelector("input[aria-label='Explode']").disabled, note: p.querySelector('.explode small:last-child').textContent };
+      p.remove(); return out;
+    }""")
+    assert note["disabled"] and note["note"] == "One object on this plate", note
 
 
 def walk(page, ident, base, shot, inject):
@@ -81,8 +189,7 @@ def walk(page, ident, base, shot, inject):
     shot("new-print-ready")
     page.get_by_role("button", name="Slice good, better and best").click()
     page.wait_for_selector(".variant[aria-pressed=true]", timeout=SLICE_TIMEOUT)
-    page.wait_for_selector("canvas.layer")
-    page.wait_for_function("document.querySelector('canvas.layer ~ small, .stack small') && /Layer \\d+ of/.test(document.body.innerText)", timeout=8000)
+    check_viewer(page, shot)
     shot("new-print-compare")
     page.get_by_role("button", name="Add Better to queue").click()
     page.wait_for_selector(".job")
@@ -139,7 +246,7 @@ def main():
         os.makedirs(a.shots, exist_ok=True)
     try:
         with sync_playwright() as p:
-            br = p.chromium.launch()
+            br = p.chromium.launch(args=["--use-angle=swiftshader", "--enable-unsafe-swiftshader", "--ignore-gpu-blocklist"])  # software WebGL for the 3D preview
             for ident in a.idents.split(","):
                 for sz, (w, h) in SIZES.items():
                     ctx = br.new_context(viewport={"width": w, "height": h}, is_mobile=w < 500, has_touch=w < 500)

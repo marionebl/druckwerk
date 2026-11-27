@@ -1,7 +1,7 @@
 // New print: upload, pick printer + filament, slice good/better/best side by side, choose, queue.
 import { api } from '../api.js';
 import { h, clear, icon, btn, pill, field, swatch, empty, attempt, toast, fail, durSec, money, hex } from '../util.js';
-import { layerPreview } from './gcode.js';
+import { gcodePreview } from './preview.js';
 
 const QUALITIES = [['good', 'Good', 'Fastest, visible layers'], ['better', 'Better', 'Balanced'], ['best', 'Best', 'Finest detail, slowest']];
 const BEDS = ['Textured PEI Plate', 'Cool Plate', 'Engineering Plate', 'High Temp Plate', 'Supertack Plate'];
@@ -121,7 +121,7 @@ export async function mount(ctx, root) {
 
   function queueCard() {
     const v = S.variants.find((x) => x.q === S.pick);
-    const prev = layerPreview();
+    const prev = gcodePreview();
     api.gcode(v.id).then((t) => prev.load(t)).catch((e) => prev.fail(e.message));
     const opt = (key, label, hint) => h('label', { class: 'check' },
       h('input', { type: 'checkbox', checked: S.options[key], onchange: (e) => (S.options[key] = e.target.checked) }),
@@ -143,7 +143,7 @@ export async function mount(ctx, root) {
       h('small', null, 'Not every printer supports every option. The printer ignores what it cannot do.'));
     return h('section', { class: 'card stack' }, h('h2', { style: 'margin:0' }, '4 · Preview and queue'),
       warn.map((w) => h('div', { class: 'hms warn' }, icon('alert', 20), h('div', { class: 'txt' }, w))),
-      h('div', { class: 'preview' }, h('img', { src: api.plateUrl(v.id) + '?v=' + v.id, alt: 'Plate preview' }), prev),
+      h('div', { class: 'preview' }, h('img', { src: api.plateUrl(v.id) + '?v=' + v.id, alt: 'Plate preview', onerror: (e) => e.target.remove() }), prev),
       field('Name of the print', h('input', { type: 'text', maxlength: 80, placeholder: S.file ? S.file.name.replace(/\.[^.]+$/, '') : '', value: S.name,
         oninput: (e) => (S.name = e.target.value) }), 'Shown in the queue and on the phone. Optional.'),
       h('div', { class: 'form two' },
