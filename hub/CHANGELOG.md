@@ -2,6 +2,9 @@
 
 ## 3.3.0 (unreleased)
 
+- The "Slice on the Pi" choice is gone. New print slices in the browser only.
+- On iPhone and iPad, New print opens the app as a top-level page by itself, so the fast multi-thread slicer can run. Without isolation the single-thread engine runs, which is slower.
+- New print accepts STL files only.
 - Remove all server-side slicing. The app slices only in the browser, with the OrcaSlicer WebAssembly engine. Reason: the native slicer was 733 MB of the 967 MB aarch64 image, and the browser engine is as fast (CI test plate on an arm runner: native 7.0, 7.0 and 9.0 s per variant, WebAssembly with threads 8.8, 8.2 and 10.1 s).
 - The image is much smaller: 248 MB instead of 967 MB on aarch64, 185 MB instead of 938 MB on amd64 (CI, `docker image ls`). The slicer, its flatpak runtime and the scripts that ran it are gone. The WebAssembly engine, ffmpeg, qemu and the bridge stay.
 - `POST /api/jobs/{id}/slice` is gone and answers 404. The browser routes stay: `POST /api/jobs`, `GET /api/jobs/{id}`, `GET /api/jobs/{id}/model`, `POST /api/jobs/{id}/gcode`, the plate and G-code files, `POST /api/jobs/{id}/queue` and `POST /api/jobs/{id}/print`.

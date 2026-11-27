@@ -1,7 +1,7 @@
 name: Hub app
 on:
   push:
-    branches: [main]
+    branches: [main, wasm-only]
     paths: [hub/**, .github/workflows/hub.yml]
   pull_request:
     paths: [hub/**, .github/workflows/hub.yml]
@@ -47,6 +47,8 @@ jobs:
           python3 -c "import json,sys;b,a=json.loads(sys.argv[1]),json.loads(sys.argv[2]);print(len(b),'base layers,',len(a)-len(b),'app layers');sys.exit(0 if a[:len(b)]==b and len(a)-len(b)==1 else 1)" "$b" "$a"
       - name: Browser tools for the UI tests
         run: pip install -q playwright && python3 -m playwright install --with-deps chromium
+      - name: WebKit check of the phone promotion (iPhone profile, isolation headers, no loop)
+        run: python3 -m playwright install --with-deps webkit && python3 hub/tests/webkit_isolation.py
       - name: UI end-to-end (real hub in the image, fake HA and bridge, slicing in the browser)
         run: SKIP_BUILD=1 IMG=druckwerk-test hub/tests/ui_e2e.sh
       - name: Slice in headless Chromium (mt, iframe, not isolated), G-code guard
