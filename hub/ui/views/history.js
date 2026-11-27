@@ -1,6 +1,8 @@
-// History: prints from the Bambu cloud on a timeline, grouped by day. Admins can filter by user and printer.
+// History: the one list of prints. The Bambu cloud's tasks are the truth, enriched with the Druckwerk job where one matches;
+// a job the cloud never saw is listed too. Grouped by day; admins can filter by user and printer. #/history/<id> is one print.
 import { api } from '../api.js';
-import { h, clear, icon, pill, empty, field, clock, durSec, money, toDate, fail } from '../util.js';
+import { h, clear, icon, btn, pill, empty, field, clock, dateTime, durSec, money, toDate, fail, loading, thumb, attempt } from '../util.js';
+import * as D from './detail.js';
 
 const STATUS = { finished: ['Finished', 'ok'], failed: ['Failed', 'err'], cancelled: ['Cancelled', ''], stopped: ['Stopped early', 'err'], running: ['Printing', 'ok'] };
 const dayKey = (d) => d.getFullYear() * 10000 + (d.getMonth() + 1) * 100 + d.getDate();
@@ -12,14 +14,21 @@ function dayLabel(d) {
   return d.toLocaleDateString([], { weekday: 'long', day: 'numeric', month: 'long', year: d.getFullYear() === now.getFullYear() ? undefined : 'numeric' });
 }
 
-export async function mount(ctx, root) {
+// "Started by": the Druckwerk job's owner, else the printer's owner, else the old text.
+const startedBy = (t) => t.user_name || (t.user_id ? 'Unknown user' : t.printer_owner ? 'Printer owner: ' + t.printer_owner : 'Not started here');
+const titleOf = (t) => t.job?.name || t.title || 'Untitled print';
+const SOURCE = { job: ['Druckwerk only', 'warn'], cloud: ['Not started from Druckwerk', ''] };
+
+export async function mount(ctx, root, parts = []) {
+  if (parts[0]) return detailView(ctx, root, decodeURIComponent(parts[0]));
   const admin = ctx.isAdmin(), showUser = ctx.managesAny();
   const filters = { user: '', printer: '' };
   const timeline = h('div', { class: 'timeline' });
   const note = h('div');
   const bar = h('div', { class: 'filters' });
   root.append(h('div', { class: 'page-head' }, h('div', null, h('h1', null, 'History'),
-    h('div', { class: 'sub' }, admin ? 'All prints, from the printer cloud' : 'Your prints, from the printer cloud'))), bar, note, timeline);
+    h('div', { class: 'sub' }, admin ? 'All prints: the printer cloud, with Druckwerk jobs added' : 'Your prints: the printer cloud, with Druckwerk jobs added'))), bar, note, timeline);
+  timeline.append(loading());
 
   if (admin) {
     let users = [], printers = [];
@@ -55,16 +64,15 @@ export async function mount(ctx, root) {
 
   function entry(t) {
     const [label, cls] = STATUS[t.status] || ['Status ' + t.status, ''];
-    const meta = [h('span', null, t.printer_name), h('span', null, clock(t.started_at))];
+    const meta = [h('span', null, t.printer_name), h('span', null, clock(t.when))];
     if (t.seconds) meta.push(h('span', null, durSec(t.seconds)));
     if (t.grams) meta.push(h('span', null, Math.round(t.grams) + ' g'));
     if (t.cost != null) meta.push(h('span', null, money(t.cost)));
-    if (showUser) meta.push(h('span', { class: 'who-tag' }, icon('user', 14), t.user_name || (t.user_id ? 'Unknown user' : 'Not started here')));
+    if (showUser) meta.push(h('span', { class: 'who-tag' }, icon('user', 14), startedBy(t)));
     return h('li', { class: 'tl-item ' + (cls || 'plain') },
-      h('div', { class: 'tl-card' },
-        t.cover_url ? h('img', { class: 'thumb', src: t.cover_url, alt: '', loading: 'lazy', referrerpolicy: 'no-referrer', onerror: (e) => e.target.remove() })
-          : h('div', { class: 'thumb' }),
-        h('div', { class: 'main' }, h('div', { class: 'row between' }, h('b', { class: 'ttl' }, t.title || 'Untitled print'), pill(label, cls)),
+      h('a', { class: 'tl-card', href: '#/history/' + encodeURIComponent(t.id) },
+        thumb(t.job?.plate_png || t.cover_url),
+        h('div', { class: 'main' }, h('div', { class: 'row between' }, h('b', { class: 'ttl' }, titleOf(t)), t.source === 'job' ? pill(...SOURCE.job) : pill(label, cls)),
           h('div', { class: 'meta' }, meta))));
   }
 
@@ -72,13 +80,50 @@ export async function mount(ctx, root) {
     if (!items.length) return clear(timeline, empty(admin ? 'No prints match these filters.' : 'You have no prints yet.'));
     const days = [];
     for (const t of items) {
-      const d = toDate(t.started_at) || new Date(0);
+      const d = toDate(t.when) || new Date(0);
       let g = days[days.length - 1];
-      if (!g || g.key !== dayKey(d)) days.push((g = { key: dayKey(d), label: t.started_at ? dayLabel(d) : 'Unknown date', items: [] }));
+      if (!g || g.key !== dayKey(d)) days.push((g = { key: dayKey(d), label: t.when ? dayLabel(d) : 'Unknown date', items: [] }));
       g.items.push(t);
     }
     clear(timeline, days.map((g) => h('section', { class: 'tl-day' }, h('h2', null, g.label), h('ol', null, g.items.map(entry)))));
   }
 
   ctx.every(60000, load);
+}
+
+async function detailView(ctx, root, id) {
+  const box = h('div');
+  root.append(D.back('#/history', 'History'), box);
+  box.append(loading());
+  let t, spools = [];
+  try {
+    const [hist, sp] = await Promise.all([api.history('limit=500'), api.spools().catch(() => [])]);
+    t = hist.items.find((i) => String(i.id) === id);
+    spools = sp;
+  } catch (e) { return clear(box, empty('Could not load this print: ' + e.message)); }
+  if (!t) return clear(box, empty('This print is not in the history (any more).'));
+  const job = t.job, [label, cls] = STATUS[t.status] || ['Status ' + t.status, ''];
+  const source = await D.sliceSource(job);
+  const can = job && (ctx.me.is_admin || (job.target === 'any' ? ctx.managesAny() : ctx.canManage(job.printer || job.target)));
+  const spoolName = (sid) => { const s = spools.find((x) => String(x.id) === String(sid)); return s ? `${s.brand} ${s.type} ${s.name}`.replace(/\s+/g, ' ').trim() : 'Spool ' + sid; };
+  const used = (job?.spools_used || []).map((u) => h('a', { class: 'spoolprint', href: '#/filament/' + encodeURIComponent(u.spool_id) },
+    h('span', null, spoolName(u.spool_id)), h('span', { class: 'muted' }, Math.round(u.grams * 10) / 10 + ' g')));
+  const secs = t.seconds || job?.print_seconds;
+  clear(box, D.page({
+    title: titleOf(t), sub: job?.name && t.title && job.name !== t.title ? 'Cloud title: ' + t.title : null,
+    pills: [pill(label, cls), SOURCE[t.source] && pill(...SOURCE[t.source])],
+    image: D.plateImage(job?.plate_png, t.cover_url),
+    facts: D.facts([
+      ['Printer', t.printer_name], ['Started by', startedBy(t)], ['Started', t.started_at ? dateTime(t.started_at) : null],
+      ['Finished', t.ended_at ? dateTime(t.ended_at) : null], ['Print time', secs ? durSec(secs) : null],
+      ['Filament', t.grams ? Math.round(t.grams) + ' g' : null], ['Cost', t.cost != null ? money(t.cost) : null],
+      ['File', job?.source || job?.file],
+      ['Error', (t.error || job?.error) && h('span', { style: 'color:var(--err)' }, t.error || job.error)]]),
+    blocks: [...D.settingsCards(job), D.card('Spools used', used), D.previewCard(source && job.slice_job)],
+    actions: [
+      source && btn([icon('plus', 18), 'Print again'], () => D.printAgain(ctx, job), 'primary'),
+      source && btn('Reslice', () => D.reslice(ctx, job, source)),
+      can && ['failed', 'cancelled'].includes(job?.state) && btn('Retry', async () => { if (await attempt(() => api.jobAction(job.id, 'retry'), 'Requeued')) ctx.go('#/queue/' + job.id); }),
+    ],
+  }));
 }

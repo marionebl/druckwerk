@@ -1,21 +1,21 @@
-// Queue: jobs grouped by printer, approvals separate, drag or buttons to reorder, history tab.
+// Queue: jobs grouped by printer, approvals separate, drag or buttons to reorder. #/queue/<job id> is one job.
+// Finished jobs live in History (one list for cloud tasks and jobs).
 import { api } from '../api.js';
-import { h, clear, icon, btn, pill, empty, modal, field, attempt, dateTime, money, toast, dur, clock } from '../util.js';
+import { h, clear, icon, btn, pill, empty, modal, field, attempt, dateTime, money, loading, thumb, durSec, toast } from '../util.js';
+import * as D from './detail.js';
 
 const WAITING = ['queued', 'pending_approval'];
 const STATE = { pending_approval: ['Needs approval', 'warn'], queued: ['Queued', ''], starting: ['Starting', 'ok'], printing: ['Printing', 'ok'], drying: ['Drying', 'ok'], done: ['Done', 'ok'], failed: ['Failed', 'err'], cancelled: ['Cancelled', ''] };
 
-export async function mount(ctx, root) {
-  const state = { tab: 'queue', dragging: null };
-  const list = h('div', { class: 'stack' });
-  const seg = h('div', { class: 'seg', role: 'group', 'aria-label': 'View' });
+export async function mount(ctx, root, parts = []) {
+  if (parts[0]) return detailView(ctx, root, decodeURIComponent(parts[0]));
+  const state = { dragging: null };
+  const list = h('div', { class: 'stack' }, loading());
   let data = null, names = {}, models = {}, last = '';
 
-  const setTab = (t) => { state.tab = t; last = ''; draw(); };
-  const drawSeg = () => clear(seg, [['queue', 'Queue'], ['history', 'History']].map(([id, l]) =>
-    h('button', { 'aria-pressed': String(state.tab === id), onclick: () => setTab(id) }, l)));
-  root.append(h('div', { class: 'page-head' }, h('div', null, h('h1', null, 'Queue'), h('div', { class: 'sub' }, ctx.isAdmin() ? 'All jobs' : 'Jobs on your printers')),
-    h('div', { class: 'row' }, seg, btn([icon('plus', 18), 'New print'], () => ctx.go('#/new'), 'primary'))), list);
+  root.append(h('div', { class: 'page-head' }, h('div', null, h('h1', null, 'Queue'),
+    h('div', { class: 'sub' }, ctx.isAdmin() ? 'All jobs' : 'Jobs on your printers', ' · finished prints are under ', h('a', { href: '#/history' }, 'History'))),
+    h('div', { class: 'row' }, btn([icon('plus', 18), 'New print'], () => ctx.go('#/new'), 'primary'))), list);
 
   const isAdminFor = (j) => ctx.me.is_admin || (j.target === 'any' ? ctx.managesAny() : ctx.canManage(j.target));
   const isOwn = (j) => j.owner_user_id === ctx.me.user_id;
@@ -81,7 +81,7 @@ export async function mount(ctx, root) {
     const [stl, cls] = STATE[j.state] || [j.state, ''];
     const waiting = j.state === 'queued', pending = j.state === 'pending_approval';
     const admin = isAdminFor(j), own = isOwn(j);
-    const canOrder = (waiting || pending) && (admin || own) && state.tab === 'queue';
+    const canOrder = (waiting || pending) && (admin || own);
     const acts = [];
     if (canOrder && waiting) acts.push(
       h('button', { class: 'icon-btn', 'aria-label': 'Move up', disabled: idx === 0, onclick: () => step(j, group, -1) }, icon('up')),
@@ -91,15 +91,13 @@ export async function mount(ctx, root) {
       j.kind !== 'dry' && btn('Move…', () => moveDialog(j), 'sm'));
     if (j.state === 'drying' && admin) acts.push(btn('Stop drying', () => act(j, 'stop', undefined, 'Drying stopped'), 'sm danger'));
     if (['queued', 'pending_approval', 'starting', 'printing'].includes(j.state) && (admin || own)) acts.push(btn('Cancel', () => act(j, 'cancel', undefined, 'Cancelled'), 'sm danger'));
-    if (['failed', 'cancelled'].includes(j.state) && (admin || own)) acts.push(btn('Retry', () => act(j, 'retry', undefined, 'Requeued'), 'sm'));
     const el = h('div', { class: 'job' + (pending ? ' pending' : ''), draggable: canOrder && waiting ? 'true' : null, 'data-id': j.id },
       canOrder && waiting ? h('div', { class: 'grip', title: 'Drag to reorder', 'aria-hidden': 'true' }, icon('grip')) : h('div', { class: 'pos' }, waiting ? idx + 1 : ''),
-      j.plate_png ? h('img', { class: 'thumb', src: j.plate_png, alt: '', loading: 'lazy' }) : h('div', { class: 'thumb' }, j.kind === 'dry' ? '♨' : null),
+      j.kind === 'dry' ? h('div', { class: 'thumb' }, '♨') : thumb(j.plate_png),
       h('div', { class: 'main' },
-        h('div', { class: 'row between' }, h('span', { class: 'title' }, j.name || j.source || j.file), pill(stl, cls)),
+        h('div', { class: 'row between' }, h('span', { class: 'title' }, h('a', { href: '#/queue/' + j.id }, j.name || j.source || j.file)), pill(stl, cls)),
         h('div', { class: 'sub' },
           h('span', { class: 'row', style: 'gap:6px' }, h('span', { class: 'avatar' }, (j.owner_name || '?')[0].toUpperCase()), j.owner_name, own && ' (you)'),
-          state.tab === 'history' && h('span', null, label(j.printer || j.target)),
           j.grams != null && h('span', null, j.grams.toFixed(0) + ' g'),
           j.cost != null && h('span', null, money(j.cost)),
           j.kind === 'dry' && h('span', null, `${unitName(j.dry)} · ${j.dry.temp}°C · ${j.dry.hours} h`),
@@ -108,6 +106,7 @@ export async function mount(ctx, root) {
           h('span', null, dateTime(j.finished_at || j.created_at))),
         j.error && h('small', { style: 'color:var(--err)' }, j.error)),
       acts.length ? h('div', { class: 'acts' }, acts) : null);
+    el.addEventListener('click', (e) => { if (!e.target.closest('button, a, input, select')) ctx.go('#/queue/' + j.id); });
     if (canOrder && waiting) {
       el.addEventListener('dragstart', (e) => { state.dragging = j; el.classList.add('dragging'); e.dataTransfer.effectAllowed = 'move'; e.dataTransfer.setData('text/plain', j.id); });
       el.addEventListener('dragend', () => { state.dragging = null; el.classList.remove('dragging'); list.querySelectorAll('.over').forEach((x) => x.classList.remove('over')); });
@@ -119,12 +118,7 @@ export async function mount(ctx, root) {
   }
 
   function draw() {
-    drawSeg();
     if (!data) return;
-    if (state.tab === 'history') {
-      clear(list, data.history.length ? h('div', { class: 'stack', style: 'gap:8px' }, data.history.map((j, i) => row(j, data.history, i))) : empty('No finished jobs yet.'));
-      return;
-    }
     const pending = data.jobs.filter((j) => j.state === 'pending_approval');
     const groups = new Map();
     for (const j of data.jobs) {
@@ -149,11 +143,81 @@ export async function mount(ctx, root) {
       const [q, ps] = await Promise.all([api.queue(), api.printers()]);
       names = Object.fromEntries(ps.map((p) => [p.serial, p.name]));
       models = Object.fromEntries(ps.map((p) => [p.serial, p.model]));
-      const sig = JSON.stringify([q.jobs, q.history, names]);
+      const sig = JSON.stringify([q.jobs, names]);
       if (sig === last || state.dragging || document.querySelector('dialog[open]')) return;
       last = sig; data = q; draw();
-    } catch (e) { if (!data) clear(list, empty(e.message)); }
+    } catch (e) { if (!data) clear(list, empty('Could not load the queue: ' + e.message)); }
   }
-  drawSeg();
   ctx.every(8000, refresh);
+}
+
+// One job: what it is, how it was sliced, and (while it waits) the things that can still change.
+async function detailView(ctx, root, id) {
+  const box = h('div');
+  root.append(D.back('#/queue', 'Queue'), box);
+  box.append(loading());
+  let job = null, names = {}, models = {}, sig = '', dirty = false, source = null, sourceFor = null;
+  const label = (target) => (target === 'any' ? 'Any compatible printer' : names[target] || target);
+  const isAdminFor = (j) => ctx.me.is_admin || (j.target === 'any' ? ctx.managesAny() : ctx.canManage(j.printer || j.target));
+
+  function draw() {
+    const j = job, [stl, cls] = STATE[j.state] || [j.state, ''];
+    const waiting = WAITING.includes(j.state), admin = isAdminFor(j), own = j.owner_user_id === ctx.me.user_id;
+    const editable = waiting && j.kind !== 'dry' && (admin || own);
+    const name = h('input', { type: 'text', maxlength: 80, value: j.name, oninput: () => (dirty = true) });
+    const target = h('select', { 'data-field': 'target', onchange: () => (dirty = true) },
+      [['any:' + j.model, 'Any compatible ' + (j.model || 'printer')], ...Object.entries(names)].map(([v, n]) =>
+        h('option', { value: v, selected: v === j.target || (j.target === 'any' && v === 'any:' + j.model) }, n)));
+    const opts = editable ? D.optionsEditor(j.options || {}, () => (dirty = true)) : null;
+    const save = btn('Save changes', async () => {
+      const body = {}, nm = name.value.trim(), changed = opts.get();
+      if (nm && nm !== j.name) body.name = nm;
+      if (Object.keys(changed).length) body.options = changed;
+      const v = target.value, any = v.startsWith('any:');
+      const moved = admin && v !== (j.target === 'any' ? 'any:' + j.model : j.target);
+      if (!Object.keys(body).length && !moved) return;
+      if (moved && !await attempt(() => api.jobAction(j.id, 'move', any ? { target: 'any', model: v.slice(4) } : { target: v, model: models[v] }))) return;
+      if (Object.keys(body).length && !await attempt(() => api.jobAction(j.id, 'edit', body))) return;
+      dirty = false; toast('Saved', 'ok'); await load(true);
+    }, 'primary');
+    const act = (action, ok, to) => async () => { if (await attempt(() => api.jobAction(j.id, action), ok)) { dirty = false; await load(true); if (to) ctx.go(to); } };
+    const secs = j.print_seconds || j.slice?.seconds, [optCard, sliceCard] = D.settingsCards(j);
+    clear(box, D.page({
+      title: j.name || j.source || j.file, sub: j.name && j.file && j.name !== j.file.replace(/\.gcode\.3mf$/, '') ? j.source || j.file : null,
+      pills: [pill(stl, cls)],
+      image: D.plateImage(j.plate_png),
+      facts: D.facts([
+        ['Printer', label(j.printer || j.target)], ['Owner', j.owner_name && j.owner_name + (own ? ' (you)' : '')], ['Added', dateTime(j.created_at)],
+        ['Started', j.started_at ? dateTime(j.started_at) : null], ['Finished', j.finished_at ? dateTime(j.finished_at) : null],
+        ['Print time', secs ? durSec(secs) : null], ['Filament', j.grams != null ? Math.round(j.grams) + ' g' : null],
+        ['Cost', j.cost != null ? money(j.cost) : null], ['File', j.source || j.file],
+        ['Error', j.error && h('span', { style: 'color:var(--err)' }, j.error)]]),
+      blocks: [
+        editable ? D.card('Change this job', h('div', { class: 'form' }, field('Name', name), admin && field('Target printer', target)), opts.node, h('div', null, save)) : optCard,
+        sliceCard, D.previewCard(source && j.slice_job)],
+      actions: [
+        source && btn('Reslice', () => D.reslice(ctx, j, source), 'primary'),
+        j.state === 'pending_approval' && admin && btn('Approve', act('approve', 'Approved'), 'primary'),
+        j.state === 'pending_approval' && admin && btn('Reject', act('reject', 'Rejected'), 'danger'),
+        ['queued', 'pending_approval', 'starting', 'printing'].includes(j.state) && (admin || own) && btn('Cancel job', act('cancel', 'Cancelled'), 'danger'),
+        ['failed', 'cancelled'].includes(j.state) && admin && j.kind !== 'dry' && btn('Retry', act('retry', 'Requeued')),
+      ],
+    }));
+  }
+
+  async function load(force) {
+    try {
+      const [q, ps] = await Promise.all([api.queue(), api.printers()]);
+      names = Object.fromEntries(ps.map((p) => [p.serial, p.name]));
+      models = Object.fromEntries(ps.map((p) => [p.serial, p.model]));
+      const found = [...q.jobs, ...q.history].find((j) => j.id === id);
+      if (!found) return clear(box, empty('This job is not in the queue (any more). Finished prints are under History.'));
+      const s = JSON.stringify([found, names]);
+      if (!force && (s === sig || dirty || document.querySelector('dialog[open]'))) return;
+      sig = s; job = found;
+      if (sourceFor !== job.slice_job) { sourceFor = job.slice_job; source = await D.sliceSource(job); }
+      draw();
+    } catch (e) { if (!job) clear(box, empty('Could not load this job: ' + e.message)); }
+  }
+  ctx.every(8000, load);
 }

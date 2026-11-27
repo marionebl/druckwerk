@@ -67,7 +67,7 @@ def test_act_as_ha_admin_can_do_admin_things(hub):
 
 def test_act_as_printer_owner_is_admin_of_that_printer_only(hub):
     hub.setup_printers()
-    hub.grant(USER, SERIAL, role="owner")
+    hub.owner(USER)
     mine = add(hub, ADMIN, "m.gcode.3mf", SERIAL)["id"]
     other = add(hub, ADMIN, "o.gcode.3mf", "FAKE0002")["id"]
     assert act(hub, "POST", "/api/queue/%s/skip" % mine, {}, USER)[0] == 200

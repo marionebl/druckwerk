@@ -390,6 +390,15 @@ def get_file(h, m, q):
     h.send(200, data, "image/png" if member.endswith("png") else "text/plain; charset=utf-8")
 
 
+def get_model(h, m, q):
+    """The uploaded model, so New print can slice it again (Reslice)."""
+    job = jobs.get(m.group(1))
+    if not job or not os.path.isfile(job.get("model") or ""):
+        return h.send(404, {"error": "no model"})
+    with open(job["model"], "rb") as f:
+        h.send(200, f.read(), "application/octet-stream")
+
+
 def post_print(h, m, q):
     job = jobs.get(m.group(1))
     if not job or job.get("state") != "done":
@@ -431,6 +440,7 @@ ROUTES = [
     ("POST", r"/api/jobs/" + JOB_ID + r"/slice", post_slice),
     ("POST", r"/api/jobs/" + JOB_ID + r"/gcode", post_gcode),
     ("GET", r"/api/jobs/" + JOB_ID + r"/(plate\.png|plate\.gcode)", get_file),
+    ("GET", r"/api/jobs/" + JOB_ID + r"/model", get_model),
     ("POST", r"/api/jobs/" + JOB_ID + r"/print", post_print),
 ]
 

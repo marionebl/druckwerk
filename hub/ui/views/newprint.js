@@ -156,7 +156,7 @@ export async function mount(ctx, root) {
     } catch (e) { fail(e); S.variants = null; }
     S.busy = false;
     dropEngine(); startEngine();  // a fresh worker for the next slice, started now so it is ready
-    const ok = S.variants?.find((v) => v.q === 'better' && v.state === 'done');
+    const ok = S.variants?.find((v) => v.q === (S.prefQ || 'better') && v.state === 'done') || S.variants?.find((v) => v.q === 'better' && v.state === 'done');
     if (ok && !S.pick) S.pick = ok.q;
     draw();
   }
@@ -180,7 +180,7 @@ export async function mount(ctx, root) {
       S.busy = S.variants.some((v) => v.state === 'queued' || v.state === 'slicing');
       draw();
       if (S.busy) setTimeout(tick, 1500);
-      else if (!S.pick) { const ok = S.variants.find((v) => v.q === 'better' && v.state === 'done'); if (ok) { S.pick = ok.q; draw(); } }
+      else if (!S.pick) { const ok = S.variants.find((v) => v.q === (S.prefQ || 'better') && v.state === 'done') || S.variants.find((v) => v.q === 'better' && v.state === 'done'); if (ok) { S.pick = ok.q; draw(); } }
     };
     tick();
   }
@@ -259,6 +259,23 @@ export async function mount(ctx, root) {
     const step = S.pick ? 4 : S.variants ? 3 : S.file ? 2 : 1;
     if (!printers.length) return clear(box, empty('You have no printer access yet. Ask an admin for a grant.'));
     clear(box, stepper(step), fileCard(), S.file && printerCard(), S.variants && compareCard(), S.pick && queueCard());
+  }
+  // Reslice (from a history or queue detail) hands over what the old print had; it is used once.
+  const rs = ctx.reslice;
+  ctx.reslice = null;
+  if (rs) {
+    S.name = rs.name || '';
+    Object.assign(S.options, rs.options || {});
+    if (BEDS.includes(rs.bed)) S.bed = rs.bed;
+    S.prefQ = rs.quality;
+    const any = rs.target === 'any' ? 'any:' + rs.printer_model : null;
+    S.target = any && models.includes(rs.printer_model) ? any : printers.some((p) => p.serial === rs.target) ? rs.target : null;
+    // The old filament: a library spool, or an AMS tray if it is still loaded; otherwise the default tray stays.
+    const t = rs.tray || {};
+    if (S.target && t.ams == null && t.spool_id != null && spoolById(String(t.spool_id))) S.spool = String(t.spool_id);
+    else if (S.target && t.ams != null && trays().some((x) => trayKey(x) === `${t.ams}:${t.id}`)) S.tray = `${t.ams}:${t.id}`;
+    api.jobModel(rs.slice_job).then((blob) => { S.file = new File([blob], rs.model || 'model.stl'); S.variants = null; S.pick = null; draw(); },
+      () => toast('The model is no longer stored. Choose it again.', 'error'));
   }
   if (where() === 'device') startEngine();
   draw();

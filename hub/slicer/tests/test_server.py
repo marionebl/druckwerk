@@ -107,6 +107,8 @@ def test_upload_slice_preview_print(app):
     status, raw = call(base, "POST", "/api/jobs?name=Fan%20test.stl", raw=b"solid x\nendsolid x\n")
     assert status == 200, raw
     jid = json.loads(raw)["id"]
+    assert call(base, "GET", "/api/jobs/%s/model" % jid) == (200, b"solid x\nendsolid x\n")  # Reslice downloads it again
+    assert call(base, "GET", "/api/jobs/000000000000/model")[0] == 404
     status, raw = call(base, "POST", "/api/jobs/%s/slice" % jid, {"serial": "H2S0001", "quality": "best", "tray": "0:0"})
     assert status == 202, raw
     job = wait_done(base, jid)

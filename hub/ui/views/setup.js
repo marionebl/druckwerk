@@ -53,18 +53,22 @@ export async function mount(ctx, root) {
       nozzle: h('select', null, NOZZLES.map((x) => h('option', { selected: x === String(c.nozzle || '0.4') }, x))),
       pause: h('input', { type: 'text', value: (c.pause_entities || []).join(', '), placeholder: 'switch.printer_power, input_boolean.pause_printing' }),
       price: h('input', { type: 'number', step: '0.01', min: 0, value: c.electricity_kwh_price || '' }),
+      owner: h('select', { 'data-field': 'owner' }, h('option', { value: '' }, 'No owner')),
     };
+    // The owner administers this printer; the list is the HA users.
+    api.haUsers().then((us) => f.owner.append(...us.map((u) => h('option', { value: u.id, selected: u.id === c.owner }, u.name || u.id)))).catch(() => {});
     return h('section', { class: 'card' }, h('div', { class: 'row between' }, h('div', null, h('h2', { style: 'margin:0' }, p.device_name), h('small', null, `${p.model} · ${p.serial.slice(0, 4)}…${p.serial.slice(-3)}`)),
       pill(saved ? 'Configured' : 'New', saved ? 'ok' : 'warn')),
       h('div', { class: 'form', style: 'margin-top:14px' },
         h('div', { class: 'form two' }, field('Name', f.name),
           field('Prefix (optional)', f.prefix, 'Only a name for the printer in the hub. If you also use the printer integration, use its entity prefix.')),
         h('div', { class: 'form two' }, field('Build plate', f.plate), field('Nozzle (mm)', f.nozzle)),
+        field('Owner', f.owner, 'Administers this printer: manages its queue and spools, gets load requests, and is named for prints nobody started here.'),
         field('Pause entities', f.pause, 'Entity ids, comma separated. The hub turns these on to pause printing, for example a smart plug.'),
         field('Electricity price (EUR per kWh)', f.price, 'Used for the cost estimate. Optional.'),
         h('div', { class: 'row' }, btn('Save printer', async () => {
           const body = { name: f.name.value.trim(), ha_prefix: f.prefix.value.trim(), plate: f.plate.value, nozzle: f.nozzle.value,
-            pause_entities: f.pause.value.split(',').map((x) => x.trim()).filter(Boolean) };
+            pause_entities: f.pause.value.split(',').map((x) => x.trim()).filter(Boolean), owner: f.owner.value };
           if (f.price.value !== '') body.electricity_kwh_price = +f.price.value;
           if (await attempt(() => api.savePrinter(p.serial, body), 'Printer saved')) load();
         }, 'primary'), saved && btn('Remove', async () => { if (confirm(`Remove ${p.device_name} from the hub?`) && await attempt(() => api.removePrinter(p.serial), 'Printer removed')) load(); }, 'danger'))));

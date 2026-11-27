@@ -282,3 +282,15 @@ details.adv .form { margin-top: 12px; }
 .dry .unit-head { display: flex; justify-content: space-between; gap: 8px; align-items: center; flex-wrap: wrap; }
 .dry .form.two { margin-top: 10px; }
 .dry-state { font-size: 14px; margin: 6px 0; }
+
+/* Thumbnails keep their box when the image is missing or fails; the placeholder fills the same box. */
+.thumb, .detail-img { position: relative; overflow: hidden; background: var(--soft); }
+.thumb img, .detail-img img { width: 100%; height: 100%; object-fit: cover; display: block; }
+.thumb.ph::after, .detail-img.ph::after { content: ''; position: absolute; inset: 28%; border: 2px solid var(--line); border-radius: 6px; }
+.detail-img { border-radius: 10px; border: 1px solid var(--line); aspect-ratio: 1; width: 100%; max-width: 360px; }
+.detail-img img { object-fit: contain; }
+.detail-top { display: grid; gap: var(--gap); grid-template-columns: 1fr; align-items: start; }
+@media (min-width: 720px) { .detail-top { grid-template-columns: 360px 1fr; } }
+.tl-card { color: inherit; text-decoration: none; } a.tl-card:hover, .job .title a:hover { border-color: var(--accent); }
+.job .title a { color: inherit; text-decoration: none; } .job { cursor: pointer; }
+.spoolprint { display: flex; justify-content: space-between; gap: 12px; padding: 8px 0; border-top: 1px solid var(--line); color: inherit; text-decoration: none; }

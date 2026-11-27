@@ -467,6 +467,7 @@ class App:
                               account=d.get("account"), prefix=prefix, plate_type="", nozzle="", pause_entities=[],
                               electricity_kwh_price=0)
             log("registered printer %s as %s" % (serial, prefix))
+            self.grants.migrate_owners()  # an older "all printers" owner grant applies to the new printer
 
     def try_auto_register(self, every=60, listed=None):
         # Throttled: the bridge or HA may be down, and each try costs two calls.
@@ -604,7 +605,8 @@ class App:
     def config_view(p):
         return {"serial": p["serial"], "name": p["name"], "model": p["model"], "account": p["account"],
                 "ha_prefix": p["prefix"], "plate": p["plate_type"], "nozzle": p["nozzle"],
-                "pause_entities": p["pause_entities"], "electricity_kwh_price": p.get("electricity_kwh_price") or 0}
+                "pause_entities": p["pause_entities"], "electricity_kwh_price": p.get("electricity_kwh_price") or 0,
+                "owner": p.get("owner") or ""}
 
     def login(self, step):
         def run(h, m, q, c):
@@ -624,11 +626,14 @@ class App:
         old = self.registry.get(serial)
         if not known and not old:
             raise NotFound("the logged-in accounts have no printer with that serial")
+        owner = b.get("owner", old.get("owner") if old else "")  # no key: keep the owner
+        if owner and not self.get_user(owner):
+            raise ValueError("owner must be an active Home Assistant user id (or empty for none)")
         prefix = str(b.get("ha_prefix") or "").strip() or self.default_prefix(serial, b.get("name") or serial)
         model = (known and (known.get("dev_product_name") or known.get("dev_model_name"))) or old["model"]
         p = self.registry.put(serial, name=b.get("name"), model=model, account=known["account"] if known else old["account"],
                               prefix=prefix, plate_type=b.get("plate") or "", nozzle=b.get("nozzle") or "",
-                              pause_entities=b.get("pause_entities") or [], electricity_kwh_price=price)
+                              pause_entities=b.get("pause_entities") or [], electricity_kwh_price=price, owner=owner)
         return self.config_view(p)
 
     def delete_printer(self, h, m, q, c):
@@ -702,7 +707,11 @@ class App:
         limit = num(one("limit") or 100, int)
         if limit is None or not 1 <= limit <= 500:
             raise ValueError("limit must be a number from 1 to 500")
-        shown = [(p, self.access.role(c, p["serial"])) for p in self.registry.all() if one("printer") in ("", p["serial"])]
+        return self.history_items(c, one("user"), one("printer"), limit)
+
+    def history_items(self, c, who, printer, limit):
+        """Cloud tasks with their Druckwerk job merged in, plus finished jobs that no task explains."""
+        shown = [(p, self.access.role(c, p["serial"])) for p in self.registry.all() if printer in ("", p["serial"])]
         tasks, unavailable = [], []
         for p, role in shown:
             if role:
@@ -713,18 +722,47 @@ class App:
                     unavailable.append(p["serial"])
         owned = history.attribute(tasks, history.jobs_of(self.queue))
         by_serial = {p["serial"]: (p, role) for p, role in shown}
-        who, out = one("user"), []
+        merged = {j["id"] for j in owned.values()}
+        # Only jobs the caller may see; the same owner rule as for tasks applies below.
+        loose = [j for j in self.access.bind(self.queue, c).snapshot()["history"]
+                 if j["id"] not in merged and j["state"] in history.FINAL and j.get("kind") != "dry"
+                 and printer in ("", j.get("printer") or (j["target"] if j["target"] != "any" else ""))]
+        out = []
         for t in tasks:
             p, role = by_serial[t["serial"]]
-            it = history.item(t, owned.get(t["id"]), p)
+            out.append((history.item(t, owned.get(t["id"]), p), role))
+        for j in loose:
+            serials = self.access.serials_of(j)
+            p = self.registry.get(serials[0]) if len(serials) == 1 else None
+            out.append((history.job_item(j, p), self.access.best(c, serials)))
+        owners = {}
+        res = []
+        for it, role in out:
+            if not it["user_id"]:  # nobody started it here: the printer's owner is the closest answer
+                it["printer_owner"] = owners[it["serial"]] if it["serial"] in owners else owners.setdefault(it["serial"], self.printer_owner(it["serial"]))
             if role == "admin":  # the user filter is for admins; everyone else sees their own prints only
                 if who and (it["user_id"] or "unknown") != who:
                     continue
             elif it["user_id"] != c.user_id:
                 continue
-            out.append(it)
-        out.sort(key=lambda i: i["started_at"] or 0, reverse=True)
-        return {"items": out[:limit], "unavailable": unavailable}
+            res.append(it)
+        res.sort(key=lambda i: i["when"] or 0, reverse=True)
+        return {"items": res[:limit], "unavailable": unavailable}
+
+    def printer_owner(self, serial):
+        """Display name of the printer's owner, None without one."""
+        uid = (self.registry.get(serial) or {}).get("owner")
+        return uid and ((self.get_user(uid) or {}).get("name") or uid) or None
+
+    def get_spool_prints(self, h, m, q, c):
+        """The settled prints that used one spool, newest first, as history items."""
+        sid = m.group(1)
+        items = []
+        for it in self.history_items(c, "", "", 500)["items"]:
+            used = [u for u in (it.get("job") or {}).get("spools_used") or [] if str(u.get("spool_id")) == sid]
+            if used:
+                items.append(dict(it, spool_grams=sum(u.get("grams") or 0 for u in used)))
+        return {"items": items}
 
     # -- slices and jobs --
     def own(self, c, job_id):
@@ -839,9 +877,18 @@ class App:
                          print_seconds=use["seconds"], plate_png=png,
                          slice_tray=[int(tray["ams"]), int(tray["id"])] if tray and tray.get("ams") is not None else None,
                          slice_spool={k: tray.get(k) for k in ("spool_id", "brand", "type", "name", "colour")}
-                         if tray and tray.get("ams") is None else None)
+                         if tray and tray.get("ams") is None else None,
+                         slice_job=job["id"], slice=self.slice_view(job, use))
             self.queue._save()
         return added
+
+    @staticmethod
+    def slice_view(job, use):
+        """What the slice was made with, kept on the queue job: the slicer forgets its jobs after ten newer ones."""
+        s = job.get("settings") or {}
+        return {"quality": job.get("quality"), "process": s.get("process"), "filament": s.get("filament"), "bed": s.get("bed"),
+                "tray": s.get("tray"), "seconds": use["seconds"], "grams": use["grams"], "filaments": use["filaments"],
+                "model": job.get("filename")}
 
     def resolve_media(self, path):
         """The real path of a sliced .gcode.3mf under /media or /share, or ValueError. Symlinks are resolved first."""
@@ -1307,10 +1354,12 @@ class App:
             ("POST", r"/api/jobs/" + JOB_ID + r"/gcode", self.slicer_job(self.s.post_gcode, self.check_gcode)),
             ("GET", r"/api/engine/filament", self.get_engine_filament),
             ("GET", r"/api/jobs/" + JOB_ID + r"/(plate\.png|plate\.gcode)", self.slicer_job(self.s.get_file)),
+            ("GET", r"/api/jobs/" + JOB_ID + r"/model", self.slicer_job(self.s.get_model)),
             ("POST", r"/api/jobs/" + JOB_ID + r"/print", self.slicer_job(self.s.post_print, self.check_print)),
             ("POST", r"/api/jobs/" + JOB_ID + r"/queue", w(self.queue_job)),
             ("GET", r"/api/history", w(self.get_history)),
             ("GET", r"/api/spools", w(self.get_spools)),
+            ("GET", r"/api/spools/(\d{1,19})/prints", w(self.get_spool_prints)),
             ("POST", r"/api/spools", w(self.post_spool)),
             ("PUT", r"/api/spools/(\d{1,19})", w(self.put_spool)),
             ("DELETE", r"/api/spools/(\d{1,19})", w(self.delete_spool)),

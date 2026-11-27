@@ -1,5 +1,15 @@
 # Changelog
 
+## 3.2.0 (unreleased)
+
+- One History. The History tab lists the Bambu Cloud tasks with the Druckwerk job merged in (name, owner, cost, options, slice). A finished job that no cloud task explains (never sent, cancelled before the start) is listed too and marked "Druckwerk only". The Queue no longer has a History segment. `GET /api/history` items gain `job`, `when` and `printer_owner`; `source` can be `job`.
+- Every screen has a URL: `#/queue`, `#/history`, `#/history/<id>`, `#/queue/<job id>`, `#/filament`, `#/filament/<spool id>`, `#/printers/<serial>`, `#/new`, `#/access`. Reload opens the same view. Inside Home Assistant the app mirrors its route into the panel's URL hash and reads it back on load, so `<panel URL>#/history/123` is a link you can share.
+- History detail: status, times, printer, grams, cost, the plate image (a placeholder box when it does not load), the print options and the slice, the 3D preview while the slicer still has the file, and Print again, Reslice and Retry where the source exists. Queue detail: the same, plus change name, options and target printer, approve, reject and cancel. `POST /api/queue/{id}/edit` is new. Jobs made from a slice keep `slice_job` and `slice`.
+- Reslice opens New print with the same model and settings (`ctx.reslice`). New print prefills the model (from `GET /api/jobs/{id}/model`), name, options, printer, filament (library spool or AMS tray), build plate and the quality pick. A new slice is queued as a new job; the old job stays until you cancel it.
+- Filament detail (`#/filament/<id>`): the spool and the prints done with it, linked to History. `GET /api/spools/{id}/prints` is new.
+- Lists show "Loading…" until the first answer and "No x yet" only after an empty answer; a failure shows the error. Printers, filament, queue and history show the last answer from a per-user localStorage cache at once and replace it when the network answers; a change drops the cached list. Storage that is empty or blocked changes nothing.
+- Ownership is a property of the printer: `PUT /api/setup/printers/{serial}` takes `owner` (an HA user), the Setup wizard has an Owner field. The `owner` role is gone from grants; at start owner grants move into the printer's `owner` and are dropped (see API.md). The owner is an admin of the printer, gets load requests and approval notifications, and is named in the History for prints nobody started here ("Not started here" stays when there is no owner).
+
 ## 3.1.1 (unreleased)
 
 - No broken images on the printer cards and the printer page: the camera image stays hidden until a frame has loaded, and the placeholder says "Loading camera image…" or "No camera image". Before, the `<img>` had no source until the first snapshot arrived (10 to 60 s through the bridge, or never when the snapshot fails), so it showed its alt text. The plate image on New print is removed when it fails to load.
