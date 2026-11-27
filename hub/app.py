@@ -826,6 +826,8 @@ class App:
         length = int(h.headers.get("Content-Length") or 0)
         err = "expected {\"item\": ..., \"description\": ...} of at most %d bytes" % FEEDBACK_MAX
         if not 0 < length <= FEEDBACK_MAX:
+            if length <= 4 * FEEDBACK_MAX:  # read the rest so the client gets the 400, not a reset connection
+                h.rfile.read(length)
             raise ValueError(err)
         try:
             req = json.loads(h.rfile.read(length))
