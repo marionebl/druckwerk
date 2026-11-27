@@ -67,6 +67,9 @@ export const api = {
     if (!r.ok) throw new ApiError(r.status, 'No G-code preview');
     return r.text();
   },
+  // slicing in the browser: the filament preset for a tray, and the G-code the browser made (the app packs and stores it)
+  engineFilament: (serial, tray) => get(`api/engine/filament?serial=${q(serial)}&tray=${q(tray)}`),
+  uploadGcode: (id, params, gcode) => call('POST', `api/jobs/${q(id)}/gcode?` + params, gcode, true),
   queueJob: (id, body) => post(`api/jobs/${q(id)}/queue`, body),
   // filament
   spools: () => get('api/spools'),

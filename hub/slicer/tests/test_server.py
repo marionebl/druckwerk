@@ -32,6 +32,13 @@ def minimal_slice(path):
     return str(path)
 
 
+PRESETS = {"model": "H2S", "machine": {"name": "Bambu Lab H2S 0.4 nozzle", "printable_area": ["0x0", "350x0", "350x320", "0x320"]},
+           "process": {q: {"name": "proc " + q} for q in ("good", "better", "best")},
+           "filaments": [{"name": "Generic PETG", "id": "GFG99", "type": "PETG", "n": 9, "config": {"name": "Generic PETG"}},
+                         {"name": "Acme PETG HF @BBL H2S", "id": "GFG02", "type": "PETG", "n": 1, "config": {"name": "Acme PETG HF"}},
+                         {"name": "Generic PLA", "id": "GFL99", "type": "PLA", "n": 9, "config": {"name": "Generic PLA"}}]}
+
+
 def free_port():
     with socket.socket() as s:
         s.bind(("127.0.0.1", 0))
@@ -52,11 +59,16 @@ def call(base, method, path, body=None, raw=None):
 def app(tmp_path):
     result = os.environ.get("FAKE_RESULT") or minimal_slice(tmp_path / "result.gcode.3mf")
     mport, sport = free_port(), free_port()
+    (tmp_path / "engine" / "presets").mkdir(parents=True)
+    (tmp_path / "engine" / "presets" / "H2S.json").write_text(json.dumps(PRESETS))
+    (tmp_path / "engine" / "version.json").write_text('{"tag": "t"}')
+    (tmp_path / "engine" / "t").mkdir()
+    (tmp_path / "engine" / "t" / "engine-mt.wasm").write_bytes(b"\0asm")
     mocks = subprocess.Popen([sys.executable, os.path.join(HERE, "mocks.py"), str(mport)])
     env = dict(os.environ, SLICER_JOBS=str(tmp_path / "jobs"), SLICER_SHARE=str(tmp_path / "share"),
                SLICER_SENDER_URL="http://127.0.0.1:%d" % mport, SLICER_CORE_URL="http://127.0.0.1:%d/core" % mport,
                SLICER_SLICE_CMD=os.path.join(HERE, "fake_slice.sh"), SLICER_BS=os.path.join(HERE, "fake_bs.py"),
-               SLICER_PORT=str(sport), SUPERVISOR_TOKEN="tok", FAKE_RESULT=result)
+               SLICER_PORT=str(sport), SLICER_ENGINE=str(tmp_path / "engine"), SUPERVISOR_TOKEN="tok", FAKE_RESULT=result)
     server = subprocess.Popen([sys.executable, os.path.join(APP, "server.py")], env=env)
     base = "http://127.0.0.1:%d" % sport
     for _ in range(50):
@@ -126,3 +138,67 @@ def test_slice_rejects_unknown_tray_and_quality(app):
     assert call(base, "POST", "/api/jobs/%s/slice" % jid, {"serial": "H2S0001", "quality": "better", "tray": "0:2"})[0] == 400
     assert call(base, "POST", "/api/jobs/%s/slice" % jid, {"serial": "H2S0001", "quality": "ultra", "tray": "0:0"})[0] == 400
     assert call(base, "POST", "/api/jobs?name=a.exe", raw=b"x")[0] == 400
+
+
+def gcode_query(**kw):
+    q = {"serial": "H2S0001", "quality": "better", "tray": "0:0", "bed": "High Temp Plate", "filament": "Acme PETG HF @BBL H2S",
+         "seconds": "1234", "grams": "5.5", "metres": "1.8", "engine": "mt", "slice_s": "12.3"}
+    q.update(kw)
+    return "&".join("%s=%s" % (k, v.replace(" ", "%20").replace("@", "%40")) for k, v in q.items())
+
+
+def test_browser_gcode_becomes_a_normal_slice(app):
+    base, mock, tmp, _ = app
+    gcode = b"; printer_model = Bambu Lab H2S\n; CHANGE_LAYER\n; Z_HEIGHT: 0.2\n; FEATURE: Outer wall\nG1 X10 Y10\nG1 X30 Y10 E1\n"
+    jid = json.loads(call(base, "POST", "/api/jobs?name=Fan.stl", raw=b"solid x")[1])["id"]
+    status, raw = call(base, "POST", "/api/jobs/%s/gcode?%s" % (jid, gcode_query()), raw=gcode)
+    assert status == 200, raw
+    job = json.loads(raw)
+    assert job["state"] == "done" and job["info"]["seconds"] == 1234 and job["info"]["grams"] == 5.5
+    assert job["info"]["has_png"] is False and job["settings"]["filament"] == "Acme PETG HF @BBL H2S"
+    assert call(base, "GET", "/api/jobs/%s/plate.gcode" % jid)[1] == gcode
+    with zipfile.ZipFile(job_result(tmp, jid)) as z:
+        settings = json.loads(z.read("Metadata/project_settings.config"))
+        assert z.read("Metadata/plate_1.gcode") == gcode and 'value="O1S"' in z.read("Metadata/slice_info.config").decode()
+    assert settings["curr_bed_type"] == "High Temp Plate"  # Orca refuses PETG without a plate
+    assert call(base, "POST", "/api/jobs/%s/print" % jid, {"confirm": True})[0] == 200  # the stored file prints like any slice
+    assert json.loads(call(mock, "GET", "/calls")[1])[0]["body"]["file"].endswith("Fan_better_h2s.gcode.3mf")
+
+
+def job_result(tmp, jid):
+    return next((tmp / "jobs" / jid / "out").glob("*.gcode.3mf"))
+
+
+def test_browser_gcode_rejects_bad_requests(app):
+    base = app[0]
+    jid = json.loads(call(base, "POST", "/api/jobs?name=a.stl", raw=b"x")[1])["id"]
+    assert call(base, "POST", "/api/jobs/%s/gcode?%s" % (jid, gcode_query(tray="0:2")), raw=b"G1")[0] == 400
+    assert call(base, "POST", "/api/jobs/%s/gcode?%s" % (jid, gcode_query(quality="ultra")), raw=b"G1")[0] == 400
+    assert call(base, "POST", "/api/jobs/%s/gcode?%s" % (jid, gcode_query(filament="Nope")), raw=b"G1")[0] == 400
+    assert call(base, "POST", "/api/jobs/%s/gcode?%s" % (jid, gcode_query(seconds="x")), raw=b"G1")[0] == 400
+    assert call(base, "POST", "/api/jobs/%s/gcode?%s" % (jid, gcode_query()), raw=b"")[0] == 413
+    assert call(base, "POST", "/api/jobs/aaaaaaaaaaaa/gcode?%s" % gcode_query(), raw=b"G1")[0] == 404
+
+
+def test_filament_follows_the_trays_profile_id_else_generic(app):
+    base = app[0]
+    assert json.loads(call(base, "GET", "/api/engine/filament?serial=H2S0001&tray=0:0")[1]) == {"filament": "Acme PETG HF @BBL H2S"}
+    assert json.loads(call(base, "GET", "/api/engine/filament?serial=H2S0001&tray=0:1")[1]) == {"filament": "Generic PLA"}  # idx unknown
+    assert call(base, "GET", "/api/engine/filament?serial=H2S0001&tray=0:2")[0] == 400
+
+
+def test_engine_files_and_isolation_headers(app):
+    base = app[0]
+    import urllib.request
+    with urllib.request.urlopen(base + "/engine/t/engine-mt.wasm") as r:
+        assert r.headers["Content-Type"] == "application/wasm" and "immutable" in r.headers["Cache-Control"]
+        assert r.headers["Cross-Origin-Opener-Policy"] == "same-origin"
+        assert r.headers["Cross-Origin-Embedder-Policy"] == "require-corp"
+        assert r.headers["Document-Isolation-Policy"] == "isolate-and-require-corp"
+        assert r.headers["Cross-Origin-Resource-Policy"] == "same-origin"
+    with urllib.request.urlopen(base + "/engine/version.json") as r:
+        assert r.headers["Cache-Control"] == "no-cache"
+    assert call(base, "GET", "/engine/../../etc/passwd")[0] == 404
+    assert call(base, "GET", "/engine/nothing")[0] == 404
+    with urllib.request.urlopen(base + "/api/printers") as r:
+        assert r.headers["Cross-Origin-Embedder-Policy"] == "require-corp"

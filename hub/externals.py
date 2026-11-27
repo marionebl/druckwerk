@@ -36,10 +36,10 @@ PROFILE_DIR = "BBL"
 PROFILE_SEARCH = "*/profiles/BBL.json"
 DEFAULT_PRINTER = "Bambu Lab H2S 0.4 nozzle"  # machine preset names, verbatim
 PRINTERS = {  # dev_product_name -> machine preset, bed type and process presets per quality
-    "H2S": {"preset": "Bambu Lab H2S 0.4 nozzle", "bed": "High Temp Plate",
+    "H2S": {"preset": "Bambu Lab H2S 0.4 nozzle", "bed": "High Temp Plate", "model_id": "O1S",
             "quality": {"good": "0.24mm Standard @BBL H2S", "better": "0.20mm Standard @BBL H2S",
                         "best": "0.16mm High Quality @BBL H2S"}},
-    "P1S": {"preset": "Bambu Lab P1S 0.4 nozzle", "bed": "Textured PEI Plate",
+    "P1S": {"preset": "Bambu Lab P1S 0.4 nozzle", "bed": "Textured PEI Plate", "model_id": "C12",
             "quality": {"good": "0.24mm Draft @BBL X1C", "better": "0.20mm Standard @BBL X1C",
                         "best": "0.16mm High Quality @BBL X1C"}},
 }

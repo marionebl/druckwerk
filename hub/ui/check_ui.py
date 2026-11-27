@@ -24,6 +24,7 @@ sys.path.insert(0, HERE)
 import ingress_proxy  # noqa: E402
 MODEL = {"name": "demo_part.stl", "mimeType": "model/stl", "buffer": b"solid x\nendsolid x\n"}
 SLICE_TIMEOUT = 15000
+SLICE_ON = None
 SIZES = {"390x844": (390, 844), "1440x900": (1440, 900)}
 H2S = "FAKE-H2S-0001"
 
@@ -188,6 +189,8 @@ def walk(page, ident, base, shot, inject):
     page.set_input_files("input[type=file]", files=[MODEL])
     page.get_by_role("button", name="Workshop H2S").click()
     page.locator(".chip", has_text="AMS 1·1").click()
+    if SLICE_ON:  # the page defaults to "This device" where it is isolated; the real image run covers the Pi path here
+        page.locator("#where").get_by_role("button", name=SLICE_ON).click()
     shot("new-print-ready")
     page.get_by_role("button", name="Slice good, better and best").click()
     page.wait_for_selector(".variant[aria-pressed=true]", timeout=SLICE_TIMEOUT)
@@ -228,8 +231,10 @@ def main():
     ap.add_argument("--model")
     ap.add_argument("--slice-timeout", type=int, default=15)
     ap.add_argument("--expect-403", default="")
+    ap.add_argument("--slice-on", help="chip to press under Slice on, e.g. \"Pi (Bambu Studio)\"")
     a = ap.parse_args()
-    global PREFIX, MODEL, SLICE_TIMEOUT
+    global PREFIX, MODEL, SLICE_TIMEOUT, SLICE_ON
+    SLICE_ON = a.slice_on
     SLICE_TIMEOUT = a.slice_timeout * 1000
     if a.model:
         MODEL = {"name": os.path.basename(a.model), "mimeType": "model/stl", "buffer": open(a.model, "rb").read()}
