@@ -1,0 +1,327 @@
+{
+  "llm_tools": {
+    "druckwerk_add_to_queue": {
+      "properties": [
+        "file",
+        "model",
+        "name",
+        "options",
+        "slice_job_id",
+        "target"
+      ],
+      "required": []
+    },
+    "druckwerk_approve_job": {
+      "properties": [
+        "job_id"
+      ],
+      "required": [
+        "job_id"
+      ]
+    },
+    "druckwerk_camera_snapshot": {
+      "properties": [
+        "printer"
+      ],
+      "required": [
+        "printer"
+      ]
+    },
+    "druckwerk_cancel_job": {
+      "properties": [
+        "job_id"
+      ],
+      "required": [
+        "job_id"
+      ]
+    },
+    "druckwerk_get_printers": {
+      "properties": [
+        "printer"
+      ],
+      "required": []
+    },
+    "druckwerk_get_queue": {
+      "properties": [
+        "history_limit"
+      ],
+      "required": []
+    },
+    "druckwerk_get_slice_results": {
+      "properties": [
+        "slice_job_ids"
+      ],
+      "required": [
+        "slice_job_ids"
+      ]
+    },
+    "druckwerk_move_job": {
+      "properties": [
+        "job_id",
+        "model",
+        "target"
+      ],
+      "required": [
+        "job_id",
+        "target"
+      ]
+    },
+    "druckwerk_reject_job": {
+      "properties": [
+        "job_id"
+      ],
+      "required": [
+        "job_id"
+      ]
+    },
+    "druckwerk_reorder_job": {
+      "properties": [
+        "job_id",
+        "position",
+        "printer"
+      ],
+      "required": [
+        "job_id",
+        "position"
+      ]
+    },
+    "druckwerk_retry_job": {
+      "properties": [
+        "job_id"
+      ],
+      "required": [
+        "job_id"
+      ]
+    },
+    "druckwerk_skip_job": {
+      "properties": [
+        "job_id"
+      ],
+      "required": [
+        "job_id"
+      ]
+    },
+    "druckwerk_slice": {
+      "properties": [
+        "model_file",
+        "plate",
+        "printer",
+        "tray",
+        "wait"
+      ],
+      "required": [
+        "model_file",
+        "printer",
+        "tray"
+      ]
+    },
+    "druckwerk_start_job": {
+      "properties": [
+        "confirmed_by_person",
+        "job_id",
+        "plate_clear",
+        "printer"
+      ],
+      "required": [
+        "job_id",
+        "printer"
+      ]
+    },
+    "druckwerk_start_next": {
+      "properties": [
+        "confirmed_by_person",
+        "plate_clear",
+        "printer"
+      ],
+      "required": [
+        "printer"
+      ]
+    }
+  },
+  "services": {
+    "add_to_queue": {
+      "fields": {
+        "file": {},
+        "model": {},
+        "name": {},
+        "options": {},
+        "slice_job_id": {},
+        "target": {
+          "default": "any"
+        }
+      },
+      "response": "optional"
+    },
+    "approve_job": {
+      "fields": {
+        "job_id": {
+          "required": true
+        }
+      },
+      "response": "optional"
+    },
+    "camera_snapshot": {
+      "fields": {
+        "printer": {
+          "required": true
+        }
+      },
+      "response": "only"
+    },
+    "cancel_job": {
+      "fields": {
+        "job_id": {
+          "required": true
+        }
+      },
+      "response": "optional"
+    },
+    "get_printers": {
+      "fields": {
+        "printer": {}
+      },
+      "response": "only"
+    },
+    "get_queue": {
+      "fields": {
+        "history_limit": {
+          "default": 0
+        }
+      },
+      "response": "only"
+    },
+    "get_slice": {
+      "fields": {
+        "slice_job_ids": {
+          "required": true
+        }
+      },
+      "response": "only"
+    },
+    "move_job": {
+      "fields": {
+        "job_id": {
+          "required": true
+        },
+        "model": {},
+        "target": {
+          "required": true
+        }
+      },
+      "response": "optional"
+    },
+    "print_file": {
+      "fields": {
+        "bed_leveling": {
+          "default": "on"
+        },
+        "bed_type": {},
+        "device_id": {},
+        "ext_change_assist": {},
+        "file": {
+          "required": true
+        },
+        "flow_cali": {},
+        "force": {
+          "default": false
+        },
+        "layer_inspect": {},
+        "nozzle_offset_cali": {},
+        "serial": {},
+        "timelapse": {
+          "default": false
+        },
+        "use_ams": {
+          "default": true
+        },
+        "vibration_cali": {}
+      },
+      "response": "optional"
+    },
+    "reject_job": {
+      "fields": {
+        "job_id": {
+          "required": true
+        }
+      },
+      "response": "optional"
+    },
+    "reorder_job": {
+      "fields": {
+        "job_id": {
+          "required": true
+        },
+        "position": {
+          "required": true
+        },
+        "printer": {}
+      },
+      "response": "optional"
+    },
+    "retry_job": {
+      "fields": {
+        "job_id": {
+          "required": true
+        }
+      },
+      "response": "optional"
+    },
+    "skip_job": {
+      "fields": {
+        "job_id": {
+          "required": true
+        }
+      },
+      "response": "optional"
+    },
+    "slice": {
+      "fields": {
+        "model_file": {
+          "required": true
+        },
+        "plate": {},
+        "printer": {
+          "required": true
+        },
+        "tray": {
+          "required": true
+        },
+        "wait": {
+          "default": true
+        }
+      },
+      "response": "optional"
+    },
+    "start_job": {
+      "fields": {
+        "confirmed_by_person": {
+          "default": false
+        },
+        "job_id": {
+          "required": true
+        },
+        "plate_clear": {
+          "default": false
+        },
+        "printer": {
+          "required": true
+        }
+      },
+      "response": "optional"
+    },
+    "start_next": {
+      "fields": {
+        "confirmed_by_person": {
+          "default": false
+        },
+        "plate_clear": {
+          "default": false
+        },
+        "printer": {
+          "required": true
+        }
+      },
+      "response": "optional"
+    }
+  }
+}

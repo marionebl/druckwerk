@@ -1,5 +1,12 @@
 # Changelog
 
+## 2.8.0 (unreleased)
+
+- Own the actions and the LLM tools of the integration. The integration reads them from `GET /api/integration/manifest`.
+- Add `POST /api/actions/<name>` and `POST /api/tools/<name>`.
+- Add `manifest_revision` to `GET /api/events`.
+- Write camera snapshots and plate images to `/media/druckwerk` from the app. The app maps `media` read-write now.
+
 ## 2.7.0 (2026-11-27)
 
 - Add a 3D G-code preview on the New print page.
