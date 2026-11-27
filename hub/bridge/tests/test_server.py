@@ -10,6 +10,7 @@ import stat
 import subprocess
 import sys
 import tempfile
+import threading
 import time
 import tomllib
 import unittest
@@ -202,7 +203,7 @@ class FlowTest(unittest.TestCase):
         self.assertEqual(s["print"]["nozzle_temper"], 21.5)
         self.assertEqual(self.s.req("GET", "/api/ams/NOPE")[0], 404)
 
-    def test_05b_camera_protocols_pass_through_and_mint_timeout_restarts_daemon(self):
+    def test_05b_camera_protocols_pass_through_and_mint_timeout_keeps_daemon(self):
         _, u = self.s.json("GET", "/api/camera/SERIAL001/url?protocols=agora")
         self.assertEqual(u["path"], "/camera/SERIAL001/url?protocols=agora")
         _, u = self.s.json("GET", "/api/camera/SERIAL001/url?protocols=x%22y")
@@ -212,14 +213,8 @@ class FlowTest(unittest.TestCase):
         st, body = self.s.json("GET", "/api/camera/SERIAL001/snapshot")
         self.assertEqual(st, 502)
         self.assertIn("camera URL callback", body["error"])
-        for _ in range(50):
-            time.sleep(0.1)
-            try:
-                if pid() not in (before, None):
-                    break
-            except (KeyError, TypeError):
-                pass
-        self.assertNotEqual(pid(), before)
+        time.sleep(1)
+        self.assertEqual(pid(), before)  # the status is fresh, so the daemon stays
 
     def test_05c_light_and_rfid_commands(self):
         st, _ = self.s.json("POST", "/api/light/SERIAL001", {"on": True})
@@ -729,6 +724,139 @@ class LiveTest(unittest.TestCase):
             self.assertEqual(self.s.req("GET", "/api/camera/%s/snapshot" % serial)[0], 200)
             self.assertEqual(self.events(serial), ["connect"])
             self.setUp()  # wait for the idle close before the next serial
+
+
+def count(path):
+    try:
+        return read(path).count("start")
+    except OSError:
+        return 0
+
+
+class CameraRestartTest(unittest.TestCase):
+    """A camera URL timeout restarts the daemon only when the printer status is stale (mock controls: see mock_daemon.py)."""
+
+    def setUp(self):
+        self.cloud = mock_cloud.start()
+        self.dir = tempfile.TemporaryDirectory()
+        self.starts, self.freeze, self.snapshot = (os.path.join(self.dir.name, n) for n in ("starts", "freeze", "snapshot"))
+        env = {"MOCK_STARTS": self.starts, "MOCK_FREEZE": self.freeze, "MOCK_SNAPSHOT": self.snapshot, "MOCK_SLOW": "4",
+               "DW_STATUS_SAMPLE": "0.3", "DW_STALE_AFTER": "1.5", "DW_RESTART_BACKOFF": "30"}
+        self.s = Server(self.cloud, extra_env=env)
+        login(self.s, "a@example.com")
+        daemon_up(self.s, self.s.base)
+        self.assertEqual(count(self.starts), 1)
+
+    def tearDown(self):
+        self.s.close()
+        self.dir.cleanup()
+
+    def freeze_status(self):
+        open(self.freeze, "w").close()
+        time.sleep(0.8)  # the monitor sees the last change before the camera call, as in a real stall
+
+    def snap(self, path="/api/camera/SERIAL001/snapshot"):
+        c = http.client.HTTPConnection("127.0.0.1", self.s.port, timeout=30)
+        c.request("GET", path)
+        r = c.getresponse()
+        data = r.read()
+        c.close()
+        return r.status, data, r.getheader("X-Snapshot-Age")
+
+    def test_a_two_camera_timeouts_with_fresh_status_do_not_restart(self):
+        for _ in range(2):
+            self.assertEqual(self.snap()[0], 502)
+        time.sleep(3)  # longer than DW_STALE_AFTER, with several status samples
+        self.assertEqual(count(self.starts), 1)
+        self.assertNotIn("restarting daemon", self.s.logtext())
+
+    def test_b_timeout_with_stale_status_restarts_once_then_waits_for_the_backoff(self):
+        self.freeze_status()
+        self.assertEqual(self.snap()[0], 502)
+        self.assertTrue(wait_for(lambda: count(self.starts) == 2, 10))
+        daemon_up(self.s, self.s.base)
+        self.assertEqual(self.snap()[0], 502)
+        time.sleep(4)  # status is stale again after 1.5 s, but the backoff is 30 s
+        self.assertEqual(count(self.starts), 2)
+        self.assertEqual(self.s.logtext().count("restarting daemon"), 1)
+
+    def test_c_restart_waits_while_a_print_upload_is_in_flight(self):
+        self.freeze_status()
+        result = []
+        body = {"serial": "SERIAL001", "filename": "slow.gcode.3mf", "file_b64": base64.b64encode(b"x").decode()}
+        t = threading.Thread(target=lambda: result.append(self.s.req("POST", "/api/print", body)[0]))
+        t.start()
+        time.sleep(0.5)
+        self.assertEqual(self.snap()[0], 502)
+        time.sleep(2.5)  # the status has been stale for more than DW_STALE_AFTER, the print runs for 4 s
+        self.assertEqual(count(self.starts), 1)
+        t.join()
+        self.assertEqual(result, [200])
+        self.assertTrue(wait_for(lambda: count(self.starts) == 2, 10))  # now it may restart
+
+    def test_d_second_snapshot_within_30_s_comes_from_the_cache(self):
+        open(self.snapshot, "w").close()
+        st, first, age = self.snap()
+        self.assertEqual((st, first[:3]), (200, b"\xff\xd8\xff"))
+        self.assertEqual(float(age), 0)
+        time.sleep(0.3)
+        st, second, age = self.snap()
+        self.assertEqual((st, second), (200, first))
+        self.assertTrue(0.2 < float(age) < 5, age)
+        results = []
+        ts = [threading.Thread(target=lambda: results.append(self.snap()[0])) for _ in range(3)]
+        for t in ts:
+            t.start()
+        for t in ts:
+            t.join()
+        self.assertEqual(results, [200] * 3)
+        calls = [e for e, who in self.s.daemon(self.s.base, "/live-log") if e == "snapshot"]
+        self.assertEqual(len(calls), 1)  # one daemon call for five requests
+
+
+class DaemonOutageTest(unittest.TestCase):
+    """A print start waits for a daemon that is restarting."""
+
+    def setUp(self):
+        self.cloud = mock_cloud.start()
+        self.dir = tempfile.TemporaryDirectory()
+        self.gate = os.path.join(self.dir.name, "gate")  # while it exists the daemon does not start
+        cmd = "sh -c 'while [ -f %s ]; do sleep 0.1; done; exec %s -I %s \"$1\" \"$2\"' sh" % (
+            self.gate, sys.executable, os.path.join(HERE, "mock_daemon.py"))
+        self.s = Server(self.cloud, cmd, extra_env={"DW_RETRY_WINDOW": "4"})
+        login(self.s, "a@example.com")
+        daemon_up(self.s, self.s.base)
+        self.body = {"serial": "SERIAL001", "filename": "a.gcode.3mf", "file_b64": base64.b64encode(b"x").decode()}
+
+    def tearDown(self):
+        self.s.close()
+        self.dir.cleanup()
+
+    def crash(self):
+        open(self.gate, "w").close()
+        os.kill(self.s.daemon(self.s.base, "/health")["pid"], signal.SIGKILL)
+        def down():
+            try:
+                self.s.daemon(self.s.base, "/health")
+            except OSError:
+                return True
+        self.assertTrue(wait_for(down, 5))
+
+    def test_e_print_waits_for_a_short_outage_and_fails_after_the_window(self):
+        self.crash()
+        threading.Timer(1.5, os.unlink, [self.gate]).start()
+        t0 = time.time()
+        st, data = self.s.req("POST", "/api/print", self.body)
+        self.assertEqual(st, 200, data)
+        self.assertGreaterEqual(time.time() - t0, 1.2)
+        daemon_up(self.s, self.s.base)
+        self.assertEqual(len(self.s.daemon(self.s.base, "/prints")), 1)
+        self.crash()  # the daemon stays down this time
+        t0 = time.time()
+        st, data = self.s.req("POST", "/api/print", self.body)
+        self.assertEqual((st, json.loads(data)), (503, {"error": "daemon not reachable"}))
+        self.assertGreaterEqual(time.time() - t0, 3.4)
+        os.unlink(self.gate)
 
 
 class MigrationTest(unittest.TestCase):

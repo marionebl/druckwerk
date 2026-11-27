@@ -4,12 +4,14 @@
 One boocloud-bridge daemon per cloud account (the plugin holds one login per process).
 Routes: GET /, GET /api/health, POST /api/login/start, POST /api/login/code, DELETE /api/accounts/<id>,
 GET /api/printers, GET /api/status/<serial>, GET /api/ams/<serial>, GET /api/camera/<serial>/live, GET /api/tasks?serial=<serial>&limit=<n>, POST /api/print,
-GET|POST /api/filament?account=<id>, PUT|DELETE /api/filament/<id>?account=<id> (the account's cloud filament library),
+GET /api/camera/<serial>/snapshot (cached 30 s, header X-Snapshot-Age), GET|POST /api/filament?account=<id>, PUT|DELETE /api/filament/<id>?account=<id> (the account's cloud filament library),
 GET /api/drying/<serial>, POST /api/ams/<serial>/drying, POST /api/ams/<serial>/drying/stop.
 """
 import base64
 import binascii
+import contextlib
 from datetime import datetime
+import hashlib
 import http.client
 import json
 import os
@@ -43,6 +45,15 @@ DAEMON_CMD = shlex.split(env("DW_DAEMON_CMD", "/bridge.sh"))
 BACKOFF_MIN = float(env("DW_BACKOFF_MIN", "5"))
 BACKOFF_MAX = float(env("DW_BACKOFF_MAX", "60"))
 LIVE_IDLE = float(env("DW_LIVE_IDLE", "30"))  # seconds an unused live upstream stays open for a quick reopen
+# A camera URL timeout alone does not restart the daemon. It does when the printer status has not changed for STALE_AFTER
+# seconds. The H2S sends a status report every few seconds while it prints and still changes a temperature or the Wi-Fi
+# level while idle, so 60 s without any change is a real stall and not a quiet printer. The monitor samples every 5 s.
+STATUS_SAMPLE = float(env("DW_STATUS_SAMPLE", "5"))
+STALE_AFTER = float(env("DW_STALE_AFTER", "60"))
+RESTART_BACKOFF = float(env("DW_RESTART_BACKOFF", "300"))  # least seconds between two stale-status restarts
+SUSPECT_TTL = float(env("DW_SUSPECT_TTL", "600"))  # a camera timeout is dropped after this long without a restart
+SNAPSHOT_CACHE = float(env("DW_SNAPSHOT_CACHE", "30"))  # seconds a good snapshot is served again
+RETRY_WINDOW = float(env("DW_RETRY_WINDOW", "60"))  # seconds a print start or command waits for a daemon that is not up
 MAX_PRINT_BODY = 50 * 1024 * 1024
 MAX_SMALL_BODY = 8192
 ACCOUNTS = os.path.join(DATA, "accounts")
@@ -61,7 +72,11 @@ def log(message):
 
 
 class Upstream(Exception):
-    """The cloud or the daemon did not answer."""
+    """The cloud or the daemon did not answer. refused: the connection was refused, so nothing was sent."""
+
+    def __init__(self, *args, refused=False):
+        super().__init__(*args)
+        self.refused = refused
 
 
 def call(method, url, headers=None, body=None, timeout=15):
@@ -72,7 +87,8 @@ def call(method, url, headers=None, body=None, timeout=15):
     except urllib.error.HTTPError as e:
         return e.code, e.read(), e.headers.get("Content-Type", "application/json")
     except (OSError, ValueError) as e:
-        raise Upstream(type(e).__name__)
+        refused = isinstance(e, ConnectionRefusedError) or isinstance(getattr(e, "reason", None), ConnectionRefusedError)
+        raise Upstream(type(e).__name__, refused=refused)
 
 
 def read_cloud(path):
@@ -146,7 +162,81 @@ class Daemon:
         self.acc, self.proc, self.restarts = acc, None, 0
         self.dead = False
         self.wake = threading.Event()
+        self.busy_lock, self.busy = threading.Lock(), 0  # print starts and commands in flight
+        self.seen = {}  # serial -> (hash of the last status, time it last changed)
+        self.started = self.last_restart = 0.0
+        self.suspect = None  # (serial, time) of a camera URL timeout that still needs a look
+        self.bad_since = None  # since when /health did not answer although the process runs
         threading.Thread(target=self.loop, daemon=True).start()
+        threading.Thread(target=self.monitor, daemon=True).start()
+
+    @contextlib.contextmanager
+    def working(self):
+        """Mark a print start or command as in flight: the monitor does not restart the daemon meanwhile."""
+        with self.busy_lock:
+            self.busy += 1
+        try:
+            yield
+        finally:
+            with self.busy_lock:
+                self.busy -= 1
+
+    def camera_timeout(self, serial):
+        """The plugin may have stopped delivering status. The monitor restarts only if the status is stale."""
+        log("[%s] camera URL callback timed out, checking the printer status" % self.acc.id)
+        self.suspect = (serial, time.time())
+
+    def sample(self, now):
+        for d in self.acc.devices():
+            serial = d.get("dev_id")
+            if not serial:
+                continue
+            try:
+                status, raw, _ = call("GET", self.acc.url("/status/" + serial), timeout=3)
+            except Upstream:
+                continue
+            if status == 200:
+                digest = hashlib.sha1(raw).digest()
+                if self.seen.get(serial, (None,))[0] != digest:
+                    self.seen[serial] = (digest, now)
+        if not self.running():
+            self.bad_since = None
+        elif daemon_json(self.acc, "/health", 3) is not None:
+            self.bad_since = None
+        elif self.bad_since is None:
+            self.bad_since = now
+
+    def check(self, now):
+        if not self.suspect:
+            return
+        serial, since = self.suspect
+        changed = max(self.seen.get(serial, (None, 0))[1], self.started)
+        if now - since > SUSPECT_TTL or changed > since:
+            self.suspect = None  # too old, or the status moved after the timeout
+            return
+        stale = now - changed > STALE_AFTER
+        dead = self.bad_since is not None and now - self.bad_since > STALE_AFTER
+        if not (stale or dead) or now - self.last_restart < RESTART_BACKOFF:
+            return
+        with self.busy_lock:
+            if self.busy:
+                return  # a print start or command runs: look again at the next sample
+            self.suspect, self.last_restart = None, now
+            log("[%s] %s, restarting daemon" % (self.acc.id, "daemon does not answer /health" if dead and not stale
+                                              else "printer status unchanged for %.0f s after a camera timeout" % (now - changed)))
+            self.restart()
+
+    def monitor(self):
+        while not self.dead:
+            time.sleep(STATUS_SAMPLE)
+            if self.dead:
+                return
+            try:
+                now = time.time()
+                self.sample(now)
+                self.check(now)
+            except Exception as e:  # the monitor must not die
+                log("[%s] monitor: %s" % (self.acc.id, type(e).__name__))
 
     def restart(self):
         """Make the daemon reread the credentials."""
@@ -173,6 +263,7 @@ class Daemon:
                 self.proc = subprocess.Popen(DAEMON_CMD + [self.acc.creds, str(self.acc.port)],
                                              stdout=subprocess.PIPE, stderr=subprocess.STDOUT, text=True,
                                              errors="replace", env=dict(os.environ, HOME=self.acc.home))
+                self.started, self.bad_since = time.time(), None
                 if self.dead:  # stop() ran before the process existed
                     self.proc.kill()
                 for line in self.proc.stdout:
@@ -525,6 +616,55 @@ def delete_filament(h, m, body):
     h.send(200, {"removed": m.group(1)})
 
 
+class Snap:
+    """The newest good snapshot of one printer. Only one request at a time asks the daemon."""
+
+    def __init__(self):
+        self.lock = threading.Lock()
+        self.jpeg = self.at = self.failure = None
+        self.runs = 0
+
+
+snaps = {}  # serial -> Snap
+
+
+def fetch_camera(acc, serial, kind, qs):
+    """(status, body, content type) of the daemon's camera route; a keyframe is turned into a JPEG."""
+    try:
+        # Minting plus the first keyframe under qemu can take the bridge's full 45 s + 15 s budget.
+        status, raw, ctype = call("GET", acc.url("/camera/%s/%s%s" % (serial, kind, qs)), timeout=90)
+    except Upstream:
+        return 503, json.dumps({"error": "daemon not reachable"}).encode(), "application/json"
+    if status == 502 and b"waiting for camera URL callback" in raw:
+        acc.daemon.camera_timeout(serial)
+    if status == 200 and ctype.startswith("video/h264"):
+        jpeg = subprocess.run(["ffmpeg", "-loglevel", "error", "-f", "h264", "-i", "-", "-frames:v", "1", "-f", "image2", "-c:v", "mjpeg", "-"],
+                              input=raw, capture_output=True, timeout=60)
+        if jpeg.returncode or not jpeg.stdout:
+            err = {"error": "could not decode keyframe", "stage": "decode", "detail": jpeg.stderr.decode(errors="replace")[-300:]}
+            return 502, json.dumps(err).encode(), "application/json"
+        return 200, jpeg.stdout, "image/jpeg"
+    return status, raw, ctype
+
+
+def snapshot(h, acc, serial, qs):
+    snap = snaps.setdefault(serial, Snap())
+    seen = snap.runs
+    with snap.lock:
+        now = time.time()
+        if snap.jpeg and now - snap.at < SNAPSHOT_CACHE:
+            return h.send(200, snap.jpeg, "image/jpeg", {"X-Snapshot-Age": "%.1f" % (now - snap.at)})
+        if snap.runs != seen and snap.failure:
+            return h.send(*snap.failure)  # the request we waited for failed: do not ask the daemon again at once
+        status, raw, ctype = fetch_camera(acc, serial, "snapshot", qs)
+        snap.runs += 1
+        if status == 200 and ctype.startswith("image/jpeg"):
+            snap.jpeg, snap.at, snap.failure = raw, time.time(), None
+            return h.send(200, raw, ctype, {"X-Snapshot-Age": "0.0"})
+        snap.failure = (status, raw, ctype)
+    h.send(status, raw, ctype)
+
+
 def camera(h, kind, serial):
     acc = owner(serial)
     if not acc:
@@ -536,27 +676,14 @@ def camera(h, kind, serial):
         if live and live.ready.wait(90) and not live.error and not live.closed:
             jpeg = live.frame_jpeg()
             if jpeg:
-                return h.send(200, jpeg, "image/jpeg")
+                return h.send(200, jpeg, "image/jpeg", {"X-Snapshot-Age": "0.0"})
             return h.send(502, {"error": "could not decode keyframe", "stage": "decode"})
     # The printer's ipcam does not always say which remote transport it uses, so callers can force one.
     proto = parse_qs(urlsplit(h.path).query).get("protocols", [""])[0]
     qs = "?protocols=" + proto if re.fullmatch(r"[a-z,]{1,40}", proto) else ""
-    # Minting plus the first keyframe under qemu can take the bridge's full 45 s + 15 s budget.
-    try:
-        status, raw, ctype = call("GET", acc.url("/camera/%s/%s%s" % (serial, kind, qs)), timeout=90)
-    except Upstream:
-        return h.send(503, {"error": "daemon not reachable"})
-    if status == 502 and b"waiting for camera URL callback" in raw:
-        # Seen twice on the H2S: after this timeout the plugin stops delivering MQTT status until restarted.
-        log("[%s] camera URL callback timed out, restarting daemon" % acc.id)
-        acc.daemon.restart()
-    if status == 200 and ctype.startswith("video/h264"):
-        jpeg = subprocess.run(["ffmpeg", "-loglevel", "error", "-f", "h264", "-i", "-", "-frames:v", "1", "-f", "image2", "-c:v", "mjpeg", "-"],
-                              input=raw, capture_output=True, timeout=60)
-        if jpeg.returncode or not jpeg.stdout:
-            return h.send(502, {"error": "could not decode keyframe", "stage": "decode", "detail": jpeg.stderr.decode(errors="replace")[-300:]})
-        return h.send(200, jpeg.stdout, "image/jpeg")
-    h.send(status, raw, ctype)
+    if kind == "snapshot":
+        return snapshot(h, acc, serial, qs)
+    h.send(*fetch_camera(acc, serial, kind, qs))
 
 
 # ---- live camera ----
@@ -603,9 +730,7 @@ class Live:
             if resp.status != 200:
                 self.error = (resp.status, resp.read(), self.ctype)
                 if resp.status == 502 and b"waiting for camera URL callback" in self.error[1]:
-                    # Seen twice on the H2S: after this timeout the plugin stops delivering MQTT status until restarted.
-                    log("[%s] camera URL callback timed out, restarting daemon" % self.acc.id)
-                    self.acc.daemon.restart()
+                    self.acc.daemon.camera_timeout(self.serial)
             else:
                 if self.ctype.startswith("video/h264"):
                     self.out_type = "video/mp2t"
@@ -937,6 +1062,20 @@ def print_options(body):
     return p
 
 
+def call_daemon(acc, method, path, headers=None, body=None, timeout=15):
+    """call() for a print start or command: marks it in flight, and while the daemon is not up (connection refused,
+    nothing was sent) waits and tries again for up to RETRY_WINDOW seconds."""
+    end = time.time() + RETRY_WINDOW
+    with acc.daemon.working():
+        while True:
+            try:
+                return call(method, acc.url(path), headers, body, timeout=timeout)
+            except Upstream as e:
+                if not e.refused or acc.daemon.dead or time.time() + 0.5 > end:
+                    raise
+            time.sleep(0.5)
+
+
 def post_print(h, m, body):
     if not isinstance(body, dict):
         return h.send(400, {"error": "Body must be a JSON object."})
@@ -958,7 +1097,7 @@ def post_print(h, m, body):
     data, ctype = multipart([("file", filename, "application/octet-stream", raw),
                              ("params", None, "application/json", json.dumps(params).encode())])
     try:
-        status, answer, actype = call("POST", acc.url("/print"), {"Content-Type": ctype}, data, timeout=300)
+        status, answer, actype = call_daemon(acc, "POST", "/print", {"Content-Type": ctype}, data, timeout=300)
     except Upstream:
         return h.send(503, {"error": "daemon not reachable"})
     h.send(status, answer, actype)
@@ -967,8 +1106,8 @@ def post_print(h, m, body):
 def send_command(h, acc, serial, payloads):
     for payload in payloads:
         try:
-            status, raw, ctype = call("POST", acc.url("/command/" + serial), {"Content-Type": "application/json"},
-                                      json.dumps(payload).encode(), timeout=30)
+            status, raw, ctype = call_daemon(acc, "POST", "/command/" + serial, {"Content-Type": "application/json"},
+                                             json.dumps(payload).encode(), timeout=30)
         except Upstream:
             return h.send(503, {"error": "daemon not reachable"})
         if status != 200:
@@ -1230,12 +1369,14 @@ ROUTES = [
 
 
 class Handler(BaseHTTPRequestHandler):
-    def send(self, status, body, ctype="application/json"):
+    def send(self, status, body, ctype="application/json", headers=None):
         data = body if isinstance(body, bytes) else body.encode() if isinstance(body, str) else json.dumps(body).encode()
         self.send_response(status)
         self.send_header("Content-Type", ctype)
         self.send_header("Content-Length", str(len(data)))
         self.send_header("Cache-Control", "no-store")
+        for k, v in (headers or {}).items():
+            self.send_header(k, v)
         self.end_headers()
         self.wfile.write(data)
 
