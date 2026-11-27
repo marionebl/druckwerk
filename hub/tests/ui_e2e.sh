@@ -6,7 +6,7 @@
 set -euo pipefail
 HERE=$(cd "$(dirname "$0")" && pwd); REPO=$(cd "$HERE/../.." && pwd)
 IMG=${IMG:-druckwerk-e2e}; SHOTS=${SHOTS:-/tmp/ui-shots-e2e}
-[ -n "${SKIP_BUILD:-}" ] || docker build -q -f "${DOCKERFILE:-$REPO/hub/Dockerfile}" ${BUILD_ARGS:-} -t $IMG "$REPO" >/dev/null
+[ -n "${SKIP_BUILD:-}" ] || "$HERE/build_image.sh"
 WORK=$(mktemp -d)
 python3 "$HERE/e2e_mock.py" 18811 18812 & MOCK=$!
 cleanup() { docker logs $IMG 2>&1 | tail -15; docker rm -f $IMG >/dev/null 2>&1 || true; kill $MOCK 2>/dev/null || true; }

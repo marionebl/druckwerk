@@ -10,6 +10,12 @@
 - Lists show "Loading…" until the first answer and "No x yet" only after an empty answer; a failure shows the error. Printers, filament, queue and history show the last answer from a per-user localStorage cache at once and replace it when the network answers; a change drops the cached list. Storage that is empty or blocked changes nothing.
 - Ownership is a property of the printer: `PUT /api/setup/printers/{serial}` takes `owner` (an HA user), the Setup wizard has an Owner field. The `owner` role is gone from grants; at start owner grants move into the printer's `owner` and are dropped (see API.md). The owner is an admin of the printer, gets load requests and approval notifications, and is named in the History for prints nobody started here ("Not started here" stays when there is no owner).
 
+## 3.0.1 (unreleased)
+
+- Make the app image about 70 % smaller, so updates download faster.
+- Remove unused slicer files, the full qemu package and the full ffmpeg package.
+- Split the image into a base image and the app code. The base has the slicer, qemu and ffmpeg and stays the same between versions, so later updates download only the app layers.
+
 ## 3.0.0 (unreleased)
 
 - Druckwerk works on a Home Assistant without the vendor's printer integration (ha-bambulab). The app reads every printer's state from the bridge's MQTT status (`hub/printer_state.py`): status, stage, progress, remaining time, end time, layers, temperatures, task name, active tray, AMS units with trays, humidity and temperature, external spool and HMS errors. It does so on every install, with or without the vendor integration, so both behave the same. `GET /api/printers` keeps its shape.

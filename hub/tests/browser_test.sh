@@ -5,7 +5,7 @@
 set -euo pipefail
 HERE=$(cd "$(dirname "$0")" && pwd); REPO=$(cd "$HERE/../.." && pwd)
 IMG=${IMG:-druckwerk-browser}
-[ -n "${SKIP_BUILD:-}" ] || docker build -q -f "$REPO/hub/Dockerfile" ${BUILD_ARGS:-} -t $IMG "$REPO" >/dev/null
+[ -n "${SKIP_BUILD:-}" ] || "$HERE/build_image.sh"
 docker image ls $IMG --format 'image size {{.Size}}'
 WORK=$(mktemp -d); mkdir -p "$WORK/jobs" "$WORK/share"
 python3 "$HERE/e2e_mock.py" 18811 18812 & MOCK=$!
