@@ -46,5 +46,16 @@
       "title": "Update the Druckwerk app",
       "description": "The Druckwerk app is too old to offer actions and tools. Update the Druckwerk app."
     }
+  },
+  "entity": {
+    "sensor": {
+      "cloud_sender": {
+        "state": {
+          "idle": "Idle",
+          "sent": "Sent",
+          "error": "Error"
+        }
+      }
+    }
   }
 }

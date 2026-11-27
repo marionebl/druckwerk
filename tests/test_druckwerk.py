@@ -259,6 +259,19 @@ async def test_sensor_shows_the_apps_state_and_attributes(hass, app, vendor_devi
     assert st.attributes["last_error"] is None
 
 
+async def test_sensor_state_labels_are_translated(hass, app, vendor_device):
+    import json
+    from pathlib import Path
+
+    from homeassistant.helpers import entity_registry as er
+
+    await setup_entry(hass)
+    assert er.async_get(hass).async_get(SENSOR).translation_key == "cloud_sender"
+    for name in ("strings.json", "translations/en.json"):
+        text = json.loads((Path(__file__).parents[1] / "custom_components/druckwerk" / name).read_text())
+        assert text["entity"]["sensor"]["cloud_sender"]["state"] == {"idle": "Idle", "sent": "Sent", "error": "Error"}
+
+
 # ---- camera
 async def test_camera_streams_from_the_bridge_url(hass, app, vendor_device):
     await setup_entry(hass)

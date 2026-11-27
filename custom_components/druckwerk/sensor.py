@@ -18,6 +18,7 @@ class AppSensor(AppEntity, SensorEntity):
     def __init__(self, hub, serial, desc) -> None:
         super().__init__(hub, serial, desc)
         self._attr_options = list(desc.get("options", {}))
+        self._attr_translation_key = desc["key"]  # state labels (Idle, Sent, Error) come from strings.json
 
     @property
     def native_value(self) -> str | None:
