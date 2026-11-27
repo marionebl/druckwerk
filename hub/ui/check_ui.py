@@ -516,7 +516,8 @@ def walk(page, ident, base, shot, inject):
                 card.get_by_role("button", name="Save printer").click()
                 page.wait_for_selector("text=Printer saved")
                 page.wait_for_function("[...document.querySelectorAll('input')].some(i => i.value === 'Workshop H2S (renamed)')", timeout=5000)
-                page.wait_for_function("[...document.querySelectorAll('select[data-field=owner]')].some(s => s.value === 'u-lena')", timeout=5000)  # the owner is stored
+                # the owner is stored; the user id differs between the mock and the real-image fakes, so match by label
+                page.wait_for_function("[...document.querySelectorAll('select[data-field=owner]')].some(s => s.selectedOptions[0]?.textContent.includes('Lena Tester'))", timeout=5000)
         return
     if ONLY == "reslice":
         check_reslice(page, base, ident)
