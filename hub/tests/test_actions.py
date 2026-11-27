@@ -99,7 +99,7 @@ def test_add_to_queue_any_needs_a_model_when_printers_differ(hub):
 
 def test_add_to_queue_needs_a_file(hub):
     status, body = act(hub, "add_to_queue", {})
-    assert status == 400 and "required key not provided @ data['file']" in body["error"]
+    assert status == 400 and body["error"].startswith("Give file")  # file or file_url: exactly one (hub/tests/test_plate_url.py)
     status, body = act(hub, "add_to_queue", {"file": "a.gcode.3mf", "slice_job_id": "a1b2c3d4e5f6"})  # the field is gone with druckwerk.slice
     assert status == 400 and "extra keys not allowed @ data['slice_job_id']" in body["error"]
 

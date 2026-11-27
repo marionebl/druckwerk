@@ -148,8 +148,9 @@ ACTIONS = {
     "add_to_queue": {
         "title": "Add to queue",
         "description": (
-            "Adds a job to the print queue; it does not start a print. The file is a sliced "
-            ".gcode.3mf that is already in the share. A person who needs approval creates a job "
+            "Adds a job to the print queue; it does not start a print. Give exactly one of file (a sliced "
+            ".gcode.3mf that is already in the share) or file_url with sha256 (the app fetches the plate "
+            "from the private plates repo and checks the SHA-256). A person who needs approval creates a job "
             "that waits for an admin. Starting is a separate step that needs the person's confirmation."
         ),
         "response": "optional",
@@ -158,9 +159,27 @@ ACTIONS = {
             "file": F(
                 "string", "File",
                 "Name of a sliced .gcode.3mf in the share, or an absolute path under /media or /share"
-                " to one.",
-                tool="Sliced .gcode.3mf name in the share",
-                required=True, example="benchy_better_h2s.gcode.3mf", selector=TEXT),
+                " to one. Give this or file_url, not both.",
+                tool="Sliced .gcode.3mf name in the share. Give this or file_url, not both",
+                example="benchy_better_h2s.gcode.3mf", selector=TEXT),
+            "file_url": F(
+                "string", "File URL",
+                "GitHub contents API URL of a sliced .gcode.3mf in the plates repo (option plates_repo): "
+                "https://api.github.com/repos/<owner>/<repo>/contents/<path>?ref=<branch>. The app fetches it "
+                "with the option plates_token. Needs sha256. Give this or file, not both.",
+                tool=(
+                    "GitHub contents API URL of the sliced plate in the plates repo, "
+                    "https://api.github.com/repos/<owner>/<repo>/contents/plates/<id>/<name>.gcode.3mf?ref=main. "
+                    "Push the plate to the plates repo first. Needs sha256. Give this or file"
+                ),
+                example="https://api.github.com/repos/marionebl/druckwerk-plates/contents/plates/a1b2/benchy.gcode.3mf?ref=main",
+                selector=TEXT),
+            "sha256": F(
+                "string", "SHA-256",
+                "SHA-256 of the file as 64 hex characters. Required with file_url; the app refuses a file "
+                "with another hash.",
+                tool="SHA-256 of the plate file (sha256sum), 64 hex characters. Required with file_url; the app checks it",
+                example="9f86d081884c7d659a2feaa0c55ad015a3bf4f1b2b0b822cd15d6c15b0f00a08", selector=TEXT),
             "target": F(
                 "string", "Target",
                 "Printer serial number or name, or \"any\" for the first free printer of the model.",
@@ -422,9 +441,9 @@ Rules:
   and reorder only within their own queue slots. Only admins skip, move, approve, reject, retry and start jobs. A refusal
   starting with "rule:" is final; tell the person, do not try another way round.
 - This app has no slice tool. A person slices in the app's New print page, in the browser. You work with sliced
-  .gcode.3mf files that are already in the share.
+  .gcode.3mf files that are already in the share, or that you pushed to the plates repo (file_url and sha256).
 - Typical flow: druckwerk_get_printers (serial, AMS trays as unit:slot), druckwerk_add_to_queue with the sliced file
-  name. Adding to the queue never starts a print.
+  name, or with file_url and sha256 for a plate pushed to the plates repo. Adding to the queue never starts a print.
 - Never start a print on your own. Before druckwerk_start_next or druckwerk_start_job, show the person the sliced plate
   review and a current camera snapshot (druckwerk_camera_snapshot), ask whether the plate is clear and the print may
   start, and call only after an explicit yes, with plate_clear and confirmed_by_person both true. Without both the call is refused.
@@ -447,7 +466,9 @@ TOOLS = {
         "The print queue: waiting jobs per printer serial and for any (with 0-based position), pending approvals, "
         "running jobs, optional history."), READ),
     "druckwerk_add_to_queue": ("add_to_queue", (
-        "Add a job to the queue from a sliced .gcode.3mf name in the share. Does not start a print."), WRITE),
+        "Add a job to the queue. Give a sliced .gcode.3mf name in the share (file), or file_url and sha256 for a plate "
+        "you pushed to the plates repo: push it first, pass the GitHub contents API URL and the SHA-256 of the file. "
+        "The app fetches the file and checks the hash. Does not start a print."), WRITE),
     "druckwerk_cancel_job": ("cancel_job", "Cancel a waiting job. Users cancel their own, admins any.", CANCEL),
     "druckwerk_reorder_job": ("reorder_job", (
         "Move a waiting job to a 0-based position. Users reorder only within their own slots, admins any."), WRITE),
@@ -638,8 +659,9 @@ def write(path, data):
 class Ops:
     """One call of one user. call(method, path, body=None, data=None, binary=False, timeout=30) asks the app as that user."""
 
-    def __init__(self, call, media_dir, send_print):
-        self.call, self.media_dir, self.send_print = call, media_dir, send_print
+    def __init__(self, call, media_dir, send_print, fetch_plate=None):
+        """fetch_plate(url, sha256) stores a plate from the plates repo in the media folder and returns its path."""
+        self.call, self.media_dir, self.send_print, self.fetch_plate = call, media_dir, send_print, fetch_plate
 
     def print_file(self, **fields):
         return self.send_print(fields)
@@ -684,9 +706,30 @@ class Ops:
             "printers": snap.get("printers", []),
         }
 
-    def add_to_queue(self, file, target="any", model=None, options=None, name=None):
+    def add_to_queue(self, file=None, target="any", model=None, options=None, name=None, file_url=None, sha256=None):
+        if file and file_url:
+            raise ValueError("Give either file or file_url, not both.")
+        if not (file or file_url):
+            raise ValueError("Give file (a name in the share) or file_url with sha256.")
+        if file_url and not sha256:
+            raise ValueError("sha256 is required with file_url (64 hex characters, from sha256sum).")
+        if sha256 and not file_url:
+            raise ValueError("sha256 goes with file_url only.")
         if target != "any":
             target = self.serial(target)
+        fetched = None
+        if file_url:
+            if self.fetch_plate is None:
+                raise ActionError(501, "file_url is not available here.")
+            file = fetched = self.fetch_plate(file_url, sha256)  # an absolute path under /media: the app copies it into the share
+        try:
+            return self.queue_file(file, target, model, options, name)
+        except Exception:
+            if fetched and os.path.exists(fetched):
+                os.remove(fetched)  # a refused add leaves nothing behind
+            raise
+
+    def queue_file(self, file, target, model, options, name):
         body = {"target": target, "options": options or {}}
         if name:
             body["name"] = name

@@ -24,6 +24,7 @@ import externals
 import files
 import filament
 import history
+import plates
 import printer_state
 from ha import HAError, HAUnavailable
 from queue_access import Access, Caller, Forbidden, Grants, Unauthorized, caller_from_headers
@@ -138,6 +139,7 @@ class App:
                            job_allowed=self.access.job_allowed, dry=Drying(self), send_print=self.send_print)
         self.media_roots = list(MEDIA_ROOTS)
         self.media_dir = MEDIA_DIR
+        self.plates_api = plates.API_BASE  # tests point it at a fake server; no request field reaches it
         self.sender, self.watchdog, self.notifier, self.integration = Sender(self), Watchdog(self), Notifier(self), Integration(self)
         self.secret = self._load_secret()
         self._auto_at = None
@@ -311,6 +313,24 @@ class App:
         if not os.path.isabs(data["file"]):
             data["file"] = os.path.join(self.share, data["file"])
         return self.sender.print_file(data)
+
+    def app_options(self):
+        """The app options (Supervisor writes them to <data>/options.json), read at call time; {} when missing or broken."""
+        try:
+            with open(os.path.join(self.data_dir, "options.json")) as f:
+                opts = json.load(f)
+        except (OSError, ValueError):
+            return {}
+        return opts if isinstance(opts, dict) else {}
+
+    def fetch_plate(self, url, sha256):
+        """The action add_to_queue with file_url: the plate from the plates repo, stored in the media folder like an upload."""
+        opts = self.app_options()
+        try:
+            return plates.fetch(url, sha256, self.media_dir, str(opts.get("plates_repo") or ""), str(opts.get("plates_token") or ""),
+                                api_base=self.plates_api, log=log)
+        except plates.PlateError as e:
+            raise HttpError(e.status, str(e))
 
     def bridge_printers(self):
         """The bridge's printers with their live state; empty when it cannot say."""
@@ -1287,7 +1307,7 @@ class App:
             def call(method, path, body=None, data=None, binary=False, timeout=30):
                 return self.local_call(port, act_as, method, path, body, data, binary, timeout)
             try:
-                result = run(m.group(1), h.json(), actions.Ops(call, self.media_dir, self.sender.print_file))
+                result = run(m.group(1), h.json(), actions.Ops(call, self.media_dir, self.sender.print_file, self.fetch_plate))
             except actions.ActionError as e:
                 raise HttpError(e.status, str(e))
             h.send(200, {"result": result})

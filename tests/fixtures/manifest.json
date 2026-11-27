@@ -206,7 +206,7 @@
     },
     {
       "name": "add_to_queue",
-      "description": "Adds a job to the print queue; it does not start a print. The file is a sliced .gcode.3mf that is already in the share. A person who needs approval creates a job that waits for an admin. Starting is a separate step that needs the person's confirmation.",
+      "description": "Adds a job to the print queue; it does not start a print. Give exactly one of file (a sliced .gcode.3mf that is already in the share) or file_url with sha256 (the app fetches the plate from the private plates repo and checks the SHA-256). A person who needs approval creates a job that waits for an admin. Starting is a separate step that needs the person's confirmation.",
       "response": "optional",
       "serial_fields": [
         "target"
@@ -214,10 +214,28 @@
       "title": "Add to queue",
       "fields": {
         "file": {
-          "required": true,
+          "required": false,
           "title": "File",
-          "description": "Name of a sliced .gcode.3mf in the share, or an absolute path under /media or /share to one.",
+          "description": "Name of a sliced .gcode.3mf in the share, or an absolute path under /media or /share to one. Give this or file_url, not both.",
           "example": "benchy_better_h2s.gcode.3mf",
+          "selector": {
+            "text": {}
+          }
+        },
+        "file_url": {
+          "required": false,
+          "title": "File URL",
+          "description": "GitHub contents API URL of a sliced .gcode.3mf in the plates repo (option plates_repo): https://api.github.com/repos/<owner>/<repo>/contents/<path>?ref=<branch>. The app fetches it with the option plates_token. Needs sha256. Give this or file, not both.",
+          "example": "https://api.github.com/repos/marionebl/druckwerk-plates/contents/plates/a1b2/benchy.gcode.3mf?ref=main",
+          "selector": {
+            "text": {}
+          }
+        },
+        "sha256": {
+          "required": false,
+          "title": "SHA-256",
+          "description": "SHA-256 of the file as 64 hex characters. Required with file_url; the app refuses a file with another hash.",
+          "example": "9f86d081884c7d659a2feaa0c55ad015a3bf4f1b2b0b822cd15d6c15b0f00a08",
           "selector": {
             "text": {}
           }
@@ -664,7 +682,7 @@
     }
   ],
   "llm": {
-    "prompt": "Druckwerk manages 3D printers: printer status, the print queue and starting prints. Models are sliced in the browser, not by this app.\nRules:\n- You act as the signed-in Home Assistant user. Home Assistant admins and printer owners are admins of their printers.\n  Users may add jobs on printers they have an active grant for (some grants need an admin's approval), cancel their own jobs\n  and reorder only within their own queue slots. Only admins skip, move, approve, reject, retry and start jobs. A refusal\n  starting with \"rule:\" is final; tell the person, do not try another way round.\n- This app has no slice tool. A person slices in the app's New print page, in the browser. You work with sliced\n  .gcode.3mf files that are already in the share.\n- Typical flow: druckwerk_get_printers (serial, AMS trays as unit:slot), druckwerk_add_to_queue with the sliced file\n  name. Adding to the queue never starts a print.\n- Never start a print on your own. Before druckwerk_start_next or druckwerk_start_job, show the person the sliced plate\n  review and a current camera snapshot (druckwerk_camera_snapshot), ask whether the plate is clear and the print may\n  start, and call only after an explicit yes, with plate_clear and confirmed_by_person both true. Without both the call is refused.\n- Printers are named by serial number, printer name or device id. Job ids are 12 hex characters.\n",
+    "prompt": "Druckwerk manages 3D printers: printer status, the print queue and starting prints. Models are sliced in the browser, not by this app.\nRules:\n- You act as the signed-in Home Assistant user. Home Assistant admins and printer owners are admins of their printers.\n  Users may add jobs on printers they have an active grant for (some grants need an admin's approval), cancel their own jobs\n  and reorder only within their own queue slots. Only admins skip, move, approve, reject, retry and start jobs. A refusal\n  starting with \"rule:\" is final; tell the person, do not try another way round.\n- This app has no slice tool. A person slices in the app's New print page, in the browser. You work with sliced\n  .gcode.3mf files that are already in the share, or that you pushed to the plates repo (file_url and sha256).\n- Typical flow: druckwerk_get_printers (serial, AMS trays as unit:slot), druckwerk_add_to_queue with the sliced file\n  name, or with file_url and sha256 for a plate pushed to the plates repo. Adding to the queue never starts a print.\n- Never start a print on your own. Before druckwerk_start_next or druckwerk_start_job, show the person the sliced plate\n  review and a current camera snapshot (druckwerk_camera_snapshot), ask whether the plate is clear and the print may\n  start, and call only after an explicit yes, with plate_clear and confirmed_by_person both true. Without both the call is refused.\n- Printers are named by serial number, printer name or device id. Job ids are 12 hex characters.\n",
     "tools": [
       {
         "name": "druckwerk_get_printers",
@@ -711,7 +729,7 @@
       },
       {
         "name": "druckwerk_add_to_queue",
-        "description": "Add a job to the queue from a sliced .gcode.3mf name in the share. Does not start a print.",
+        "description": "Add a job to the queue. Give a sliced .gcode.3mf name in the share (file), or file_url and sha256 for a plate you pushed to the plates repo: push it first, pass the GitHub contents API URL and the SHA-256 of the file. The app fetches the file and checks the hash. Does not start a print.",
         "annotations": {
           "read_only": false,
           "destructive": false,
@@ -723,7 +741,15 @@
           "properties": {
             "file": {
               "type": "string",
-              "description": "Sliced .gcode.3mf name in the share"
+              "description": "Sliced .gcode.3mf name in the share. Give this or file_url, not both"
+            },
+            "file_url": {
+              "type": "string",
+              "description": "GitHub contents API URL of the sliced plate in the plates repo, https://api.github.com/repos/<owner>/<repo>/contents/plates/<id>/<name>.gcode.3mf?ref=main. Push the plate to the plates repo first. Needs sha256. Give this or file"
+            },
+            "sha256": {
+              "type": "string",
+              "description": "SHA-256 of the plate file (sha256sum), 64 hex characters. Required with file_url; the app checks it"
             },
             "target": {
               "type": "string",
@@ -813,9 +839,7 @@
               "description": "Name of the print, shown in the queue and the live activity (80 characters)"
             }
           },
-          "required": [
-            "file"
-          ]
+          "required": []
         }
       },
       {
@@ -1084,5 +1108,5 @@
       }
     ]
   },
-  "revision": "46e2411934b2"
+  "revision": "6254fceac9da"
 }

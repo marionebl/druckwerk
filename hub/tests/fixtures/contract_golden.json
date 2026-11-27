@@ -3,14 +3,14 @@
     "druckwerk_add_to_queue": {
       "properties": [
         "file",
+        "file_url",
         "model",
         "name",
         "options",
+        "sha256",
         "target"
       ],
-      "required": [
-        "file"
-      ]
+      "required": []
     },
     "druckwerk_approve_job": {
       "properties": [
@@ -120,12 +120,12 @@
   "services": {
     "add_to_queue": {
       "fields": {
-        "file": {
-          "required": true
-        },
+        "file": {},
+        "file_url": {},
         "model": {},
         "name": {},
         "options": {},
+        "sha256": {},
         "target": {
           "default": "any"
         }

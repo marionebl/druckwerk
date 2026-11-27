@@ -1,0 +1,10 @@
+configuration:
+  plates_repo:
+    name: Plates repository
+    description: >-
+      Private GitHub repository (owner/name) that holds sliced .gcode.3mf plates. druckwerk.add_to_queue with file_url
+      fetches a plate only from this repository.
+  plates_token:
+    name: Plates token
+    description: >-
+      Read-only GitHub token (fine-grained, Contents read on the plates repository). Without it file_url is refused.

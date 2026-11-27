@@ -17,3 +17,11 @@ homeassistant_api: true
 hassio_api: true
 map: ["share:rw", "media:rw"]
 panel_admin: false
+# Plates pushed to a private GitHub repo by an agent: druckwerk.add_to_queue with file_url fetches them. Both keys may be
+# missing (older options.json): the app then uses the default repo and refuses file_url until a token is set.
+options:
+  plates_repo: marionebl/druckwerk-plates
+  plates_token: ""
+schema:
+  plates_repo: str?
+  plates_token: password?

@@ -2,6 +2,9 @@
 
 ## 3.3.0 (unreleased)
 
+- `druckwerk.add_to_queue` and the tool `druckwerk_add_to_queue` take `file_url` and `sha256` as an alternative to `file`. An agent in the cloud pushes the sliced plate to the private GitHub repo `plates/<id>/<name>.gcode.3mf`, and the app fetches it by the GitHub contents API URL and checks the SHA-256. Give exactly one of `file` or `file_url`; `file` is no longer required by the schema.
+- Only `https://api.github.com/repos/<plates_repo>/contents/<path>?ref=<branch>` is fetched: no other host, scheme, port, repo or user info, no redirect, at most 64 MB and 120 s. The file is stored in `/media/druckwerk` under a unique name and then follows the normal add path (grants, approval, G-code guard).
+- New app options `plates_repo` (default `marionebl/druckwerk-plates`) and `plates_token` (password; a read-only GitHub token). Without a token, `file_url` is refused with a message that names the option. The token never appears in an error or a log line. Older options without these keys keep working.
 - The "Slice on the Pi" choice is gone. New print slices in the browser only.
 - On iPhone and iPad, New print opens the app as a top-level page by itself, so the fast multi-thread slicer can run. Without isolation the single-thread engine runs, which is slower.
 - New print accepts STL files only.
@@ -9,7 +12,7 @@
 - The image is much smaller: 248 MB instead of 967 MB on aarch64, 185 MB instead of 938 MB on amd64 (CI, `docker image ls`). The slicer, its flatpak runtime and the scripts that ran it are gone. The WebAssembly engine, ffmpeg, qemu and the bridge stay.
 - `POST /api/jobs/{id}/slice` is gone and answers 404. The browser routes stay: `POST /api/jobs`, `GET /api/jobs/{id}`, `GET /api/jobs/{id}/model`, `POST /api/jobs/{id}/gcode`, the plate and G-code files, `POST /api/jobs/{id}/queue` and `POST /api/jobs/{id}/print`.
 - The actions `druckwerk.slice` and `druckwerk.get_slice` and the LLM tools `druckwerk_slice` and `druckwerk_get_slice_results` are gone. An agent can no longer slice. It can only queue a sliced `.gcode.3mf` that is already in the share.
-- `druckwerk.add_to_queue` and `druckwerk_add_to_queue` lose the field `slice_job_id`. No tool hands out a job id any more. `file` is now required. The LLM prompt says that the app has no slice tool.
+- `druckwerk.add_to_queue` and `druckwerk_add_to_queue` lose the field `slice_job_id`. No tool hands out a job id any more. The LLM prompt says that the app has no slice tool.
 - A job that an older version left in state `queued` or `slicing` is marked `failed` at start ("Slice again in the browser").
 - Models that are not STL (3MF, STEP, OBJ) can no longer be sliced in the app. Slice them elsewhere and add the `.gcode.3mf` to the share.
 - The CI image test checks that the image is at most 450 MB and that `/slice` answers 404. It stores a real Bambu Studio G-code through `/gcode` instead of slicing on the server.
