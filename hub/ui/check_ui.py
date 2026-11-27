@@ -397,6 +397,21 @@ def check_history_download(page, base, ident):
         assert open_item(id_).count() == 0, f"no file for {id_}: no download button"
 
 
+def check_history_preview(page, base, ident):
+    """The 3D canvas shows for a print with a stored file (also the cloud's, which has no slicer job) and not for one without."""
+    if ident == "admin":
+        fresh(page, f"{base}/?as={ident}#/history/{TASK_OWNED_CLOUD}")
+        page.wait_for_selector(".detail .preview3d canvas.view3d", timeout=10000)
+        page.wait_for_selector('.preview3d[data-ready="1"]', timeout=15000)
+        assert page.evaluate("() => document.documentElement.scrollWidth <= window.innerWidth"), "the preview fits the screen"
+        fresh(page, f"{base}/?as={ident}#/history/{TASK_CLOUD}")
+        page.wait_for_selector(".detail :text('no 3D preview')", timeout=8000)
+        assert page.locator(".detail canvas").count() == 0, "no file: placeholder, no canvas"
+    fresh(page, f"{base}/?as={ident}#/history/{TASK_BENCHY}")
+    page.wait_for_selector(".detail :text('no 3D preview')", timeout=8000)
+    assert page.locator(".detail canvas").count() == 0, "settings kept but no file: no canvas"
+
+
 def check_queue_details(page, base, ident, go, shot):
     fresh(page, f"{base}/?as={ident}#/queue/{JOB_CLIPS}")
     page.wait_for_selector(".detail")
@@ -625,6 +640,9 @@ def walk(page, ident, base, shot, inject):
     if ONLY == "download":
         check_history_download(page, base, ident)
         return
+    if ONLY == "preview":
+        check_history_preview(page, base, ident)
+        return
     page.wait_for_selector(".pcard")
     if inject:
         page.evaluate("fetch('/api/me')")
@@ -654,6 +672,7 @@ def walk(page, ident, base, shot, inject):
         shot("history-list")
         check_history_details(page, base, ident, go, shot)
         check_history_download(page, base, ident)
+        check_history_preview(page, base, ident)
         check_queue_details(page, base, ident, go, shot)
         check_spool_detail(page, base, ident, go, shot)
         check_loading(page, go)

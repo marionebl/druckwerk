@@ -66,6 +66,7 @@ main { max-width: 1240px; margin: 0 auto; padding: 20px 16px 96px; }
 .btn { display: inline-flex; align-items: center; justify-content: center; gap: 6px; min-height: 40px; padding: 0 16px; border-radius: 10px; border: 1px solid var(--line); background: var(--card); cursor: pointer; font-weight: 550; white-space: nowrap; }
 .btn:hover:not(:disabled) { background: var(--soft); }
 .btn.primary { background: var(--accent); border-color: var(--accent); color: var(--accent-fg); }
+a.btn { text-decoration: none; color: var(--fg); }
 .btn.primary:hover:not(:disabled) { background: color-mix(in srgb, var(--accent) 88%, #000); }
 .btn.danger { color: var(--err); }
 .btn.sm { min-height: 32px; padding: 0 10px; font-size: 13.5px; border-radius: 8px; }

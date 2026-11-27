@@ -233,7 +233,7 @@ def settings_out(item):
     src, again = SETTINGS_OF.get(str(item["id"]), (None, False))
     task = {k: item[k] for k in ("title", "design_title", "plate", "status_code") if item.get(k) not in (None, "")}
     kind, fname = FILES_OF.get(str(item["id"]), (None, None))
-    dl = {"download": kind and {"kind": kind, "name": fname}}
+    dl = {"download": kind and {"kind": kind, "name": fname}, "preview": bool(kind)}
     if not src:
         return {**dl, "available": False, "source": None, "can_reprint": False, "task": dict(task, model_id="US1", profile_id=4711) if item["source"] == "cloud" else task,
                 "reason": "The Bambu cloud did not give the file (cloud file: HTTP Error 404)." if item["source"] == "cloud" else "The sliced file is gone.",
@@ -790,7 +790,7 @@ class H(BaseHTTPRequestHandler):
             return ok({"entity_id": "input_boolean." + re.sub(r"[^a-z0-9]+", "_", name.lower()), "name": name, "state": "off"})
         if path == "api/history":
             return ok(history_out(ident, q))
-        r = re.fullmatch(r"api/history/([\w-]+)/(settings|queue|file)", path)
+        r = re.fullmatch(r"api/history/([\w-]+)/(settings|queue|file|gcode)", path)
         if r:
             item = next((i for i in history_out(ident, {})["items"] if str(i["id"]) == r.group(1)), None)
             if not item:
@@ -798,6 +798,10 @@ class H(BaseHTTPRequestHandler):
             out = settings_out(item)
             if r.group(2) == "settings":
                 return ok(out)
+            if r.group(2) == "gcode":
+                if not out["preview"]:
+                    raise Err(404, "no G-code for this print")
+                return (200, gcode().encode(), "text/plain")
             if r.group(2) == "file":
                 if not out["download"]:
                     raise Err(404, "no stored file for this print")

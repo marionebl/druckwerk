@@ -3,6 +3,7 @@
 import { api } from '../api.js';
 import { h, clear, icon, btn, pill, empty, field, clock, dateTime, durSec, money, toDate, fail, loading, thumb, attempt } from '../util.js';
 import * as D from './detail.js';
+import { gcodePreview } from './preview.js';
 
 const STATUS = { finished: ['Finished', 'ok'], failed: ['Failed', 'err'], cancelled: ['Cancelled', ''], stopped: ['Stopped early', 'err'], running: ['Printing', 'ok'] };
 const dayKey = (d) => d.getFullYear() * 10000 + (d.getMonth() + 1) * 100 + d.getDate();
@@ -114,6 +115,21 @@ export async function mount(ctx, root, parts = []) {
   ctx.every(60000, load);
 }
 
+// The 3D preview of the print's own file. Nothing loads until the settings say a file exists; a placeholder stands in until then.
+function previewCard(id) {
+  const note = h('p', { class: 'muted', style: 'margin:0' }, 'Loading the 3D preview…');
+  const box = h('section', { class: 'card stack', style: 'gap:10px' }, h('h2', { style: 'margin:0' }, '3D preview'), note);
+  return {
+    box,
+    none: () => { note.textContent = 'No file is stored for this print, so there is no 3D preview.'; },
+    show: () => {
+      const prev = gcodePreview();
+      api.historyGcode(id).then((t) => { note.remove(); box.append(prev); return prev.load(t); })
+        .catch(() => { note.textContent = 'The 3D preview could not be loaded.'; });
+    },
+  };
+}
+
 async function detailView(ctx, root, id) {
   const box = h('div');
   root.append(D.back('#/history', 'History'), box);
@@ -133,6 +149,7 @@ async function detailView(ctx, root, id) {
     h('span', null, spoolName(u.spool_id)), h('span', { class: 'muted' }, Math.round(u.grams * 10) / 10 + ' g')));
   const secs = t.seconds || job?.print_seconds;
   const settings = h('div', null, h('section', { class: 'card' }, loading()));
+  const pv = previewCard(t.id);
   const same = h('span', { style: 'display:contents' }), get = h('span', { style: 'display:contents' });
   clear(box, D.page({
     title: titleOf(t), sub: job?.name && t.title && job.name !== t.title ? 'Cloud title: ' + t.title : null,
@@ -144,7 +161,7 @@ async function detailView(ctx, root, id) {
       ['Filament', t.grams ? Math.round(t.grams) + ' g' : null], ['Cost', t.cost != null ? money(t.cost) : null],
       ['File', job?.source || job?.file],
       ['Error', (t.error || job?.error) && h('span', { style: 'color:var(--err)' }, t.error || job.error)]]),
-    blocks: [...D.settingsCards(job), settings, D.card('Spools used', used), D.previewCard(source && job.slice_job)],
+    blocks: [...D.settingsCards(job), settings, D.card('Spools used', used), pv.box],
     actions: [
       same, get,
       source && btn('Reslice', () => D.reslice(ctx, job, source)),
@@ -154,10 +171,11 @@ async function detailView(ctx, root, id) {
   // The settings come from the file, so they load after the page; the one primary action depends on whether the file is still there.
   api.historySettings(t.id).then((data) => {
     clear(settings, D.slicingCard(data, job));
+    data.preview ? pv.show() : pv.none();
     const label = [icon('plus', 18), 'New print job with the same settings'];
     if (data.download) get.append(h('a', { class: 'btn', href: api.historyFileUrl(t.id), download: data.download.name },
       icon('download', 18), data.download.kind === 'model' ? 'Download model' : 'Download sliced 3MF'));
     if (data.can_reprint) same.append(btn(label, () => D.sameJob(ctx, t.id), 'primary'));
     else if (job) same.append(btn(label, () => D.reslice(ctx, job, source), 'primary'));
-  }).catch((e) => clear(settings, D.card('Slicing settings', h('p', { class: 'muted', style: 'margin:0' }, 'Could not load the settings: ' + e.message))));
+  }).catch((e) => { pv.none(); clear(settings, D.card('Slicing settings', h('p', { class: 'muted', style: 'margin:0' }, 'Could not load the settings: ' + e.message))); });
 }

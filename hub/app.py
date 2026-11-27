@@ -863,6 +863,19 @@ class App:
         with open(path, "rb") as f:
             h.send(200, f.read(), "application/octet-stream")
 
+    def get_history_gcode(self, h, m, q, c):
+        """The first plate's G-code out of the sliced file, for the 3D preview."""
+        it = self.history_item(c, unquote(m.group(1)))
+        path = (self.history_files(it).get("sliced") or ("",))[0]
+        try:
+            with zipfile.ZipFile(path) as z:
+                names = sorted(n for n in z.namelist() if SLICED.fullmatch(n))
+                if names:
+                    return h.send(200, z.read(names[0]), "text/plain; charset=utf-8")
+        except (OSError, zipfile.BadZipFile):
+            pass
+        raise NotFound("no G-code for this print")
+
     def get_history_settings(self, h, m, q, c):
         it = self.history_item(c, unquote(m.group(1)))
         job = it.get("job") or {}
@@ -892,6 +905,7 @@ class App:
         files = self.history_files(it)
         kind = "model" if "model" in files else "sliced" if "sliced" in files else None
         out["download"] = kind and {"kind": kind, "name": files[kind][1]}
+        out["preview"] = "sliced" in files and self.sliced_file(files["sliced"][0])
         return out
 
     @staticmethod
@@ -1537,6 +1551,7 @@ class App:
             ("GET", r"/api/history", w(self.get_history)),
             ("GET", r"/api/history/([A-Za-z0-9_-]{1,40})/settings", w(self.get_history_settings)),
             ("GET", r"/api/history/([A-Za-z0-9_-]{1,40})/file", w(self.get_history_file)),
+            ("GET", r"/api/history/([A-Za-z0-9_-]{1,40})/gcode", w(self.get_history_gcode)),
             ("POST", r"/api/history/([A-Za-z0-9_-]{1,40})/queue", w(self.post_history_queue)),
             ("GET", r"/api/spools", w(self.get_spools)),
             ("GET", r"/api/spools/(\d{1,19})/prints", w(self.get_spool_prints)),

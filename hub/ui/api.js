@@ -102,6 +102,11 @@ export const api = {
   history: (query) => get('api/history' + (query ? '?' + query : '')),
   historySettings: (id) => get(`api/history/${q(id)}/settings`),
   historyFileUrl: (id) => `api/history/${q(id)}/file`,
+  historyGcode: async (id) => {
+    const r = await fetch(`api/history/${q(id)}/gcode`);
+    if (!r.ok) throw new ApiError(r.status, 'No G-code preview');
+    return r.text();
+  },
   historyQueue: (id) => post(`api/history/${q(id)}/queue`, {}),
   // queue
   queue: () => get('api/queue'),
