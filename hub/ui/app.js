@@ -1,12 +1,7 @@
 // Shell: identity, hash router, tabs, polling.
-<<<<<<< Updated upstream
 import { api, RESTARTING, setUser, newRoute } from './api.js';
 import { h, clear, icon, fail, empty, loading } from './util.js';
-=======
-import { api, RESTARTING } from './api.js';
-import { h, clear, icon, fail, empty } from './util.js';
 import { settle } from './views/promote.js';
->>>>>>> Stashed changes
 
 const VIEWS = {
   printers: () => import('./views/printers.js'),

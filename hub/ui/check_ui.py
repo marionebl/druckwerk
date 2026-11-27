@@ -621,12 +621,8 @@ def main():
     ap.add_argument("--slice-timeout", type=int, default=15)
     ap.add_argument("--expect-403", default="")
     a = ap.parse_args()
-<<<<<<< Updated upstream
-    global PREFIX, MODEL, SLICE_TIMEOUT, SLICE_ON, MOCKED, ONLY
+    global PREFIX, MODEL, SLICE_TIMEOUT, MOCKED, ONLY
     ONLY = a.only
-=======
-    global PREFIX, MODEL, SLICE_TIMEOUT, MOCKED
->>>>>>> Stashed changes
     MOCKED = not a.base_url
     SLICE_TIMEOUT = a.slice_timeout * 1000
     if a.model:

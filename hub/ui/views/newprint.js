@@ -155,33 +155,6 @@ export async function mount(ctx, root) {
     draw();
   }
 
-<<<<<<< Updated upstream
-  async function sliceAll() {
-    if (where() === 'device') return sliceAllHere();
-    const ref = refPrinter();
-    S.busy = true; S.pick = null;
-    S.variants = QUALITIES.map(([q]) => ({ q, state: 'queued' }));
-    draw();
-    try {
-      await Promise.all(S.variants.map(async (v) => {
-        const job = await api.upload(S.file);
-        v.id = job.id;
-        await api.slice(job.id, { serial: ref.serial, quality: v.q, ...filChoice(), bed: S.bed });
-      }));
-    } catch (e) { fail(e); S.busy = false; S.variants = null; draw(); return; }
-    const tick = async () => {
-      if (!box.isConnected) return;
-      for (const v of S.variants) if (v.state === 'queued' || v.state === 'slicing') Object.assign(v, await api.job(v.id).catch((e) => ({ state: 'failed', error: e.message })));
-      S.busy = S.variants.some((v) => v.state === 'queued' || v.state === 'slicing');
-      draw();
-      if (S.busy) setTimeout(tick, 1500);
-      else if (!S.pick) { const ok = S.variants.find((v) => v.q === (S.prefQ || 'better') && v.state === 'done') || S.variants.find((v) => v.q === 'better' && v.state === 'done'); if (ok) { S.pick = ok.q; draw(); } }
-    };
-    tick();
-  }
-
-=======
->>>>>>> Stashed changes
   const costOf = (v) => {
     if (v.info?.cost != null) return [v.info.cost, false];
     const sp = S.spool ? spoolById(S.spool) : spoolOf(trays().find((t) => trayKey(t) === S.tray) || {});
@@ -256,7 +229,6 @@ export async function mount(ctx, root) {
     if (!printers.length) return clear(box, empty('You have no printer access yet. Ask an admin for a grant.'));
     clear(box, stepper(step), fileCard(), S.file && printerCard(), S.variants && compareCard(), S.pick && queueCard());
   }
-<<<<<<< Updated upstream
   // Reslice (from a history or queue detail) hands over what the old print had; it is used once.
   const rs = ctx.reslice;
   ctx.reslice = null;
@@ -274,9 +246,6 @@ export async function mount(ctx, root) {
     api.jobModel(rs.slice_job).then((blob) => { S.file = new File([blob], rs.model || 'model.stl'); S.variants = null; S.pick = null; draw(); },
       () => toast('The model is no longer stored. Choose it again.', 'error'));
   }
-  if (where() === 'device') startEngine();
-=======
   startEngine();
->>>>>>> Stashed changes
   draw();
 }
