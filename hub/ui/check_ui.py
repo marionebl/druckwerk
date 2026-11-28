@@ -1246,7 +1246,10 @@ PHONE = """() => {
   for (const e of document.querySelectorAll('input:not([type=checkbox]):not([type=radio]):not([type=range]):not([type=file]):not([type=color]), select, textarea')) {
     if (seen(e) && parseFloat(getComputedStyle(e).fontSize) < 16) out.push(`iOS zooms into ${name(e)} (font ${getComputedStyle(e).fontSize})`);
   }
-  if (document.documentElement.scrollWidth > vw) out.push(`page scrolls sideways: ${document.documentElement.scrollWidth} > ${vw}`);
+  // A phone widens the layout viewport to the widest content (innerWidth grows), so compare with the screen width.
+  const cw = document.documentElement.clientWidth;
+  if (vw > cw + 1 || document.documentElement.scrollWidth > cw + 1) out.push(`page is wider than the screen: ${Math.max(vw, document.documentElement.scrollWidth)} > ${cw}`);
+  if (seen(document.querySelector('.topbar .brand'))) out.push('the brand row shows on a phone');
   const t = document.querySelector('.tabs').getBoundingClientRect();
   if (Math.abs(t.bottom - vh) > 1) out.push(`tab bar is not at the bottom: ${Math.round(t.top)}-${Math.round(t.bottom)} of ${vh}`);
   const top = document.querySelector('.topbar .in').getBoundingClientRect();
@@ -1264,9 +1267,10 @@ def check_phone_layout(page, base, ident, go):
     if page.viewport_size["width"] >= 721:
         return
     screens = [("#/printers", ".pcard"), ("#/printers/" + H2S, ".cam.big"), ("#/printers/FAKE-P1S-0002", ".cam.big"),
-               ("#/queue", ".job"), ("#/history", ".tl-card"), ("#/new", ".drop"), ("#/filament", ".spool")]
+               ("#/queue", ".job"), ("#/history", ".tl-card"),
+               ("#/new", ".drop"), ("#/filament", ".spool"), ("#/filament/5005", ".detail-img")]
     if ident == "admin":
-        screens += [("#/access", "table"), ("#/setup", ".wizard .card")]
+        screens += [("#/access", "table"), ("#/setup", ".wizard .card"), ("#/queue/a00000000006", ".detail-img"), ("#/history/1", ".detail-img")]
     stub_engine(page)
     found = []
     for w in (375, 390):

@@ -115,7 +115,7 @@ export async function mount(ctx, root, parts = []) {
       canOrder && waiting ? h('div', { class: 'grip', title: 'Drag to reorder', 'aria-hidden': 'true' }, icon('grip')) : h('div', { class: 'pos' }, waiting ? idx + 1 : ''),
       j.kind === 'dry' ? h('div', { class: 'thumb' }, '♨') : thumb(j.plate_png),
       h('div', { class: 'main' },
-        h('div', { class: 'row between' }, h('span', { class: 'title' }, h('a', { href: '#/queue/' + j.id }, j.name || j.source || j.file)),
+        h('div', { class: 'row between' }, h('span', { class: 'title', title: j.name || j.source || j.file }, h('a', { href: '#/queue/' + j.id }, j.name || j.source || j.file)),
           h('span', { class: 'row', style: 'gap:6px' }, blocked ? h('span', { title: why, 'data-blocked-pill': '' }, pill('Blocked', 'warn'))
             : why && h('span', { title: why, 'data-nozzle-pill': j.nozzle }, pill(`needs ${j.nozzle} nozzle`, 'warn')), pill(stl, cls))),
         h('div', { class: 'sub' },

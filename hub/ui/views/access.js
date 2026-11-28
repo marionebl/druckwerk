@@ -5,7 +5,7 @@ import { h, clear, icon, btn, field, pill, empty, attempt, dateTime, loading } f
 export async function mount(ctx, root) {
   const tableBox = h('div', null, loading()), formBox = h('div');
   let users = [], printers = [], entities = [], grants = [];
-  root.append(h('div', { class: 'page-head' }, h('div', null, h('h1', null, 'Access'), h('div', { class: 'sub' }, 'Who may use which printer, and when'))),
+  root.append(h('div', { class: 'page-head' }, h('div', null, h('h1', null, 'Access'), h('div', { class: 'sub' }, 'Who may use which printer, and when')), h('a', { class: 'btn', href: '#/setup' }, icon('gear', 18), 'Setup wizard')),
     h('div', { class: 'stack' }, tableBox, formBox));
   const pname = (s) => (s === '*' ? 'All printers' : printers.find((p) => p.serial === s)?.name || s);
 

@@ -1,5 +1,12 @@
 # Changelog
 
+## 3.37.0 (unreleased)
+
+- Phones: no page is wider than the screen any more. Long titles in History, the queue and the filament list end in an ellipsis (full text on hover and on the detail page); long words break instead of widening the page. History was 859 px wide on a 375 px phone.
+- Phones: the brand row with the settings menu is hidden (the HA app shows the app name); the tab bar stays at the bottom. The setup wizard has a button on the Access page. Desktop keeps the top bar.
+- Inside the HA app panel the page does not add safe-area padding, because the HA frontend already keeps clear of the notch and home indicator.
+- The phone check fails when the layout viewport grows wider than the screen, and the mock has long real-world titles.
+
 ## 3.36.0 (unreleased)
 
 - Phones: the tab bar sits at the bottom of the screen again. The top bar's blur made it the containing block of the fixed tab bar, so the tabs covered the top bar and its settings button.
