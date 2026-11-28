@@ -6,7 +6,17 @@ export class ApiError extends Error {
   constructor(status, message) { super(message); this.status = status; }
 }
 
+// Requests pending for 3 s or more drive the thin loading bar in app.js ('druckwerk:slow', detail = count).
+let slowCount = 0;
 async function call(method, path, body, raw) {
+  let late = false;
+  const timer = setTimeout(() => { late = true; dispatchEvent(new CustomEvent('druckwerk:slow', { detail: ++slowCount })); }, 3000);
+  try { return await send(method, path, body, raw); } finally {
+    clearTimeout(timer);
+    if (late) dispatchEvent(new CustomEvent('druckwerk:slow', { detail: --slowCount }));
+  }
+}
+async function send(method, path, body, raw) {
   if (path.startsWith('/')) throw new Error('absolute path not allowed: ' + path);
   const init = { method, headers: {} };
   if (body !== undefined) {
@@ -36,9 +46,9 @@ function restarting(err) {
 // Stale-while-revalidate for the lists people open first. The first read of a list in a page load is answered from the
 // cache (per HA user, localStorage) while the network answers behind it; when the answer differs the shell redraws the view
 // ('druckwerk:fresh'). Every storage call may throw (private window, blocked data): then there is no cache and nothing changes.
-const SWR = /^api\/(printers|spools|queue|history|load-requests|nozzle-requests)(\?.*)?$/;
+const SWR = /^api\/(printers|spools|queue|history|load-requests|nozzle-requests|grants|ha\/(users|entities))(\?.*)?$/;
 const RELATED = { history: ['queue', 'history', 'printers'], queue: ['queue', 'history', 'printers'], jobs: ['queue', 'history'], spools: ['spools', 'load-requests'], 'load-requests': ['load-requests', 'spools'], 'nozzle-requests': ['nozzle-requests'],
-  printers: ['printers', 'queue', 'nozzle-requests'], setup: ['printers'], grants: ['printers'] };
+  printers: ['printers', 'queue', 'nozzle-requests'], setup: ['printers'], grants: ['grants', 'printers'], ha: ['grants'] };
 let user = '';
 const seen = new Set(), pending = new Set(), served = new Set(), hot = new Map();  // network answered / fetching / read stale this route / fresh answer waiting
 const key = (p) => `dw1:${user}:${p}`;
@@ -46,6 +56,10 @@ const peek = (k) => { try { const v = localStorage.getItem(k); return v == null 
 const keep = (k, v) => { try { localStorage.setItem(k, JSON.stringify(v)); } catch { /* full or blocked: no cache */ } };
 export const setUser = (id) => { user = String(id || ''); };
 export const newRoute = () => served.clear();
+// True while a list on this route was read from the cache and its network answer is still on the way.
+export const stale = () => [...served].some((p) => pending.has(p));
+// The last app.js start answer: lets the shell and the cached lists draw before the network answers.
+export const cachedMe = () => peek('dw1:me');
 // A change makes the cached lists of that resource wrong: drop them (the next read goes to the network).
 function forget(path) {
   const bases = RELATED[path.split('/')[1]] || [];
@@ -67,10 +81,11 @@ async function get(p) {
     if (!pending.has(p)) {
       pending.add(p);
       call('GET', p).then((v) => {
-        seen.add(p); keep(k, v);
+        pending.delete(p); seen.add(p); keep(k, v);
         hot.set(p, { v, at: Date.now() });  // the next read (a redraw caused by another list) takes it without a second request
         if (served.has(p) && JSON.stringify(v) !== JSON.stringify(old)) dispatchEvent(new CustomEvent('druckwerk:fresh'));
-      }, () => { /* offline or failing: the cached list stays */ }).finally(() => pending.delete(p));
+        else if (!stale()) dispatchEvent(new CustomEvent('druckwerk:settled'));
+      }, () => { pending.delete(p); /* offline or failing: the cached list stays */ });
     }
     return old;
   }
@@ -84,7 +99,7 @@ const del = (p) => call('DELETE', p);
 const q = encodeURIComponent;
 
 export const api = {
-  me: () => get('api/me'),
+  me: async () => { const m = await get('api/me'); keep('dw1:me', m); return m; },
   // setup
   setup: () => get('api/setup'),
   loginStart: (email, password) => post('api/setup/login/start', { email, password }),

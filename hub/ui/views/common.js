@@ -3,13 +3,13 @@ import { h, icon, pill, swatch, pct, temp, clock, dur, hex } from '../util.js';
 
 const STATUS = {
   running: ['Printing', 'ok'], pause: ['Paused', 'warn'], idle: ['Idle', ''], finish: ['Finished', 'ok'],
-  failed: ['Failed', 'err'], offline: ['Offline', 'err'], prepare: ['Preparing', 'warn'],
+  failed: ['Failed', 'err'], offline: ['Offline', 'err'], connecting: ['Connecting', 'warn'], prepare: ['Preparing', 'warn'],
 };
 export function statusPill(p) {
-  const [label, cls] = !p.online ? STATUS.offline : STATUS[p.status] || [p.status || 'Unknown', ''];
+  const [label, cls] = p.online === null ? STATUS.connecting : !p.online ? STATUS.offline : STATUS[p.status] || [p.status || 'Unknown', ''];
   return pill(label, cls);
 }
-export const isPrinting = (p) => p.online && (p.status === 'running' || p.status === 'pause');
+export const isPrinting = (p) => p.online === true && (p.status === 'running' || p.status === 'pause');
 
 export function hmsBanners(list) {
   return (list || []).map((m) => h('div', { class: 'hms' + (m.severity === 'fatal' || m.severity === 'serious' ? '' : ' warn'), role: 'alert' },

@@ -1,4 +1,7 @@
 """GET /api/printers, camera and cover proxies."""
+import json
+import os
+
 from hubfakes import ADMIN, OTHER, SERIAL, SERIAL2, USER, FakeBridge
 
 
@@ -22,11 +25,11 @@ def test_printer_view_from_the_bridge_status(hub):
     assert (other["status"], other["stage"], other["task_name"], other["cover_url"], other["ams"]) == ("idle", "idle", None, None, [])
 
 
-def test_a_printer_the_bridge_cannot_read_is_offline_with_empty_values(hub):
+def test_a_printer_never_seen_is_connecting_with_empty_values(hub):
     hub.setup_printers()
     FakeBridge.status_fail = {SERIAL}
     p = hub.req("GET", "/api/printers", user=ADMIN)[1][0]
-    assert (p["online"], p["status"], p["progress"], p["task_name"], p["ams"], p["hms"], p["active_tray"]) == (False, None, None, None, [], [], None)
+    assert (p["online"], p["status"], p["progress"], p["task_name"], p["ams"], p["hms"], p["active_tray"]) == (None, "connecting", None, None, [], [], None)
 
 
 def test_tray_gets_spool_id(hub):
@@ -91,11 +94,79 @@ def test_one_failed_status_call_keeps_the_printer_online_with_its_last_status(hu
     assert (p["online"], p["status"], p["stale"], p["status_age"]) == (True, "running", True, 120)
 
 
-def test_a_printer_goes_offline_only_when_the_bridge_says_so(hub):
+def cloud(hub, online, dt=0):
+    """One reading of the bridge's printer list, `dt` seconds after the last (the list is reused for 5 s)."""
+    hub.now += dt
+    FakeBridge.printer_extra = {SERIAL: {"online": online}}
+    return hub.req("GET", "/api/printers", user=ADMIN)[1][0]
+
+
+def test_one_cloud_false_reading_keeps_the_printer_online(hub):
     hub.setup_printers()
     hub.req("GET", "/api/printers", user=ADMIN)
     FakeBridge.status_fail = {SERIAL}
-    FakeBridge.printer_extra = {SERIAL: {"online": False}}
-    hub.now += 10  # past the 5 s reuse of the printer list
-    p = hub.req("GET", "/api/printers", user=ADMIN)[1][0]
+    p = cloud(hub, False, 10)
+    assert (p["online"], p["status"], p["progress"]) == (True, "running", 42.0)
+    p = cloud(hub, True, 10)  # back: the count starts again
+    assert p["online"] is True
+    assert cloud(hub, False, 10)["online"] is True and cloud(hub, False, 40)["online"] is True
+
+
+def test_a_printer_goes_offline_after_a_minute_of_cloud_false(hub):
+    hub.setup_printers()
+    hub.req("GET", "/api/printers", user=ADMIN)
+    FakeBridge.status_fail = {SERIAL}
+    assert cloud(hub, False, 10)["online"] is True
+    assert cloud(hub, False, 25)["online"] is True  # 25 s
+    assert cloud(hub, False, 25)["online"] is True  # 50 s
+    p = cloud(hub, False, 15)  # 65 s
     assert (p["online"], p["status"], p["progress"], p["stale"]) == (False, None, None, False)
+    assert cloud(hub, True, 10)["online"] is True  # the cloud says online again
+
+
+def test_a_status_that_says_offline_is_offline_at_once(hub):
+    hub.setup_printers()
+    hub.set_print(gcode_state="OFFLINE")
+    p = hub.req("GET", "/api/printers", user=ADMIN)[1][0]
+    assert (p["online"], p["status"]) == (False, "offline")
+
+
+def test_a_view_older_than_the_stale_limit_is_offline(hub):
+    hub.setup_printers()
+    hub.req("GET", "/api/printers", user=ADMIN)
+    FakeBridge.status_fail = {SERIAL}
+    hub.now += 601
+    p = hub.req("GET", "/api/printers", user=ADMIN)[1][0]
+    assert (p["online"], p["status"]) == (False, None)
+    assert hub.app.printer_status(SERIAL) is None  # the queue's rule is unchanged
+
+
+def test_the_last_view_survives_a_restart(hub):
+    hub.setup_printers()
+    assert hub.req("GET", "/api/printers", user=ADMIN)[1][0]["online"] is True
+    hub.restart()
+    FakeBridge.status_fail = {SERIAL, SERIAL2}  # the bridge needs a while after a restart
+    hub.now += 90
+    p = hub.req("GET", "/api/printers", user=ADMIN)[1][0]
+    assert (p["online"], p["status"], p["progress"], p["stale"], p["status_age"]) == (True, "running", 42.0, True, 90)
+
+
+def test_the_view_is_written_at_most_every_30_s(hub):
+    hub.setup_printers()
+    path = os.path.join(hub.app.data_dir, "status_cache.json")
+    hub.req("GET", "/api/printers", user=ADMIN)
+    hub.set_print(mc_percent=50)
+    hub.now += 10
+    hub.req("GET", "/api/printers", user=ADMIN)
+    assert json.load(open(path))[SERIAL]["view"]["progress"] == 42.0
+    hub.now += 25
+    hub.req("GET", "/api/printers", user=ADMIN)
+    assert json.load(open(path))[SERIAL]["view"]["progress"] == 50.0
+    assert not [f for f in os.listdir(hub.app.data_dir) if f.endswith(".tmp")]
+
+
+def test_time_left_is_minutes_and_matches_the_finish_time():
+    """The feedback case: layer 794 of 831 with 40 min left must not read as 0 min (the old vendor sensor was in hours)."""
+    import printer_state
+    v = printer_state.view({"gcode_state": "RUNNING", "mc_percent": 95, "mc_remaining_time": 40, "layer_num": 794, "total_layer_num": 831}, 0)
+    assert (v["remaining_min"], v["end_time"]) == (40, "1970-01-01T00:40:00+00:00")

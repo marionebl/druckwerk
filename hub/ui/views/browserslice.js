@@ -2,6 +2,8 @@
 // engine's protocol v2. The server hands out the runtime at engine/ and the flattened presets; see hub/slicer/engine.
 import { api } from '../api.js';
 import { toObjectPaint } from './paintcodes.js';
+import { toBed } from './plate.js';
+export { parseStl } from './plate.js';
 
 const cache = { presets: {} };
 
@@ -12,7 +14,7 @@ function connect(worker) {
     if (!p) return;
     if (m.kind === 'progress') p.progress?.(m.progress);
     else if (m.kind === 'result') { pending.delete(m.id); p.resolve(m.result); }
-    else if (m.kind === 'error') { pending.delete(m.id); p.reject(new Error(m.error.message + (m.error.detail ? ` (${m.error.detail})` : ''))); }
+    else if (m.kind === 'error') { pending.delete(m.id); p.reject(Object.assign(new Error(m.error.message + (m.error.detail ? ` (${m.error.detail})` : '')), { code: m.error.code, conflict: m.error.conflict })); }
   };
   worker.onerror = (e) => { for (const p of pending.values()) p.reject(new Error('The engine worker failed: ' + (e.message || 'could not start'))); pending.clear(); };
   return (op, params, progress, transfer = []) => new Promise((resolve, reject) => {
@@ -39,29 +41,6 @@ export function warm() {
       return { worker, request, variant, loadMs: performance.now() - t0, licence: new URL('LICENSE', base).href };
     } catch (e) { worker.terminate(); throw e; }
   })();
-}
-
-export function parseStl(buf) {
-  const dv = new DataView(buf);
-  if (buf.byteLength >= 84 && buf.byteLength === 84 + dv.getUint32(80, true) * 50) {  // binary: 84 bytes + 50 per triangle
-    const n = dv.getUint32(80, true), out = new Float32Array(n * 9);
-    for (let t = 0; t < n; t++) for (let i = 0; i < 9; i++) out[t * 9 + i] = dv.getFloat32(84 + t * 50 + 12 + i * 4, true);
-    return out;
-  }
-  const v = [...new TextDecoder().decode(buf).matchAll(/^\s*vertex\s+(\S+)\s+(\S+)\s+(\S+)/gm)].flatMap((m) => [+m[1], +m[2], +m[3]]);
-  if (!v.length || v.length % 9) throw new Error('Not an STL file: no triangles found.');
-  return new Float32Array(v);
-}
-
-// The engine wants bed coordinates: centred on the printable area, resting on z = 0.
-export function placeOnBed(pos, machine) {
-  const area = [machine.printable_area].flat().join(',').split(',').map((p) => p.split('x').map(Number));
-  const mid = (a) => (Math.min(...area.map((p) => p[a])) + Math.max(...area.map((p) => p[a]))) / 2;
-  const lo = [Infinity, Infinity, Infinity], hi = [-Infinity, -Infinity, -Infinity];
-  for (let i = 0; i < pos.length; i += 3) for (let a = 0; a < 3; a++) { lo[a] = Math.min(lo[a], pos[i + a]); hi[a] = Math.max(hi[a], pos[i + a]); }
-  const d = [mid(0) - (lo[0] + hi[0]) / 2, mid(1) - (lo[1] + hi[1]) / 2, -lo[2]];
-  for (let i = 0; i < pos.length; i += 3) for (let a = 0; a < 3; a++) pos[i + a] += d[a];
-  return pos;
 }
 
 // The presets of a printer model and nozzle (0.4 mm is the model's own file), loaded once. Per request they are cut to what the engine needs.
@@ -104,25 +83,31 @@ export function effectiveObjectConfig(config, process, paint) {
   return out;
 }
 
-// One variant: slice in the (warm) engine, then hand the G-code to the app, which packs and checks it like a Pi slice.
-// opts: file, jobId, model, serial, fil, bed, quality, onProgress, objectConfig (ConfigPatch), paint ({positions, states} from paint.js).
-// Returns the job and the slice time.
+// What a failed slice says in plain words. Code -101: two objects' paths cross on one layer.
+export function sliceError(e) {
+  const c = e.conflict;
+  return e.code === -101 && c ? `"${c.objects[0]}" and "${c.objects[1]}" touch each other at ${c.z} mm height. Press Arrange to move them apart.` : e.message;
+}
+
+// One variant: slice the whole plate in the (warm) engine, then hand the G-code to the app, which packs and checks it like a Pi slice.
+// opts: objects (plate objects, see plate.js), names (unique, same order), jobId, model, serial, fil, bed, quality, onProgress.
+// A plate object has config (ConfigPatch) and paint ({positions, states} in its local frame, from paint.js). Returns the job and the slice time.
 export async function sliceVariant(eng, opts) {
-  const { file, jobId, model, serial, bed, quality } = opts, nozzle = opts.nozzle || '0.4';
+  const { objects, names, jobId, model, serial, bed, quality } = opts, nozzle = opts.nozzle || '0.4';
   const fil = { ...opts.fil, nozzle, ...(opts.nozzleType && { nozzle_type: opts.nozzleType }) };  // fil: {tray} or a library spool, see api.engineFilament
-  const [{ filament: name }, buf] = await Promise.all([api.engineFilament(serial, fil), file.arrayBuffer()]);
+  const { filament: name } = await api.engineFilament(serial, fil);
   const c = await variantConfigs(model, quality, bed, name, nozzle);
   const { machine, process } = c;
-  const painted = opts.paint ? toObjectPaint(opts.paint.states) : null;
   // Painted triangles are numbered in the refined mesh that the painter made, so that mesh goes to the engine.
-  const positions = placeOnBed(painted ? Float32Array.from(opts.paint.positions) : parseStl(buf), machine);
-  const config = effectiveObjectConfig(opts.objectConfig, process, painted);
-  const object = { name: file.name, mesh: { positions }, ...(Object.keys(config).length ? { config } : {}), ...(painted ? { paint: painted } : {}) };
+  const plate = objects.map((o, i) => {
+    const painted = o.paint ? toObjectPaint(o.paint.states) : null, config = effectiveObjectConfig(o.config, process, painted);
+    return { name: names[i], mesh: { positions: toBed(painted ? o.paint.positions : o.local, o) }, ...(Object.keys(config).length ? { config } : {}), ...(painted ? { paint: painted } : {}) };
+  });
   const t0 = performance.now();
   const r = await eng.request('slice', {
     configs: { machine, process, filaments: [c.filament] },
-    objects: [object], output: { toolpaths: false },
-  }, (p) => opts.onProgress?.(p), [positions.buffer]);
+    objects: plate, output: { toolpaths: false },
+  }, (p) => opts.onProgress?.(p), plate.map((o) => o.mesh.positions.buffer)).catch((e) => { throw Object.assign(new Error(sliceError(e)), { code: e.code }); });
   const sliceMs = performance.now() - t0, st = r.stats;
   const qs = new URLSearchParams({ serial, quality, ...fil, bed, filament: name, seconds: st.printTimeSeconds ?? 0, grams: st.filamentG ?? 0,
     metres: (st.filamentMm ?? 0) / 1000, engine: eng.variant, slice_s: (sliceMs / 1000).toFixed(1) });

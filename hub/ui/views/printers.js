@@ -22,28 +22,57 @@ const stills = new Map();
 // The <img> stays hidden until a frame has loaded, so a printer whose snapshot fails or takes a minute shows the
 // placeholder, never a broken image. After a first frame, a failed one keeps the last good frame.
 const noImage = (text) => h('div', { class: 'off' }, icon('camera', 28), text);
+// The last frame per printer (640 px wide JPEG, in localStorage) shows at once after a reload, labelled with its age.
+const frameKey = (p) => 'dw1:frame:' + p.serial;
+const readFrame = (p) => { try { const f = JSON.parse(localStorage.getItem(frameKey(p))); return f && f.d && f.t ? f : null; } catch { return null; } };
+const ago = (t) => { const sec = Math.max(0, Math.round((Date.now() - t) / 1000)); return sec < 60 ? sec + ' s ago' : sec < 3600 ? Math.floor(sec / 60) + ' min ago' : Math.floor(sec / 3600) + ' h ago'; };
+function saveFrame(p, img) {
+  try {
+    const w = Math.min(640, img.naturalWidth), c = document.createElement('canvas');
+    c.width = w; c.height = Math.round(img.naturalHeight * w / img.naturalWidth);
+    c.getContext('2d').drawImage(img, 0, 0, c.width, c.height);
+    localStorage.setItem(frameKey(p), JSON.stringify({ t: Date.now(), d: c.toDataURL('image/jpeg', 0.7) }));
+  } catch { /* full, blocked or tainted: no cached frame */ }
+}
 function still(p, big) {
   const key = p.serial + (big ? ':big' : '');
   let s = stills.get(key);
   if (!s) {
     const img = h('img', { alt: `Camera of ${p.name}` }), text = h('span', null, 'Loading camera image…');
     const holder = h('div', { class: 'still' }, h('div', { class: 'off' }, icon('camera', 28), text), img);
-    s = { holder, img, text, running: false, url: p.camera_url, pause: big ? 2000 : 10000 };
+    s = { holder, img, text, running: false, url: p.camera_url, pause: big ? 2000 : 10000, saved: 0 };
     stills.set(key, s);
+    const old = readFrame(p);
+    if (old) {
+      // Overlay label: no layout space. It ticks while the cached frame is the only one.
+      const label = h('span', { class: 'ago' }, ago(old.t));
+      const tick = setInterval(() => { if (!label.isConnected) clearInterval(tick); else label.textContent = ago(old.t); }, 1000);
+      s.label = label; s.tick = tick;
+      img.src = old.d; holder.classList.add('ok'); holder.append(label);
+    }
   }
   s.url = p.camera_url;
   if (!s.running) {
     s.running = true;
-    const next = () => {
+    let timer = null, probe = null;
+    const next = (fresh) => {
+      clearTimeout(timer);
       if (!s.holder.isConnected) { s.running = false; return; }
-      if (document.hidden || s.holder.closest('.live.playing')) { setTimeout(next, 1000); return; }
-      const probe = new Image();
-      const again = () => setTimeout(next, s.pause);
-      probe.onload = () => { s.img.src = probe.src; s.holder.classList.add('ok'); again(); };
-      probe.onerror = () => { if (!s.holder.classList.contains('ok')) s.text.textContent = 'No camera image'; again(); };
-      probe.src = s.url + (s.url.includes('?') ? '&' : '?') + 'mode=snapshot&t=' + Date.now();
+      if (document.hidden || s.holder.closest('.live.playing')) { timer = setTimeout(next, 1000); return; }
+      if (probe) { probe.onload = probe.onerror = null; probe.src = ''; }  // a fresh request replaces the one in flight
+      const pr = probe = new Image();
+      const again = () => { probe = null; timer = setTimeout(next, s.pause); };
+      pr.onload = () => {
+        s.img.src = pr.src; s.holder.classList.add('ok');
+        if (s.label) { s.label.remove(); clearInterval(s.tick); s.label = null; }
+        if (Date.now() - s.saved > 20000) { s.saved = Date.now(); saveFrame(p, pr); }  // not every frame: encoding costs
+        again();
+      };
+      pr.onerror = () => { if (!s.holder.classList.contains('ok')) s.text.textContent = 'No camera image'; again(); };
+      pr.src = s.url + (s.url.includes('?') ? '&' : '?') + 'mode=snapshot' + (fresh ? '&fresh=1' : '') + '&t=' + Date.now();
     };
-    setTimeout(next, 0);
+    s.fresh = () => next(true);
+    timer = setTimeout(next, 0);
   }
   return s.holder;
 }
@@ -122,7 +151,7 @@ function live(p) {
 function camera(p, big) {
   const box = h('div', { class: 'cam' + (big ? ' big' : '') });
   if (p.online && p.camera_url) box.append(big ? live(p) : still(p, big));
-  else box.append(noImage(p.online ? 'No camera image' : 'Printer offline'));
+  else box.append(noImage(p.online ? 'No camera image' : p.online === null ? 'Connecting to the printer…' : 'Printer offline'));
   box.append(h('span', { class: 'badge' }, statusPill(p)));
   if (p.online && p.light != null) box.append(lightButton(p));
   if (p.task_name && isPrinting(p)) box.append(h('div', { class: 'name' }, p.task_name));
@@ -136,21 +165,45 @@ function filament(p, compact) {
   return p.ams?.length ? h('small', { class: 'muted ams-empty' }, 'AMS empty') : null;
 }
 
-// The printer reports the light a few seconds after a switch, so the answer stays on screen until then.
-const lights = new Map();
-const lightOn = (p) => { const l = lights.get(p.serial); return l && Date.now() < l.until ? l.on : p.light; };
+// The switch answers at once, like the vendor app: the wanted state shows on click and the command goes out behind it.
+// The printer reports the new state seconds later, so the wanted state stays until the report agrees or 30 s pass.
+// Commands to one printer go out in click order. A refused command puts the reported state back.
+const LIGHT_HOLD_MS = 30000;
+const lights = new Map();  // serial -> { on, until, busy, sent: Promise }
+const lightOn = (p) => {
+  const l = lights.get(p.serial);
+  if (l && Date.now() < l.until && l.on !== p.light) return l.on;
+  if (l && !l.busy) lights.delete(p.serial);
+  return p.light;
+};
+const showLight = (serial, on) => document.querySelectorAll(`.light-btn[data-serial="${CSS.escape(serial)}"]`).forEach((b) => {
+  b.setAttribute('aria-checked', String(!!on)); b.dataset.light = on ? 'on' : 'off';
+});
+function switchLight(p, b) {
+  const prev = lights.get(p.serial);
+  const on = b.getAttribute('aria-checked') !== 'true';  // what the person sees flips, also on a button drawn earlier
+  const l = { on, until: Date.now() + LIGHT_HOLD_MS, busy: true };
+  l.sent = (prev?.sent || Promise.resolve()).then(() => api.setLight(p.serial, on)).then(
+    () => {
+      l.busy = false; l.until = Date.now() + LIGHT_HOLD_MS;
+      // the bridge reuses a still for 30 s; ask for one taken after the switch, so the picture shows the light
+      for (const k of [p.serial, p.serial + ':big']) stills.get(k)?.fresh?.();
+    },
+    (err) => {
+      l.busy = false;
+      toast(err.message, 'error');
+      if (lights.get(p.serial) !== l) return;  // a later click already decides what shows
+      lights.delete(p.serial);
+      showLight(p.serial, p.light);
+    });
+  lights.set(p.serial, l);
+  showLight(p.serial, on);
+}
 function lightButton(p) {
-  const b = h('button', { class: 'light-btn', type: 'button', role: 'switch', 'aria-label': 'Chamber light', 'aria-checked': String(!!lightOn(p)),
-    title: 'Chamber light', disabled: p.role !== 'admin', 'data-light': lightOn(p) ? 'on' : 'off',
-    onclick: async (e) => {
-      e.preventDefault(); e.stopPropagation();  // the card around it is a link
-      const on = !lightOn(p);
-      b.disabled = true;
-      try { await api.setLight(p.serial, on); lights.set(p.serial, { on, until: Date.now() + 10000 }); b.setAttribute('aria-checked', String(on)); b.dataset.light = on ? 'on' : 'off'; }
-      catch (err) { toast(err.message, 'error'); }
-      b.disabled = false;
-    } }, icon('bulb', 18));
-  return b;
+  return h('button', { class: 'light-btn', type: 'button', role: 'switch', 'aria-label': 'Chamber light', 'aria-checked': String(!!lightOn(p)),
+    title: 'Chamber light', disabled: p.role !== 'admin', 'data-light': lightOn(p) ? 'on' : 'off', 'data-serial': p.serial,
+    onclick: (e) => { e.preventDefault(); e.stopPropagation(); switchLight(p, e.currentTarget); } },  // the card around it is a link
+    icon('bulb', 18));
 }
 
 function card(p) {
@@ -205,7 +258,7 @@ async function detail(ctx, root, serial) {
     clear(recent, historyCard(ctx, serial, hist));
     if (p) model.sync(p, hist);
   });
-  let camUrl = '', last = '';
+  let camUrl = '', camOnline, last = '';
   ctx.every(5000, async () => {
     let ps, queue;
     try { [ps, queue] = await Promise.all([api.printers(), api.queue()]); } catch (e) { if (!last) clear(body, empty(e.message)); return; }
@@ -215,9 +268,10 @@ async function detail(ctx, root, serial) {
     const sig = JSON.stringify([p, queue.jobs]);
     if (sig === last) return;
     last = sig;
-    if (p.camera_url !== camUrl || !p.online) { camUrl = p.camera_url; clear(camHost, camera(p, true)); }
+    if (p.camera_url !== camUrl || p.online !== camOnline || !p.online) { camUrl = p.camera_url; camOnline = p.online; clear(camHost, camera(p, true)); }
     const mine = queue.jobs.filter((j) => j.printer === serial || j.target === serial || (j.target === 'any' && j.model === p.model));
     draw(ctx, body, { camHost, model: model.box, recent }, p, mine, () => { last = ''; });
+    if (p.light != null) showLight(p.serial, lightOn(p));  // the camera's switch is drawn once, with the camera
   });
 }
 
@@ -268,7 +322,7 @@ function jobCard(p) {
   if (p.start) return h('section', { class: 'card' }, h('h2', null, 'Starting the print'), stepsView(p.start));
   if (!isPrinting(p)) {
     return h('section', { class: 'card' }, h('h2', null, 'Current job'),
-      p.online ? h('p', { class: 'muted' }, p.status === 'finish' ? 'The last print is finished. Clear the plate before starting the next one.' : 'Nothing is printing.') : h('p', { class: 'muted' }, 'The printer is offline.'));
+      p.online ? h('p', { class: 'muted' }, p.status === 'finish' ? 'The last print is finished. Clear the plate before starting the next one.' : 'Nothing is printing.') : h('p', { class: 'muted' }, p.online === null ? 'Connecting to the printer…' : 'The printer is offline.'));
   }
   return h('section', { class: 'card' }, h('h2', null, 'Current job'),
     h('div', { class: 'jobbox' },
@@ -369,7 +423,7 @@ function draw(ctx, body, { camHost, model, recent }, p, mine, refresh) {
     h('div', { class: 'cols' },
       h('div', { class: 'stack' }, camHost, jobCard(p), model, ctx.canManage(p.serial) && startNext(ctx, p, mine, refresh)),
       h('div', { class: 'stack' },
-        h('section', { class: 'card' }, h('h2', null, 'Temperatures'), p.online ? temps(p) : h('p', { class: 'muted' }, 'No data while offline.'),
+        h('section', { class: 'card' }, h('h2', null, 'Temperatures'), p.online ? temps(p) : h('p', { class: 'muted' }, p.online === null ? 'Connecting to the printer…' : 'No data while offline.'),
           p.nozzle && h('small', { class: 'muted', id: 'nozzle-installed', style: 'display:block;margin-top:8px' }, 'Installed nozzle: ' + nozzleName(p.nozzle)),
           p.online && p.light != null && h('div', { class: 'row between', style: 'margin-top:12px' }, h('span', null, 'Chamber light'), lightButton(p))),
         (p.ams?.length || p.external) && h('section', { class: 'card' }, h('h2', null, 'Filament'), filament(p)),

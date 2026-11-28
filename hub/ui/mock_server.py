@@ -24,6 +24,11 @@ HERE = os.path.dirname(os.path.abspath(__file__))
 sys.path.insert(0, os.path.dirname(HERE))
 import progress  # noqa: E402  the hub's own step logic, so the mock cannot drift from it
 PREFIX = "/api/hassio_ingress/MOCKTOKEN/"
+# The browser slices with the WebAssembly engine. The mock serves a built one (version.json, presets/, runtime) from MOCK_ENGINE
+# (see hub/slicer/engine/build.sh); without it New print cannot slice here.
+ENGINE = os.environ.get("MOCK_ENGINE", "")
+ENGINE_TYPES = {".wasm": "application/wasm", ".mjs": "text/javascript", ".js": "text/javascript", ".json": "application/json"}
+CUBE = open(os.path.join(os.path.dirname(HERE), "tests", "fixtures", "cube20.stl"), "rb").read()  # what a stored model reads back as
 LIVE_LOG = []  # start times of live camera streams
 NOW = time.time
 
@@ -70,8 +75,9 @@ PRINTERS = {
 }
 T0 = {H2S: NOW() - 58 * 60}
 # Test hooks the UI check switches: a printer whose camera answers 502, one whose AMS slots are all empty, what was sent.
-CAMERA_DOWN, EMPTY_AMS, MOCK_SLICES, MOCK_LIGHT = set(), set(), [], []
+CAMERA_DOWN, EMPTY_AMS, MOCK_SLICES, MOCK_LIGHT, LIGHT_LAG = set(), set(), [], [], [0]
 OFFLINE = set()  # test hook: these printers answer as offline
+CONNECTING = set()  # test hook: no status seen yet (online null)
 # AMS units with a dryer, per serial; a drying unit counts down from "until".
 DRYING = {H2S: {0: {"name": "AMS 2 Pro", "lo": 45, "hi": 65, "until": None, "filament": "", "temp": None},
                 128: {"name": "AMS HT", "lo": 45, "hi": 85, "until": None, "filament": "", "temp": None}}}
@@ -390,6 +396,10 @@ def printer_out(ident, p):
     p["account"] = "acc1"
     if s in OFFLINE:
         p["online"], p["status"] = False, "offline"
+    if s in CONNECTING:
+        p.update(online=None, status="connecting", stage=None, progress=None, remaining_min=None, task_name=None, layer=None,
+                 total_layers=None, nozzle_temp=None, nozzle_target=None, bed_temp=None, bed_target=None, chamber_temp=None,
+                 active_tray=None, ams=[], external=None, hms=[], light=None)
     if s in EMPTY_AMS:
         for u in p["ams"]:
             u["trays"] = [tray(t["slot"], "", "", "", -1) for t in u["trays"]]
@@ -507,6 +517,8 @@ def make_job_state(sl):
     if el < 3.0:
         return {"state": "slicing", "elapsed": int(el), "progress": {"percent": int(el / 3 * 100), "message": "Generating infill"}}
     sec, g, proc = QUALITY[sl["quality"]]
+    if "seconds" in sl:
+        sec, g = sl["seconds"], sl["grams"]
     return {"state": "done", "quality": sl["quality"], "info": {"seconds": sec, "grams": g, "warnings": [], "has_png": True, "filaments": []},
             "settings": {"process": proc + " @BBL", "tray": sl["tray"], "bed": sl["bed"]}}
 
@@ -598,6 +610,13 @@ class H(BaseHTTPRequestHandler):
             proc.kill()
 
     def static(self, rel, extra):
+        if rel.startswith("engine/") and ENGINE:
+            root = os.path.realpath(ENGINE)
+            f = os.path.realpath(os.path.join(root, rel[7:]))
+            if not f.startswith(root + os.sep) or not os.path.isfile(f):
+                return self.send(404, {"error": "not found"})
+            with open(f, "rb") as fh:
+                return self.send(200, fh.read(), ENGINE_TYPES.get(os.path.splitext(f)[1], "application/octet-stream"), extra)
         f = os.path.normpath(os.path.join(HERE, rel))
         if not f.startswith(HERE + os.sep) or f.endswith(".py") or not os.path.isfile(f):
             return self.send(404, {"error": "not found"})
@@ -624,8 +643,8 @@ class H(BaseHTTPRequestHandler):
             return ok([printer_out(ident, PRINTERS[s]) for s in visible(ident)])
         if path == "api/_mock/queued":
             return ok(MOCK_QUEUED)
-        if path == "api/_mock/hook":  # ?set=camera_down|empty_ams|offline&serial=..&on=1|0
-            target = {"camera_down": CAMERA_DOWN, "empty_ams": EMPTY_AMS, "offline": OFFLINE}[q["set"][0]]
+        if path == "api/_mock/hook":  # ?set=camera_down|empty_ams|offline|connecting&serial=..&on=1|0
+            target = {"camera_down": CAMERA_DOWN, "empty_ams": EMPTY_AMS, "offline": OFFLINE, "connecting": CONNECTING}[q["set"][0]]
             (target.add if (q.get("on") or ["1"])[0] == "1" else target.discard)(q["serial"][0])
             return ok({})
         if path == "api/_mock/start":  # ?serial=..&mode=sending|download|prepare|off&percent=..&stage=..
@@ -637,7 +656,9 @@ class H(BaseHTTPRequestHandler):
             return ok({})
         if path == "api/_mock/slices":
             return ok(MOCK_SLICES)
-        if path == "api/_mock/light":
+        if path == "api/_mock/light":  # ?lag=s delays the reported state
+            if q.get("lag"):
+                LIGHT_LAG[0] = float(q["lag"][0])
             return ok(MOCK_LIGHT)
         r = re.fullmatch(r"api/printers/([^/]+)/light", path)
         if r and m == "POST":
@@ -646,8 +667,11 @@ class H(BaseHTTPRequestHandler):
                 raise Err(404, "no such printer")
             if not admin:
                 raise Err(403, "rule: only an admin of the printer can switch its light")
-            PRINTERS[r.group(1)]["light"] = b["on"]
             MOCK_LIGHT.append({"serial": r.group(1), "on": b["on"]})
+            if LIGHT_LAG[0]:  # like the printer: its report has the new state some seconds after the command
+                threading.Timer(LIGHT_LAG[0], lambda pr=PRINTERS[r.group(1)], on=b["on"]: pr.update(light=on)).start()
+            else:
+                PRINTERS[r.group(1)]["light"] = b["on"]
             return ok({"on": b["on"]})
         r = re.fullmatch(r"api/printers/([^/]+)/(camera|cover)", path)
         if r:
@@ -710,18 +734,26 @@ class H(BaseHTTPRequestHandler):
         if r and m == "POST":
             return ok(job_action(ident, r.group(1), r.group(2), J()))
         # slicing
+        if path == "api/engine/filament":  # the first PLA of the printer's presets stands in for the real tray matching
+            printer = PRINTERS.get((q.get("serial") or [""])[0])
+            if not printer or not ENGINE:
+                raise Err(404, "no engine")
+            with open(os.path.join(ENGINE, "presets", printer["model"] + ".json")) as fh:
+                names = [f["name"] for f in json.load(fh)["filaments"]]
+            return ok({"filament": next(n for n in names if n.startswith("Bambu PLA Basic"))})
         if path == "api/jobs" and m == "POST":
             name = (q.get("name") or [""])[0]
             if not re.search(r"\.(stl|3mf|step|stp|obj)$", name, re.I):
                 raise Err(400, "Upload an .stl, .3mf, .obj or .step file.")
             jid = secrets.token_hex(6)
-            SLICES[jid] = {"id": jid, "filename": name, "state": "uploaded"}
+            SLICES[jid] = {"id": jid, "filename": name, "state": "uploaded", "model": bytearray(raw)}
             return ok({"id": jid, "filename": name, "state": "uploaded"})
         r = re.fullmatch(r"api/jobs/([0-9a-f]{12})(?:/(\w+)(?:\.(\w+))?)?", path)
         if r and r.group(1) in SLICES:
             sl, what = SLICES[r.group(1)], r.group(2)
+            shown = lambda: {**{k: v for k, v in sl.items() if k not in ("model", "gcode", "gcode_text")}, **make_job_state(sl)}
             if what is None and m == "GET":
-                return ok({**sl, **make_job_state(sl)})
+                return ok(shown())
             if what == "slice" and m == "POST":
                 b = J()
                 if b.get("quality") not in QUALITY:
@@ -729,8 +761,19 @@ class H(BaseHTTPRequestHandler):
                 MOCK_SLICES.append(b)
                 sl.update(sliced_at=NOW(), quality=b["quality"], tray=b.get("tray"), bed=b.get("bed"), serial=b.get("serial"))
                 return (202, {**sl, "state": "queued"}, "application/json")
+            if what == "model" and m == "POST":  # a later part of the model
+                sl["model"] += raw
+                return ok({"id": sl["id"], "filename": sl["filename"], "state": "uploaded"})
             if what == "model" and m == "GET":
-                return (200, b"solid x\nendsolid x\n", "application/octet-stream")
+                return (200, bytes(sl.get("model") or CUBE), "application/octet-stream")
+            if what == "gcode" and m == "POST":  # the browser's slice: the G-code is dropped, the numbers are kept
+                sl.setdefault("gcode", bytearray()).extend(raw)
+                if len(sl["gcode"]) >= int((q.get("total") or [len(raw)])[0]):
+                    a = {k: v[0] for k, v in q.items()}
+                    sl.update(sliced_at=NOW() - 10, quality=a["quality"], tray=a.get("tray"), bed=a.get("bed"), serial=a.get("serial"),
+                              seconds=int(float(a.get("seconds", 0))), grams=float(a.get("grams", 0)), gcode_text=bytes(sl["gcode"]).decode("utf8", "replace"))
+                    MOCK_SLICES.append({k: v for k, v in a.items() if k not in ("seconds", "grams", "metres", "slice_s", "engine", "filament", "offset", "total")})
+                return ok(shown())
             if what == "plate" and r.group(3) == "png":
                 return svg(plate_svg(sl["id"] + sl.get("quality", "")))
             if what == "plate" and r.group(3) == "gcode":

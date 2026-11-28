@@ -23,7 +23,9 @@ HERE = os.path.dirname(os.path.abspath(__file__))
 PREFIX = "/api/hassio_ingress/MOCKTOKEN/"
 sys.path.insert(0, HERE)
 import ingress_proxy  # noqa: E402
-MODEL = {"name": "demo_part.stl", "mimeType": "model/stl", "buffer": b"solid x\nendsolid x\n"}
+CUBE = open(os.path.join(HERE, "..", "tests", "fixtures", "cube20.stl"), "rb").read()  # a real STL: New print parses it when it is added
+MODEL = {"name": "demo_part.stl", "mimeType": "model/stl", "buffer": CUBE}
+HAS_ENGINE = bool(os.environ.get("MOCK_ENGINE"))  # a built WebAssembly engine for the mock; without it nothing can be sliced here
 SLICE_TIMEOUT = 15000
 MOCKED = True  # False against a real hub (--base-url): no mock hooks, other spool names
 ONLY = None
@@ -363,12 +365,12 @@ def check_history_spans(page):
 
 def check_reslice_lands(page):
     # New print opens with what the old print had: model, name, target, filament (AMS 1·1), build plate
-    page.wait_for_selector(".drop b:has-text('cable_clip_set.stl')", timeout=8000)
+    page.wait_for_selector(".pobj[data-name='cable_clip_set.stl']", timeout=8000)
     assert page.locator(".chip[aria-pressed=true]", has_text="AMS 1·1").count() == 1, "the old filament is preselected"
     assert page.locator(".chip[aria-pressed=true]", has_text="Workshop H2S").count() == 1, "the old printer is preselected"
     assert page.locator("select option:checked", has_text="Textured PEI Plate").count() >= 1
     page.get_by_role("button", name="Slice good, better and best").click()
-    if MOCKED:  # the mock's slice takes 3 s and reports a percent
+    if MOCKED and not HAS_ENGINE:  # the mock's fake slice takes 3 s and reports a percent; the real engine is too quick for that
         must(page, ".variant .slice-progress:not([data-percent=''])", "a slice in progress shows its percent", 4000)
         assert re.search(r"Slicing… \d+% · Generating infill", page.locator(".variant .slice-progress").first.text_content())
     page.wait_for_selector(".variant[aria-pressed=true]", timeout=SLICE_TIMEOUT)
@@ -686,6 +688,26 @@ def check_back_online(page, base, ident):
         hook(0)
 
 
+def check_connecting(page, base, ident, shot=None):
+    """No status seen yet (online null): a neutral Connecting badge and text, the same layout, never "offline"."""
+    hook = lambda on: page.evaluate(f"fetch('{PREFIX}api/_mock/hook?set=connecting&serial={H2S}&on={on}')")
+    page.goto(base + PREFIX + "#/printers/" + H2S)
+    page.wait_for_selector(".cam.big")
+    try:
+        hook(1)
+        page.wait_for_selector(".cam.big .off:has-text('Connecting to the printer')", timeout=12000)
+        assert page.locator(".page-head .pill.warn", has_text="Connecting").count() == 1, "Connecting badge"
+        body = page.inner_text("body")
+        assert "ffline" not in body, "connecting must not say offline"
+        assert page.locator("section.card p.muted", has_text="Connecting to the printer").count() == 2, "job and temperature cards"
+        if shot:
+            shot("detail-connecting")
+        hook(0)
+        page.wait_for_function("!document.body.textContent.includes('Connecting to the printer')", timeout=12000)
+    finally:
+        hook(0)
+
+
 def check_live_video(page, go, shot):
     """The printer page plays the H.264 printer's live stream (the mock sends real MPEG-TS) and the video advances."""
     go("#/printers/" + H2S, ".cam.big")
@@ -697,13 +719,31 @@ def check_live_video(page, go, shot):
     shot("printer-live-video")
 
 
+def check_layout_stable(page, go):
+    """The top bar keeps one row and the page never scrolls sideways while the window narrows; empty AMS slots line up with loaded ones."""
+    go("#/printers", ".pcard .tray")
+    ys = page.evaluate("[...document.querySelectorAll('.pcard .trays.flat .tray')].map((t) => Math.round(t.querySelector('.ty').getBoundingClientRect().top - t.getBoundingClientRect().top))")
+    assert len(set(ys)) == 1, f"tray labels sit at different heights: {ys}"
+    if page.viewport_size["width"] < 721:
+        return  # a bottom bar there
+    heights, size = {}, page.viewport_size
+    for w in (1256, 1100, 1000, 934, 860, 800, 740, 721):
+        page.set_viewport_size({"width": w, "height": page.viewport_size["height"]})
+        heights[w] = page.evaluate("[document.querySelector('.topbar').getBoundingClientRect().height, document.documentElement.scrollWidth - innerWidth, new Set([...document.querySelectorAll('.tabs a')].map((a) => Math.round(a.getBoundingClientRect().height))).size]")
+        assert heights[w][1] <= 0 and heights[w][2] == 1, f"top bar overflows or wraps at {w}px: {heights[w]}"
+    page.set_viewport_size(size)
+    assert max(v[0] for v in heights.values()) - min(v[0] for v in heights.values()) <= 3, f"top bar height jumps: {heights}"
+
+
 def check_printer_card(page, base, ident, go, shot):
     """A printer whose camera fails and whose AMS slots are all empty: a placeholder, no broken image, no tray row;
     the chamber light switch sends the command and shows the state."""
     ALLOW_502.append("/camera")
     hook(page, "camera_down", P1S, 1)
     hook(page, "empty_ams", P1S, 1)
-    page.goto(f"{base}/?as={ident}")  # a fresh page: no earlier camera frame is kept
+    page.goto(f"{base}/?as={ident}")
+    page.evaluate("Object.keys(localStorage).filter((k) => k.startsWith('dw1:frame:')).forEach((k) => localStorage.removeItem(k))")
+    page.goto(f"{base}/?as={ident}")  # a fresh page with no cached camera frame
     go("#/printers", ".pcard")
     must(page, ".pcard:has-text('Office P1S') .off:has-text('No camera image')", "a failing camera shows a placeholder")
     assert page.evaluate(BROKEN) == [], "broken images on the printer grid: %s" % page.evaluate(BROKEN)
@@ -738,6 +778,46 @@ def check_printer_card(page, base, ident, go, shot):
     page.goto(f"{base}/?as={ident}")
 
 
+def check_light_instant(page, base, ident):
+    """The chamber light switch flips on click, while the command takes 3 s and the printer reports the state 6 s later;
+    it does not flip back in between. Both switches of the printer page show the same state."""
+    page.goto(f"{base}/?as={ident}#/printers/{H2S}")
+    page.wait_for_selector("section.card .light-btn")
+    page.evaluate("fetch('api/_mock/light?lag=6').then((r) => r.text())")
+    page.evaluate("fetch('api/_mock/slow?path=/light&s=3').then((r) => r.text())")
+    states = "[...document.querySelectorAll('.light-btn')].map((b) => b.getAttribute('aria-checked'))"
+    before = page.evaluate(states)
+    assert len(before) == 2 and len(set(before)) == 1, "two switches with one state: %s" % before
+    want = "false" if before[0] == "true" else "true"
+    ms = page.evaluate("""([sel, want]) => new Promise((done) => {
+        const t0 = performance.now();
+        document.querySelector(sel).click();
+        const look = () => {  // by selector: a poll may draw the card again
+            const ms = performance.now() - t0;
+            if (document.querySelector(sel)?.getAttribute('aria-checked') === want || ms > 15000) done(ms); else requestAnimationFrame(look);
+        };
+        look();
+    })""", ["section.card .light-btn", want])
+    print("light: switch shows the new state %.0f ms after the click" % ms)
+    assert ms < 150, "the switch took %.0f ms to show the new state" % ms
+    assert page.evaluate(states) == [want, want], "both switches show the new state: %s" % page.evaluate(states)
+    seen = set()
+    for _ in range(40):  # 10 s: the command answer (3 s), polls every 5 s, the report (6 s)
+        page.wait_for_timeout(250)
+        seen.update(page.evaluate(states))
+    assert seen == {want}, "the switch flipped back before the printer reported: %s" % seen
+    page.evaluate("fetch('api/_mock/slow').then((r) => r.text())")
+    page.evaluate("fetch('api/_mock/light?lag=0').then((r) => r.text())")
+    # a printer card shows stills, which the bridge reuses for 30 s: after the command it asks for one taken after it
+    page.evaluate("location.hash = '#/printers'")
+    page.wait_for_selector(".pcard .light-btn")
+    fresh = []
+    page.on("request", lambda r: "fresh=1" in r.url and "/camera" in r.url and fresh.append(r.url))
+    page.locator(".pcard", has_text="Workshop H2S").get_by_role("switch", name="Chamber light").click()
+    page.wait_for_timeout(1500)
+    assert fresh, "after the light command the card asks for a camera picture taken after it (fresh=1)"
+
+
 def check_library_pick(page, go, shot):
     """New print for a printer with an empty AMS: the library is the list, and the chosen spool goes to the slicer."""
     hook(page, "empty_ams", P1S, 1)
@@ -761,6 +841,45 @@ def check_library_pick(page, go, shot):
     want = {"type": "PLA", "brand": "Bambu Lab", "name": "PLA Matte Charcoal", "colour": "2E2E2E", "spool": "5004"}
     assert len(sent) == 3 and all({k: b.get(k) for k in want} == want and "tray" not in b for b in sent), "the slice request names the spool: %s" % sent
     hook(page, "empty_ams", P1S, 0)
+
+
+def check_plate(page, go, shot):
+    """Several models on one plate, settings per selected object, only the chosen variant is sliced."""
+    go("#/new", ".drop")
+    page.set_input_files("input[type=file]", files=[{**MODEL, "name": "a.stl"}, {**MODEL, "name": "b.stl"}])
+    page.wait_for_function("document.querySelectorAll('.pobj[data-id]').length === 2", timeout=8000)
+    page.wait_for_selector('#plate3d[data-ready="1"]', timeout=15000)
+    assert page.locator("#plate3d").get_attribute("data-objects") == "2", "both models are in the preview"
+    page.get_by_role("button", name="Workshop H2S").click()
+    page.locator(".chip", has_text="AMS 1·1").click()
+    page.wait_for_selector("#object-settings .orow", state="attached", timeout=60000)
+    page.locator("#object-settings summary").click()
+    page.locator(".pobj[data-name='a.stl']").click()
+    assert page.locator(".pobj[data-selected=true]").count() == 1 and page.locator("#os-target").text_content() == "a.stl"
+    page.locator("#os-wall_loops").fill("5")
+    page.locator("#os-wall_loops").dispatch_event("change")
+    page.wait_for_selector(".pobj[data-name='a.stl'][data-changed='1']", timeout=8000)
+    assert page.locator(".pobj[data-name='b.stl']").get_attribute("data-changed") == "0", "the other model keeps its preset"
+    assert '"wall_loops":"5"' in page.locator(".pobj[data-name='a.stl']").get_attribute("data-config")
+    page.locator(".pobj[data-name='b.stl']").click(modifiers=["Shift"])
+    assert page.locator("#os-target").text_content() == "a.stl and 1 more" and page.locator("[data-row=wall_loops] .varies").count() == 1, "a mixed selection says varies"
+    assert page.locator("#paint-open").is_disabled(), "paint needs a single selection"
+    page.get_by_role("button", name="Select none").click()
+    assert "Nothing selected" in page.locator("#object-settings").text_content()
+    shot("new-print-plate")
+    page.locator("#variant-chips [data-q=good]").click()
+    page.locator("#variant-chips [data-q=best]").click()
+    assert page.locator("#variant-chips [data-q=better]").get_attribute("aria-pressed") == "true"
+    page.locator("#variant-chips [data-q=better]").click()  # the last one stays on
+    assert page.locator("#variant-chips [data-q=better]").get_attribute("aria-pressed") == "true"
+    before = len(page.evaluate("fetch('api/_mock/slices').then((r) => r.json())"))
+    page.get_by_role("button", name="Slice Better").click()
+    page.wait_for_selector(".variant[aria-pressed=true]", timeout=SLICE_TIMEOUT * 8)
+    sent = page.evaluate("fetch('api/_mock/slices').then((r) => r.json())")[before:]
+    assert page.locator(".variant").count() == 1 and [b["quality"] for b in sent] == ["better"], "one variant is sliced: %s" % sent
+    shot("new-print-plate-sliced")
+    page.evaluate("localStorage.removeItem('dw-variants')")  # the walks after this one slice all three
+    go("#/queue", ".job")  # leave the page, so that the next New print starts fresh
 
 
 def walk(page, ident, base, shot, inject):
@@ -822,6 +941,10 @@ def walk(page, ident, base, shot, inject):
     if ONLY == "printerhistory":
         check_printer_history(page, base, ident)
         return
+    if ONLY == "light":
+        if ident == "admin":
+            check_light_instant(page, base, ident)
+        return
     if ONLY == "offline":
         check_back_online(page, base, ident)
         return
@@ -845,8 +968,10 @@ def walk(page, ident, base, shot, inject):
         assert page.locator("section.card h2", has_text="Start next").count() == 0, "empty queue: no start card"
         shot("printer-offline-hms")
     if MOCKED:
+        check_layout_stable(page, go)
         check_printer_card(page, base, ident, go, shot)
         check_back_online(page, base, ident)
+        check_connecting(page, base, ident, shot)
         check_start_steps(page, base, ident, go, shot)
         check_live_video(page, go, shot)
     go("#/queue", ".job")
@@ -866,6 +991,8 @@ def walk(page, ident, base, shot, inject):
             check_inside_ha_panel(page, base, ident)
         check_nozzle(page, base, go, shot, ident)
         go("#/queue", ".job")
+    if MOCKED and HAS_ENGINE:
+        check_plate(page, go, shot)
     # new print: upload, pick printer + tray, slice 3 variants, pick
     go("#/new", ".drop")
     page.set_input_files("input[type=file]", files=[MODEL])
@@ -922,7 +1049,8 @@ def walk(page, ident, base, shot, inject):
 def main():
     ap = argparse.ArgumentParser()
     ap.add_argument("--shots")
-    ap.add_argument("--only", choices=["cache", "reslice", "panel", "download", "preview", "printerhistory", "offline"], help="run one check only")
+    ap.add_argument("--scale", type=float, default=1, help="deviceScaleFactor of the screenshots")
+    ap.add_argument("--only", choices=["cache", "reslice", "panel", "download", "preview", "printerhistory", "offline", "light"], help="run one check only")
     ap.add_argument("--port", type=int, default=18099, help="port of the mock server")
     ap.add_argument("--inject-absolute", action="store_true")
     ap.add_argument("--base-url")
@@ -955,7 +1083,7 @@ def main():
             br = p.chromium.launch(args=["--use-angle=swiftshader", "--enable-unsafe-swiftshader", "--ignore-gpu-blocklist"])  # software WebGL for the 3D preview
             for ident in a.idents.split(","):
                 for sz, (w, h) in SIZES.items():
-                    ctx = br.new_context(viewport={"width": w, "height": h}, is_mobile=w < 500, has_touch=w < 500)
+                    ctx = br.new_context(viewport={"width": w, "height": h}, device_scale_factor=a.scale, is_mobile=w < 500, has_touch=w < 500)
                     page = ctx.new_page()
                     where = f"{ident}@{sz}"
                     page.on("console", lambda m, wh=where: m.type == "error" and not (ALLOW_502 and "status of 502" in m.text) and problems.append(f"console error [{wh}]: {m.text}"))

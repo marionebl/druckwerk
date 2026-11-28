@@ -22,6 +22,7 @@ import shutil
 import socket
 import subprocess
 import sys
+import tempfile
 import threading
 import time
 import tomllib
@@ -765,12 +766,13 @@ def fetch_camera(acc, serial, kind, qs):
     return status, raw, ctype
 
 
-def snapshot(h, acc, serial, qs):
+def snapshot(h, acc, serial, qs, fresh=False):
+    """fresh: only a picture taken after this request came in (after a light switch, say), not the cached one."""
     snap = snaps.setdefault(serial, Snap())
-    seen = snap.runs
+    seen, asked = snap.runs, time.time()
     with snap.lock:
         now = time.time()
-        if snap.jpeg and now - snap.at < SNAPSHOT_CACHE:
+        if snap.jpeg and (snap.at >= asked if fresh else now - snap.at < SNAPSHOT_CACHE):
             return h.send(200, snap.jpeg, "image/jpeg", {"X-Snapshot-Age": "%.1f" % (now - snap.at)})
         if snap.runs != seen and snap.failure:
             return h.send(*snap.failure)  # the request we waited for failed: do not ask the daemon again at once
@@ -792,15 +794,16 @@ def camera(h, kind, serial):
             live = lives.get(serial)
         # While a live upstream is open the bridge answers 409 busy to a snapshot, so never ask it.
         if live and live.ready.wait(90) and not live.error and not live.closed:
-            jpeg = live.frame_jpeg()
+            jpeg = live.frame_jpeg(newest=parse_qs(urlsplit(h.path).query).get("fresh", [""])[0] == "1")
             if jpeg:
                 return h.send(200, jpeg, "image/jpeg", {"X-Snapshot-Age": "0.0"})
             return h.send(502, {"error": "could not decode keyframe", "stage": "decode"})
     # The printer's ipcam does not always say which remote transport it uses, so callers can force one.
-    proto = parse_qs(urlsplit(h.path).query).get("protocols", [""])[0]
+    query = parse_qs(urlsplit(h.path).query)
+    proto = query.get("protocols", [""])[0]
     qs = "?protocols=" + proto if re.fullmatch(r"[a-z,]{1,40}", proto) else ""
     if kind == "snapshot":
-        return snapshot(h, acc, serial, qs)
+        return snapshot(h, acc, serial, qs, fresh=query.get("fresh", [""])[0] == "1")
     h.send(*fetch_camera(acc, serial, kind, qs))
 
 
@@ -815,6 +818,19 @@ def ffmpeg_jpeg(args, data):
     out = subprocess.run(["ffmpeg", "-loglevel", "error"] + args + ["-i", "-", "-frames:v", "1", "-f", "image2", "-c:v", "mjpeg", "-"],
                          input=data, capture_output=True, timeout=60)
     return out.stdout if out.stdout and not out.returncode else None
+
+
+def nal_types(raw, most=40):
+    """NAL unit types in an Annex-B H.264 stream, run-length coded: "7 8 5 1x14 ..." (5 IDR, 1 other slice, 6 SEI, 7 SPS, 8 PPS)."""
+    out, i = [], raw.find(b"\x00\x00\x01")
+    while i >= 0 and i + 3 < len(raw) and len(out) < most:
+        t = raw[i + 3] & 0x1F
+        if out and out[-1][0] == t:
+            out[-1][1] += 1
+        else:
+            out.append([t, 1])
+        i = raw.find(b"\x00\x00\x01", i + 3)
+    return " ".join(str(t) if c == 1 else "%dx%d" % (t, c) for t, c in out) or "none"
 
 
 class Live:
@@ -835,6 +851,8 @@ class Live:
         self.sock = self.proc = None
         self.t0, self.first, self.last_read = time.time(), None, None  # timing for the log line at close
         self.stalls, self.longest, self.bytes = 0, 0.0, 0
+        self.marks = {}  # name -> seconds since t0, for the first-frame log line
+        self.head = b""  # the first upstream bytes, to log which NAL units came before the first keyframe
         threading.Thread(target=self.run, daemon=True).start()
 
     # -- upstream --
@@ -857,6 +875,7 @@ class Live:
             self.sock = conn.sock  # http.client drops its own handle once the response starts
             conn.request("GET", "/camera/%s/live%s" % (self.serial, self.qs))
             resp = conn.getresponse()
+            self.mark("headers")
             self.ctype = resp.getheader("Content-Type", "")
             if resp.status != 200:
                 self.error = (resp.status, resp.read(), self.ctype)
@@ -895,6 +914,8 @@ class Live:
                 if not data:
                     break
                 self.got(len(data))
+                if len(self.head) < 262144 and self.first is None:
+                    self.head += data
                 self.proc.stdin.write(data)
                 self.proc.stdin.flush()
         except (BrokenPipeError, ValueError):
@@ -912,6 +933,7 @@ class Live:
             data = os.read(fd, 65536)
             if not data:
                 return self.close()
+            self.mark("ts")
             data = rest + data
             n = len(data) // TS_PACKET * TS_PACKET
             chunk, rest = data[:n], data[n:]
@@ -959,7 +981,11 @@ class Live:
                 self.broadcast(head + body + tail)
             self.mark_ready()
 
+    def mark(self, name):
+        self.marks.setdefault(name, time.time() - self.t0)
+
     def got(self, n):
+        self.mark("data")
         now = time.time()
         if self.first is not None and now - self.last_read > LIVE_STALL:
             self.stalls += 1
@@ -969,7 +995,9 @@ class Live:
     def mark_ready(self):
         if self.first is None:
             self.first = time.time() - self.t0
-            log("live %s: first frame after %.1fs" % (self.serial, self.first))
+            log("live %s: first frame after %.1fs (%s; NAL types before it: %s)" % (
+                self.serial, self.first, ", ".join("%s %.1fs" % kv for kv in self.marks.items()), nal_types(self.head)))
+            self.head = b""
         self.ready.set()
 
     def broadcast(self, data):
@@ -1048,15 +1076,27 @@ class Live:
 
     # -- snapshot --
 
-    def frame_jpeg(self):
-        """The newest frame as JPEG (H.264: the last keyframe, whatever its age); None if there is none or it did not decode."""
+    def frame_jpeg(self, newest=False):
+        """The newest frame as JPEG (H.264: the last keyframe, whatever its age; newest: the last frame, which decodes
+        everything since that keyframe); None if there is none or it did not decode."""
         with self.lock:
             if self.closed:
                 return None
             jpeg, data = self.jpeg, b"".join(list(self.psi.values()) + self.gop)
         if jpeg is not None:
             return jpeg
-        return ffmpeg_jpeg(["-f", "mpegts"], data) if data else None
+        if not data:
+            return None
+        if not newest:
+            return ffmpeg_jpeg(["-f", "mpegts"], data)
+        with tempfile.TemporaryDirectory() as d:  # -update 1 overwrites the file with each frame: the last one stays
+            out = os.path.join(d, "last.jpg")
+            r = subprocess.run(["ffmpeg", "-loglevel", "error", "-f", "mpegts", "-i", "-", "-update", "1", "-c:v", "mjpeg", out],
+                               input=data, capture_output=True, timeout=60)
+            if r.returncode or not os.path.exists(out):
+                return None
+            with open(out, "rb") as f:
+                return f.read()
 
 
 lives = {}  # serial -> Live

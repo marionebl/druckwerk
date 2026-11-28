@@ -1,6 +1,6 @@
 # Changelog
 
-## 3.11.0 (unreleased)
+## 3.18.0 (unreleased)
 
 - Nozzle library. Each printer has a list of the nozzles its owner has (0.2, 0.4, 0.6 or 0.8 mm, with a type such as hardened steel), edited in Setup. The single "Nozzle" choice of the printer form is gone: an old value becomes the first entry of the library at the first start. `PUT /api/setup/printers/{serial}` takes `nozzles: [{diameter, type?}]` instead of `nozzle`.
 - The installed nozzle is read live from Home Assistant (`sensor.<prefix>_nozzle_size` and `sensor.<prefix>_nozzle_type` of the vendor integration) and never stored. `GET /api/printers` has `nozzle` (the installed one, `null` when unknown) and `nozzles` (the library plus the installed nozzle if it is not in it). The printer card shows the diameter after "Nozzle X° · Bed Y°", the printer page the diameter and type.
@@ -9,8 +9,50 @@
 - Ask the owner to change the nozzle: `POST /api/printers/<serial>/nozzle-request`, `GET /api/nozzle-requests`, `DELETE /api/nozzle-requests/<id>`. New print offers "Ask owner to change nozzle" when a nozzle that is not installed is picked, then shows "change requested". One open request per printer, diameter and type. It closes when the installed nozzle matches. The owner gets a notification and the bus event `druckwerk_nozzle_requested`; the Filament tab lists open requests.
 - Gap: the direct print `POST /api/jobs/<id>/print` does not check the nozzle (the web UI does not use it).
 
+## 3.17.0 (unreleased)
+
+- The chamber light switch answers at once. It shows the new state on click and sends the command behind it, like the vendor app. Before, the switch was disabled until the command came back (0.7 to 0.9 s on the H2S through Home Assistant, more through ingress), and a poll that drew the card again in that time showed the old state until the next poll (up to 5 s more).
+- The new state stays on screen until the printer reports it, or 30 s pass. Before, it stayed 10 s, then the switch could show the old state again until the printer's report arrived.
+- A refused command puts the reported state back and shows the error. Commands to one printer go out in click order.
+- On the printer page, the switch on the camera now follows the printer's state too. Before, it was drawn once with the camera and kept the state from that moment.
+- After a light switch, the camera picture shows the change sooner. The page asks for a picture taken after the command (`fresh=1` on the camera snapshot), and the bridge skips its 30 s snapshot cache for it. Before, a printer card could show the old light for 30 to 40 s. While a live stream is open, a fresh snapshot is the newest frame (the bridge decodes from the last keyframe on). Before, it was the last keyframe, whatever its age. Without a live stream, a fresh picture takes one camera mint plus a keyframe (about 3 to 10 s on the H2S).
+
+## 3.16.0 (unreleased)
+
+- Fix: the printer page said "Printer offline" when the printer was fine. "Offline" now needs evidence: the bridge's cloud flag must say offline in every reading for 60 s (one reading changes nothing), or the status itself says offline, or the last status is older than 10 min. Otherwise the page keeps the last known status.
+- The last good status of each printer is kept in `/data/status_cache.json` (written at most every 30 s) and read at start, so a restart of the app or of the bridge no longer blanks the page. It shows the old status as stale, with its real age.
+- `GET /api/printers`: `online` is `null` with `status: "connecting"` while no status was ever seen and nothing says offline (first start). The page shows "Connecting" and "Connecting to the printer…". Clients must treat `null` as unknown, not as offline.
+- Fix: a printer page that showed "Printer offline" kept showing it after the printer came back, when the camera URL had not changed.
+
+## 3.15.0 (unreleased)
+
+- Bridge log: the first-frame line of a live stream also says when the daemon answered, when the first bytes and the first MPEG-TS came, and which H.264 NAL unit types came before the first keyframe. On the H2S the first frame comes about 10 s after the play loop starts, while a snapshot gets its keyframe in about 1.5 s; this line shows where the time goes.
+
+## 3.14.0 (unreleased)
+
+- Pages show cached data at once after a reload. The identity (`api/me`) and the Access lists (grants, Home Assistant users and entities) are cached in the browser too, so the shell and the lists no longer wait for the network. The cached shape (printer cards, filament slots, list rows) stays on screen, so the page does not jump when the answer arrives.
+- While a cached list is still being checked, buttons in the view are dimmed and cannot be clicked (links still work), so nobody decides on old data. The filament view shows cached data as is. Queue and History show a small "Checking for newer items…" pill over the top of the list. It takes no layout space.
+- The last camera frame of each printer is kept in the browser (640 px wide) and shows at once with an "n s ago" label until a live frame loads.
+- A thin loading bar at the top of the page appears when a request takes 3 s or more.
+- Without usable browser storage the UI behaves as before.
+
+## 3.12.0 (unreleased)
+
+- New print has a plate. Step 1 takes several STL files at once (file picker or drop) and puts them on one plate that is sliced as one print. Each model is turned to lie well (auto-orient, on by default, switch it off with "Auto-orient new models") and the plate is arranged with 6 mm between models. A 3D preview shows the bed outline (from the printer's machine preset, 256 x 256 mm until a printer is chosen, and its keep-out area) and every model. Drag to turn the view, wheel or pinch to zoom. The buttons "Auto-orient", "Original orientation", "Arrange" and "Select all" change the plate. A model that is bigger than the bed, or has no room left, is marked "Does not fit the bed" and blocks slicing. A new printer model arranges the plate again on its bed.
+- Auto-orient follows OrcaSlicer's Orient.cpp in short: the big face directions (and the six axes) are tried as "down", and the one with the least overhang, the lowest height and the largest contact wins. A cube tilted by 30 or 40 degrees comes back flat, a pyramid or cone stands on its base, a mushroom goes cap down, and a model that already lies well stays as it is. It takes about 0.2 s for 300,000 triangles.
+- Object settings now work on a selection, as in Bambu Studio. Click a model in the preview or the list (Shift, Ctrl or Cmd for several). The settings card names the selection, shows the values of the first selected model and writes each change to every selected model. A setting where they differ is marked "varies". "Reset all" resets the selected models. Paint works on one selected model. The list shows how many settings each model has changed.
+- You choose the variants to slice: Good, Better and Best are chips in the slice card (at least one stays on, all three at first). The choice is remembered in this browser (`dw-variants`). The button says what it will do ("Slice Better", "Slice Good and Best"), and Compare shows only the sliced ones.
+- The engine's error for two models whose paths cross (-101) is shown in plain words on the variant.
+- The server still stores one model file per job. For history, queue and Reslice the page uploads the whole plate as one binary STL named after the first model ("a.stl" or "a + 2 more.stl").
+- Nothing in the New print layout moves while models, presets or the engine load: the 3D preview and the rows have fixed sizes and placeholders.
+- Gap: Reslice brings the plate back as one merged model, without the separate settings and paint of each model.
+- Gap: no scale, and no moving or turning of a model by hand. Only auto-orient and arrange.
+- Gap: one STL with several bodies is not split into separate models.
+
 ## 3.10.0 (unreleased)
 
+- Fix: the top bar keeps one row at every width (the name and then the tab labels give way on narrow windows) and the page no longer scrolls sideways or jumps in height while the window is resized.
+- Fix: empty AMS slots on a printer card line up with loaded ones.
 - The printer page shows the running print in 3D ("Current print in 3D"). It is the same preview as on a History print, read from that print's stored file. It loads when the cloud lists the print, up to a minute after the start. A user who is not admin of the printer sees it only for their own prints, as in History.
 - The printer page has a History card with the last 5 prints of this printer and a link "All prints on this printer".
 - History reads a filter from the URL: `#/history?printer=<serial>` (and `user=` for admins). The admin selects start from it. A user sees "One printer" and a link to all their prints.

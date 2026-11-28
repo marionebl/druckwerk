@@ -59,6 +59,9 @@ TASKS_TTL = 60  # seconds a printer's cloud task list is reused
 SPOOLS_TTL = 30  # seconds an account's cloud filament library is reused
 STALE_AFTER = 60  # seconds after which a printer view from an earlier status call is marked stale
 STATUS_STALE_MAX = 600  # seconds the queue may still act on such a view
+STATUS_CACHE_EVERY = 30  # seconds between writes of a printer's last good view to the data dir
+CLOUD_OFFLINE_AFTER = 60  # seconds the cloud flag must say offline, reading after reading, before the page does
+CLOUD_READING_GAP = 30  # a longer pause between two offline readings starts the count again
 COVER_MAX = 5 * 1024 * 1024  # bytes of a cloud cover image
 FILE_MAX = 400 * 1024 * 1024  # bytes of a sliced 3MF fetched from the cloud
 MISS_TTL = 600  # seconds before a failed cloud file fetch is tried again
@@ -180,6 +183,9 @@ class App:
         self._cache = {}
         self.cloud_miss = {}  # task id -> (time, reason) of a failed cloud file fetch
         self._cache_lock = threading.Lock()
+        self._cloud_false = {}  # serial -> (first, latest) reading time of an unbroken run of offline readings
+        self._saved_at = {}  # serial -> when its view was last written to status_cache.json
+        self._load_views()
         # Events: seq starts at the boot time so it keeps growing across restarts (pollers hold the last seq they saw).
         self.seq = int(clock())
         self.events = collections.deque(maxlen=500)
@@ -396,6 +402,30 @@ class App:
             return {}
         return (data or {}).get("print") or {} if status == 200 and isinstance(data, dict) else {}
 
+    def _load_views(self):
+        """Last good views from the data dir with their real time, so after a restart the age stays honest."""
+        try:
+            with open(os.path.join(self.data_dir, "status_cache.json")) as f:
+                saved = json.load(f)
+            for serial, e in saved.items():
+                self._cache["view:" + serial] = (float(e["at"]), e["view"])
+                self._saved_at[serial] = float(e["at"])
+        except (OSError, ValueError, KeyError, TypeError, AttributeError):
+            pass  # no file or a damaged one: start empty
+
+    def _save_views(self, serial):
+        now = self.clock()
+        if now - self._saved_at.get(serial, 0) < STATUS_CACHE_EVERY:
+            return
+        self._saved_at[serial] = now
+        from queue_registry import write_json
+        with self._cache_lock:
+            out = {k[5:]: {"at": at, "view": v} for k, (at, v) in self._cache.items() if k.startswith("view:")}
+        try:
+            write_json(os.path.join(self.data_dir, "status_cache.json"), out)
+        except OSError as e:
+            log("cannot write status_cache.json: %s" % e)
+
     def status_entry(self, serial):
         """(view, age in s) of the printer: fresh from the bridge, else the last good one (one failed call is not offline)."""
         v = printer_state.view(self.bridge_print(serial), self.clock())
@@ -403,6 +433,8 @@ class App:
             if v is not None:
                 self._cache["view:" + serial] = (self.clock(), v)
             at, last = self._cache.get("view:" + serial, (0, None))
+        if v is not None:
+            self._save_views(serial)
         return (last, self.clock() - at) if last is not None else (None, 0)
 
     def printer_status(self, serial):
@@ -412,9 +444,23 @@ class App:
         return v if age <= STATUS_STALE_MAX else None
 
     def cloud_online(self, serial):
-        """False only when the bridge's printer list says the printer is offline (the cloud's flag); unknown counts as online."""
-        printers = self._cached("printers", 5, self.bridge_printers)
-        return next((p.get("online") is not False for p in printers if p.get("serial") == serial), True)
+        """False only when the bridge's printer list has said offline, reading after reading, for CLOUD_OFFLINE_AFTER s;
+        one reading, a gap or unknown counts as online."""
+        try:
+            printers = self._cached("printers", 5, self.bridge_printers)
+        except (HAError, HttpError):
+            return True
+        flag = next((p.get("online") for p in printers if p.get("serial") == serial), None)
+        with self._cache_lock:
+            read = self._cache.get("printers", (self.clock(), None))[0]  # time of the reading, not of this call
+            if flag is not False:
+                self._cloud_false.pop(serial, None)
+                return True
+            first, last = self._cloud_false.get(serial, (read, read))
+            if read - last > CLOUD_READING_GAP:
+                first = read
+            self._cloud_false[serial] = (first, max(read, last))
+            return max(read, last) - first < CLOUD_OFFLINE_AFTER
 
     def state(self, entity_id):
         """The queue's state lookup: a registered printer's own sensors come from the bridge, any other entity from HA."""
@@ -455,18 +501,21 @@ class App:
     def printer_view(self, p, role):
         serial = p["serial"]
         v, age = self.status_entry(serial)
-        if v is not None and not self.cloud_online(serial):
+        seen = v is not None
+        if seen and (age > STATUS_STALE_MAX or not self.cloud_online(serial)):
             v = None
         b = v or {}
+        # null: no view was ever seen and nothing says offline (fresh start); the page waits instead of calling it offline
+        online = None if not seen and self.cloud_online(serial) else v is not None and b["status"] != "offline"
         tray = b.get("active_tray")
         job = next((j for j in self.queue.jobs if j.get("printer") == serial and j["state"] in ("starting", "printing")), None)
         start, start_job = self.start_steps(serial, v, job)
         now = self.installed_nozzle(p)
         return {
             "serial": serial, "name": p["name"], "model": p["model"], "role": role,
-            "online": v is not None and b["status"] != "offline",
+            "online": online,
             "stale": v is not None and age > STALE_AFTER, "status_age": round(age) if v is not None else None,
-            "status": b.get("status"), "stage": b.get("stage"), "progress": b.get("progress"),
+            "status": b.get("status") or ("connecting" if online is None else None), "stage": b.get("stage"), "progress": b.get("progress"),
             "remaining_min": b.get("remaining_min"), "end_time": b.get("end_time"),
             "layer": b.get("layer"), "total_layers": b.get("total_layers"),
             "nozzle_temp": b.get("nozzle_temp"), "nozzle_target": b.get("nozzle_target"),
@@ -770,7 +819,7 @@ class App:
         serial = m.group(1)
         self.printer_access(c, serial)
         kind = "snapshot" if (q.get("mode") or [""])[0] == "snapshot" else "live"
-        query = urlsplit(h.path).query if kind == "live" else ""
+        query = urlsplit(h.path).query if kind == "live" else "fresh=1" if (q.get("fresh") or [""])[0] == "1" else ""
         self.proxy(h, "/api/camera/%s/%s" % (serial, kind), query)
 
     def cover_png(self, serial):
