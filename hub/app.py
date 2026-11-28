@@ -33,7 +33,7 @@ import slice_settings
 from gcode_guard import file_nozzle
 from ha import HAError, HAUnavailable
 from queue_access import Access, Caller, Forbidden, Grants, Unauthorized, caller_from_headers
-from queue_engine import WAITING, NotFound, Queue, QueueError
+from queue_engine import START_STATUS_AGE, WAITING, NotFound, Queue, QueueError
 from queue_registry import Registry, check_nozzles
 from integration import JPEG_PRODUCTS, Integration
 from notify import Notifier
@@ -175,7 +175,8 @@ class App:
         self.access = Access(self.registry, self.grants, self.get_user)
         self.queue = Queue(self.registry, data_dir, self.state, self._call_service, self.get_trays, clock=clock,
                            job_allowed=self.access.job_allowed, dry=Drying(self), send_print=self.send_print,
-                           get_nozzle=self.installed_diameter, get_requests=self.job_requests)
+                           get_nozzle=self.installed_diameter, get_requests=self.job_requests,
+                           get_start_state=lambda e: self.state(e, START_STATUS_AGE))
         self.plates_inbox = None  # set by hub.py when the app has a plates token
         self.media_roots = list(MEDIA_ROOTS)
         self.media_dir = MEDIA_DIR
@@ -311,13 +312,16 @@ class App:
         return [{"type": t["type"], "colour": "#" + t["colour"]} for a in self.ams(serial) for t in a["trays"] if t["type"]]
 
     # -- calls to the bridge and HA --
-    def bridge_json(self, method, path, body=None, timeout=30):
+    def bridge_json(self, method, path, body=None, timeout=30, headers=None):
+        """(status, data). A dict in `headers` is filled with the answer's headers."""
         conn = http.client.HTTPConnection(*self.bridge, timeout=timeout)
         try:
             conn.request(method, path, json.dumps(body).encode() if body is not None else None,
                          {"Content-Type": "application/json"})
             r = conn.getresponse()
             raw = r.read()
+            if headers is not None:
+                headers.update(r.getheaders())
         except OSError as e:
             raise HttpError(502, "bridge is not reachable: %s" % e)
         finally:
@@ -399,11 +403,19 @@ class App:
         return now["diameter"] if now else None
 
     def bridge_print(self, serial):
+        """(the printer's `print` object, seconds the bridge says it is old); the bridge may serve a cached status."""
+        head = {}
         try:
-            status, data = self.bridge_json("GET", "/api/status/" + serial, timeout=10)
+            status, data = self.bridge_json("GET", "/api/status/" + serial, timeout=10, headers=head)
         except HttpError:
-            return {}
-        return (data or {}).get("print") or {} if status == 200 and isinstance(data, dict) else {}
+            return {}, 0
+        if status != 200 or not isinstance(data, dict):
+            return {}, 0
+        try:
+            age = max(0.0, float(head.get("X-Status-Age", 0)))
+        except ValueError:
+            age = 0.0
+        return data.get("print") or {}, age
 
     def _load_views(self):
         """Last good views from the data dir with their real time, so after a restart the age stays honest."""
@@ -431,20 +443,22 @@ class App:
 
     def status_entry(self, serial):
         """(view, age in s) of the printer: fresh from the bridge, else the last good one (one failed call is not offline)."""
-        v = printer_state.view(self.bridge_print(serial), self.clock())
+        data, served = self.bridge_print(serial)
+        v = printer_state.view(data, self.clock())
         with self._cache_lock:
-            if v is not None:
-                self._cache["view:" + serial] = (self.clock(), v)
             at, last = self._cache.get("view:" + serial, (0, None))
+            if v is not None and self.clock() - served >= at:  # the observation time, not the time of this call
+                at, last = self.clock() - served, v
+                self._cache["view:" + serial] = (at, v)
         if v is not None:
             self._save_views(serial)
         return (last, self.clock() - at) if last is not None else (None, 0)
 
-    def printer_status(self, serial):
+    def printer_status(self, serial, max_age=STATUS_STALE_MAX):
         """What the printer reports now (hub/printer_state.py), from the bridge; None when the bridge cannot say.
-        The queue acts on it, so a last good view counts for 10 min only."""
+        The queue acts on it, so a last good view counts for 10 min only (a start passes a shorter max_age)."""
         v, age = self.status_entry(serial)
-        return v if age <= STATUS_STALE_MAX else None
+        return v if age <= max_age else None
 
     def cloud_online(self, serial):
         """False only when the bridge's printer list has said offline, reading after reading, for CLOUD_OFFLINE_AFTER s;
@@ -465,12 +479,12 @@ class App:
             self._cloud_false[serial] = (first, max(read, last))
             return max(read, last) - first < CLOUD_OFFLINE_AFTER
 
-    def state(self, entity_id):
+    def state(self, entity_id, max_age=STATUS_STALE_MAX):
         """The queue's state lookup: a registered printer's own sensors come from the bridge, any other entity from HA."""
         for p in self.registry.all():
             for key in SENSORS:
                 if entity_id == self.entity(p, key):
-                    v = self.printer_status(p["serial"])
+                    v = self.printer_status(p["serial"], max_age)
                     if v is None:
                         return None
                     if key == "tray":

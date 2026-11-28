@@ -13,6 +13,18 @@
 - Bridge: `watchdog: http://[HOST]:8098/api/health` in the app config, so the Supervisor restarts the app when the bridge stops answering. Needs `/api/health` to stay open for clients that are not on the loopback (package 1).
 - Integration 0.15.1: a manifest with a value it cannot apply is not applied in part. The old actions stay, a warning is logged, the repair issue "bad_manifest" is raised, and the next poll tries again (the revision is kept only after the manifest applied). Actions are tracked as they are registered, so an unload removes all of them. A 401 from the app raises the repair issue "hub_secret_rejected" (before: only "not reachable").
 
+## 3.26.0 (unreleased)
+
+- A print start uses a printer status of at most 60 s. The app reads the bridge's `X-Status-Age` and keeps the real observation time, so a cached status of the bridge no longer looks fresh (before: up to 10 min of the bridge plus the app's own cache). The tolerance of 10 min stays for the display and the ticks. A start with an older status is refused with 409 and the job stays queued.
+- One send per printer: a second send to the same printer (action, web UI or queue) gets 409 at once.
+- `print_file` also refuses a printer in `PREPARE`. The bridge gives up on its daemon after 280 s (the app waits 300 s) and answers 504 when the daemon timed out, 503 only when it was not reachable at all.
+- A queue start whose send ends in a timeout or "not reachable" fails the job (`send timed out; check the printer before you retry`) instead of leaving it queued, where a second start printed twice. A refusal (guard, model mismatch, bridge error) still keeps the job first in the queue.
+- The "Plate clear, start" button names the job (`DRUCKWERK_START_<serial>_<job id>`). It starts that job only when it is still the first queued job, the notification is at most 30 minutes old and the phone's Home Assistant user is an admin of the printer (event context user). The app keeps the sent notifications in memory, so a button from before an app restart is refused; use Start in the queue then.
+- The actions `start_next` and `start_job` confirm a drying job, so they can start one.
+- `POST /api/queue/<id>/cancel` takes `{force: true}` for admins: a `printing` job that never ends is removed as `failed` (`removed by admin`).
+- Approving an `any` job needs an admin of a printer that the job fits for its owner, not any printer of the model.
+- Printing a browser slice (`POST /api/jobs/<id>/print`) copies it to a file name with a random part, so two prints of the same name no longer overwrite each other. The copy stays while it is the printer's current file (the printer picture reads it) and is deleted when the slice is sent again; a refused send leaves no copy.
+
 ## 3.22.0 (unreleased)
 
 - No call to Home Assistant, the bridge or the cloud runs while the queue lock is held. A slow send, spool settlement or cloud login no longer holds up `GET /api/queue`, `GET /api/events` or the bridge status (before: up to the 300 s send timeout).

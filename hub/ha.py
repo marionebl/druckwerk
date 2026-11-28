@@ -216,8 +216,9 @@ class HA:
 
     IDLE = 60  # seconds without a frame before the watcher pings
 
-    def watch_events(self, event_type, callback, stop):
-        """Blocking loop: calls callback(event data) per event of this type; reconnects until stop is set."""
+    def watch_events(self, event_type, callback, stop, with_user=False):
+        """Blocking loop: calls callback(event data) per event of this type; reconnects until stop is set.
+        with_user: callback(event data, user id), the Home Assistant user the event came from (None when it has none)."""
         pause = 2
         while not stop.is_set():
             try:
@@ -239,7 +240,10 @@ class HA:
                         pinged = None
                         if m.get("type") == "event":
                             try:
-                                callback(m["event"]["data"])
+                                if with_user:
+                                    callback(m["event"]["data"], (m["event"].get("context") or {}).get("user_id"))
+                                else:
+                                    callback(m["event"]["data"])
                             except Exception as e:  # noqa: BLE001 - one bad event must not end the watcher
                                 log("%s callback failed: %s: %s" % (event_type, type(e).__name__, e))
                 finally:

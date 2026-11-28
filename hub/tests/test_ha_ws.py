@@ -69,7 +69,8 @@ def server():
             if msg["type"] == "subscribe_events":
                 c.sendall(bytes([0x89, 0]))  # a ping first: must be answered or skipped
                 write_frame(c, {"id": 1, "type": "event", "event": {"event_type": "state_changed", "data": {
-                    "entity_id": "sensor.x_current_stage", "new_state": {"state": "changing_filament"}}}})
+                    "entity_id": "sensor.x_current_stage", "new_state": {"state": "changing_filament"}},
+                    "context": {"id": "c1", "parent_id": None, "user_id": "u-phone"}}})
                 c.close()
             elif msg["type"] == "boom":
                 write_frame(c, {"id": 1, "type": "result", "success": False, "error": {"message": "nope"}})
@@ -123,6 +124,17 @@ def test_watch_events_subscribes_to_the_type_and_hands_over_the_data(server):
     HA("http://x", url, "tok").watch_events("mobile_app_notification_action", cb, stop)
     assert seen[1] == {"id": 1, "type": "subscribe_events", "event_type": "mobile_app_notification_action"}
     assert got == [{"entity_id": "sensor.x_current_stage", "new_state": {"state": "changing_filament"}}]
+
+
+def test_watch_events_can_hand_over_the_user_of_the_event(server):
+    url, _ = server
+    got, stop = [], threading.Event()
+
+    def cb(data, user_id):
+        got.append((data["entity_id"], user_id))
+        stop.set()
+    HA("http://x", url, "tok").watch_events("mobile_app_notification_action", cb, stop, with_user=True)
+    assert got == [("sensor.x_current_stage", "u-phone")]
 
 
 def test_fire_event_posts_to_the_rest_api(monkeypatch):
