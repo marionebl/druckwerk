@@ -812,6 +812,9 @@ class LiveTest(unittest.TestCase):
             self.assertEqual(st, 200, body[:200])
             self.assertEqual(body[:3], b"\xff\xd8\xff")
             self.assertEqual(self.events(serial), ["connect"])  # no second upstream, no snapshot at the bridge
+            st, body = self.s.req("GET", "/api/camera/%s/snapshot?fresh=1" % serial)  # the newest frame, not the keyframe
+            self.assertEqual((st, body[:3]), (200, b"\xff\xd8\xff"), body[:200])
+            self.assertEqual(self.events(serial), ["connect"])
             r.close()
             c.close()
             time.sleep(0.5)  # no viewer left, upstream in its idle period: still no bridge snapshot
@@ -917,6 +920,16 @@ class CameraRestartTest(unittest.TestCase):
         calls = [e for e, who in self.s.daemon(self.s.base, "/live-log") if e == "snapshot"]
         self.assertEqual(len(calls), 1)  # one daemon call for five requests
 
+    def test_e_fresh_snapshot_skips_the_cache(self):
+        """After a light switch the page asks with fresh=1: the cached picture predates the switch."""
+        open(self.snapshot, "w").close()
+        self.assertEqual(self.snap()[0], 200)
+        time.sleep(0.3)
+        st, _, age = self.snap("/api/camera/SERIAL001/snapshot?fresh=1")
+        self.assertEqual((st, float(age)), (200, 0))
+        calls = [e for e, who in self.s.daemon(self.s.base, "/live-log") if e == "snapshot"]
+        self.assertEqual(len(calls), 2)
+
 
 class CameraGraceTest(CameraRestartTest):
     GRACE = "60"
@@ -932,6 +945,7 @@ class CameraGraceTest(CameraRestartTest):
     test_b_silent_printer_restarts_once_then_waits_for_the_backoff = None
     test_c_restart_waits_while_a_print_upload_is_in_flight = None
     test_d_second_snapshot_within_30_s_comes_from_the_cache = None
+    test_e_fresh_snapshot_skips_the_cache = None
 
 
 class DaemonOutageTest(unittest.TestCase):

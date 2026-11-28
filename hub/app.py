@@ -801,7 +801,7 @@ class App:
         serial = m.group(1)
         self.printer_access(c, serial)
         kind = "snapshot" if (q.get("mode") or [""])[0] == "snapshot" else "live"
-        query = urlsplit(h.path).query if kind == "live" else ""
+        query = urlsplit(h.path).query if kind == "live" else "fresh=1" if (q.get("fresh") or [""])[0] == "1" else ""
         self.proxy(h, "/api/camera/%s/%s" % (serial, kind), query)
 
     def cover_png(self, serial):

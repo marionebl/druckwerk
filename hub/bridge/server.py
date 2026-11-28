@@ -22,6 +22,7 @@ import shutil
 import socket
 import subprocess
 import sys
+import tempfile
 import threading
 import time
 import tomllib
@@ -765,12 +766,13 @@ def fetch_camera(acc, serial, kind, qs):
     return status, raw, ctype
 
 
-def snapshot(h, acc, serial, qs):
+def snapshot(h, acc, serial, qs, fresh=False):
+    """fresh: only a picture taken after this request came in (after a light switch, say), not the cached one."""
     snap = snaps.setdefault(serial, Snap())
-    seen = snap.runs
+    seen, asked = snap.runs, time.time()
     with snap.lock:
         now = time.time()
-        if snap.jpeg and now - snap.at < SNAPSHOT_CACHE:
+        if snap.jpeg and (snap.at >= asked if fresh else now - snap.at < SNAPSHOT_CACHE):
             return h.send(200, snap.jpeg, "image/jpeg", {"X-Snapshot-Age": "%.1f" % (now - snap.at)})
         if snap.runs != seen and snap.failure:
             return h.send(*snap.failure)  # the request we waited for failed: do not ask the daemon again at once
@@ -792,15 +794,16 @@ def camera(h, kind, serial):
             live = lives.get(serial)
         # While a live upstream is open the bridge answers 409 busy to a snapshot, so never ask it.
         if live and live.ready.wait(90) and not live.error and not live.closed:
-            jpeg = live.frame_jpeg()
+            jpeg = live.frame_jpeg(newest=parse_qs(urlsplit(h.path).query).get("fresh", [""])[0] == "1")
             if jpeg:
                 return h.send(200, jpeg, "image/jpeg", {"X-Snapshot-Age": "0.0"})
             return h.send(502, {"error": "could not decode keyframe", "stage": "decode"})
     # The printer's ipcam does not always say which remote transport it uses, so callers can force one.
-    proto = parse_qs(urlsplit(h.path).query).get("protocols", [""])[0]
+    query = parse_qs(urlsplit(h.path).query)
+    proto = query.get("protocols", [""])[0]
     qs = "?protocols=" + proto if re.fullmatch(r"[a-z,]{1,40}", proto) else ""
     if kind == "snapshot":
-        return snapshot(h, acc, serial, qs)
+        return snapshot(h, acc, serial, qs, fresh=query.get("fresh", [""])[0] == "1")
     h.send(*fetch_camera(acc, serial, kind, qs))
 
 
@@ -1073,15 +1076,27 @@ class Live:
 
     # -- snapshot --
 
-    def frame_jpeg(self):
-        """The newest frame as JPEG (H.264: the last keyframe, whatever its age); None if there is none or it did not decode."""
+    def frame_jpeg(self, newest=False):
+        """The newest frame as JPEG (H.264: the last keyframe, whatever its age; newest: the last frame, which decodes
+        everything since that keyframe); None if there is none or it did not decode."""
         with self.lock:
             if self.closed:
                 return None
             jpeg, data = self.jpeg, b"".join(list(self.psi.values()) + self.gop)
         if jpeg is not None:
             return jpeg
-        return ffmpeg_jpeg(["-f", "mpegts"], data) if data else None
+        if not data:
+            return None
+        if not newest:
+            return ffmpeg_jpeg(["-f", "mpegts"], data)
+        with tempfile.TemporaryDirectory() as d:  # -update 1 overwrites the file with each frame: the last one stays
+            out = os.path.join(d, "last.jpg")
+            r = subprocess.run(["ffmpeg", "-loglevel", "error", "-f", "mpegts", "-i", "-", "-update", "1", "-c:v", "mjpeg", out],
+                               input=data, capture_output=True, timeout=60)
+            if r.returncode or not os.path.exists(out):
+                return None
+            with open(out, "rb") as f:
+                return f.read()
 
 
 lives = {}  # serial -> Live

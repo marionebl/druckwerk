@@ -1,5 +1,13 @@
 # Changelog
 
+## 3.17.0 (unreleased)
+
+- The chamber light switch answers at once. It shows the new state on click and sends the command behind it, like the vendor app. Before, the switch was disabled until the command came back (0.7 to 0.9 s on the H2S through Home Assistant, more through ingress), and a poll that drew the card again in that time showed the old state until the next poll (up to 5 s more).
+- The new state stays on screen until the printer reports it, or 30 s pass. Before, it stayed 10 s, then the switch could show the old state again until the printer's report arrived.
+- A refused command puts the reported state back and shows the error. Commands to one printer go out in click order.
+- On the printer page, the switch on the camera now follows the printer's state too. Before, it was drawn once with the camera and kept the state from that moment.
+- After a light switch, the camera picture shows the change sooner. The page asks for a picture taken after the command (`fresh=1` on the camera snapshot), and the bridge skips its 30 s snapshot cache for it. Before, a printer card could show the old light for 30 to 40 s. While a live stream is open, a fresh snapshot is the newest frame (the bridge decodes from the last keyframe on). Before, it was the last keyframe, whatever its age. Without a live stream, a fresh picture takes one camera mint plus a keyframe (about 3 to 10 s on the H2S).
+
 ## 3.16.0 (unreleased)
 
 - Fix: the printer page said "Printer offline" when the printer was fine. "Offline" now needs evidence: the bridge's cloud flag must say offline in every reading for 60 s (one reading changes nothing), or the status itself says offline, or the last status is older than 10 min. Otherwise the page keeps the last known status.
