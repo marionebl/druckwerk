@@ -2,7 +2,6 @@
 // dialog with the model in three.js. The mesh is refined first (see paintcodes.js), so a brush can paint small areas.
 // Result: {positions, states} where states.supports and states.seam hold 0 (none), 1 (enforce) or 2 (block) per triangle.
 import { h, btn } from '../util.js';
-import { parseStl } from './browserslice.js';
 import { KINDS, subdivide, refinePasses } from './paintcodes.js';
 
 let three = null;
@@ -12,12 +11,13 @@ const MAX_TRIS = 400000;
 const TOOLS = [...KINDS.map((k) => ({ ...k, id_: `${k.id}-${k.state}` })), { id_: 'erase', label: 'Erase', erase: true }];
 const GREY = [0.72, 0.74, 0.78];
 
+// local: the model's triangles in its own frame (the paint stays in that frame); rot: how it lies on the plate, for the view only.
 // existing: {positions, states} from an earlier session, or null. Resolves with the new paint, or null on cancel.
-export async function paintModel(file, existing) {
+export async function paintModel(local, existing, rot = [1, 0, 0, 0, 1, 0, 0, 0, 1]) {
   const T = await loadThree();
   let positions = existing?.positions;
   if (!positions) {
-    const raw = parseStl(await file.arrayBuffer());
+    const raw = local;
     if (raw.length / 9 > MAX_TRIS) throw new Error('This model has too many triangles to paint.');
     positions = subdivide(raw, refinePasses(raw));
   }
@@ -36,7 +36,10 @@ export async function paintModel(file, existing) {
     renderer.setClearColor(0x1b1d21, 1);
     const scene = new T.Scene(), camera = new T.PerspectiveCamera(40, 1, 0.5, 2000);
     scene.add(new T.AmbientLight(0xffffff, 1.1)); const sun = new T.DirectionalLight(0xffffff, 1.6); sun.position.set(0.5, 1, 0.8); scene.add(sun);
-    const world = new T.Group(); world.rotation.x = -Math.PI / 2; scene.add(world);  // model Z is up, three.js Y is up
+    // Model Z is up, three.js Y is up; rot lays the model as it sits on the plate. Brush and paint stay in the model's own frame.
+    const world = new T.Group(); world.matrixAutoUpdate = false; scene.add(world);
+    world.matrix.makeRotationX(-Math.PI / 2).multiply(new T.Matrix4().set(...rot.slice(0, 3), 0, ...rot.slice(3, 6), 0, ...rot.slice(6), 0, 0, 0, 0, 1));
+    world.updateMatrixWorld(true);
     const geo = new T.BufferGeometry();
     geo.setAttribute('position', new T.BufferAttribute(positions, 3));
     geo.computeVertexNormals();
@@ -96,7 +99,7 @@ export async function paintModel(file, existing) {
     const view = { az: 0.8, el: 0.5, r: rad * 3.2, tx: 0, ty: 0, tz: 0 };
     let moved = true;
     function place() {
-      const c = new T.Vector3(centre.x, centre.z, -centre.y);  // the model's centre in three.js axes
+      const c = centre.clone().applyMatrix4(world.matrix);  // the model's centre in three.js axes
       c.x += view.tx; c.y += view.ty; c.z += view.tz;
       camera.position.set(c.x + view.r * Math.cos(view.el) * Math.sin(view.az), c.y + view.r * Math.sin(view.el), c.z + view.r * Math.cos(view.el) * Math.cos(view.az));
       camera.lookAt(c);

@@ -163,3 +163,10 @@ def test_the_view_is_written_at_most_every_30_s(hub):
     hub.req("GET", "/api/printers", user=ADMIN)
     assert json.load(open(path))[SERIAL]["view"]["progress"] == 50.0
     assert not [f for f in os.listdir(hub.app.data_dir) if f.endswith(".tmp")]
+
+
+def test_time_left_is_minutes_and_matches_the_finish_time():
+    """The feedback case: layer 794 of 831 with 40 min left must not read as 0 min (the old vendor sensor was in hours)."""
+    import printer_state
+    v = printer_state.view({"gcode_state": "RUNNING", "mc_percent": 95, "mc_remaining_time": 40, "layer_num": 794, "total_layer_num": 831}, 0)
+    assert (v["remaining_min"], v["end_time"]) == (40, "1970-01-01T00:40:00+00:00")

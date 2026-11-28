@@ -1,11 +1,45 @@
 # Changelog
 
-## 3.9.1 (unreleased)
+## 3.16.0 (unreleased)
 
 - Fix: the printer page said "Printer offline" when the printer was fine. "Offline" now needs evidence: the bridge's cloud flag must say offline in every reading for 60 s (one reading changes nothing), or the status itself says offline, or the last status is older than 10 min. Otherwise the page keeps the last known status.
 - The last good status of each printer is kept in `/data/status_cache.json` (written at most every 30 s) and read at start, so a restart of the app or of the bridge no longer blanks the page. It shows the old status as stale, with its real age.
 - `GET /api/printers`: `online` is `null` with `status: "connecting"` while no status was ever seen and nothing says offline (first start). The page shows "Connecting" and "Connecting to the printer…". Clients must treat `null` as unknown, not as offline.
 - Fix: a printer page that showed "Printer offline" kept showing it after the printer came back, when the camera URL had not changed.
+
+## 3.15.0 (unreleased)
+
+- Bridge log: the first-frame line of a live stream also says when the daemon answered, when the first bytes and the first MPEG-TS came, and which H.264 NAL unit types came before the first keyframe. On the H2S the first frame comes about 10 s after the play loop starts, while a snapshot gets its keyframe in about 1.5 s; this line shows where the time goes.
+
+## 3.14.0 (unreleased)
+
+- Pages show cached data at once after a reload. The identity (`api/me`) and the Access lists (grants, Home Assistant users and entities) are cached in the browser too, so the shell and the lists no longer wait for the network. The cached shape (printer cards, filament slots, list rows) stays on screen, so the page does not jump when the answer arrives.
+- While a cached list is still being checked, buttons in the view are dimmed and cannot be clicked (links still work), so nobody decides on old data. The filament view shows cached data as is. Queue and History show a small "Checking for newer items…" pill over the top of the list. It takes no layout space.
+- The last camera frame of each printer is kept in the browser (640 px wide) and shows at once with an "n s ago" label until a live frame loads.
+- A thin loading bar at the top of the page appears when a request takes 3 s or more.
+- Without usable browser storage the UI behaves as before.
+
+## 3.12.0 (unreleased)
+
+- New print has a plate. Step 1 takes several STL files at once (file picker or drop) and puts them on one plate that is sliced as one print. Each model is turned to lie well (auto-orient, on by default, switch it off with "Auto-orient new models") and the plate is arranged with 6 mm between models. A 3D preview shows the bed outline (from the printer's machine preset, 256 x 256 mm until a printer is chosen, and its keep-out area) and every model. Drag to turn the view, wheel or pinch to zoom. The buttons "Auto-orient", "Original orientation", "Arrange" and "Select all" change the plate. A model that is bigger than the bed, or has no room left, is marked "Does not fit the bed" and blocks slicing. A new printer model arranges the plate again on its bed.
+- Auto-orient follows OrcaSlicer's Orient.cpp in short: the big face directions (and the six axes) are tried as "down", and the one with the least overhang, the lowest height and the largest contact wins. A cube tilted by 30 or 40 degrees comes back flat, a pyramid or cone stands on its base, a mushroom goes cap down, and a model that already lies well stays as it is. It takes about 0.2 s for 300,000 triangles.
+- Object settings now work on a selection, as in Bambu Studio. Click a model in the preview or the list (Shift, Ctrl or Cmd for several). The settings card names the selection, shows the values of the first selected model and writes each change to every selected model. A setting where they differ is marked "varies". "Reset all" resets the selected models. Paint works on one selected model. The list shows how many settings each model has changed.
+- You choose the variants to slice: Good, Better and Best are chips in the slice card (at least one stays on, all three at first). The choice is remembered in this browser (`dw-variants`). The button says what it will do ("Slice Better", "Slice Good and Best"), and Compare shows only the sliced ones.
+- The engine's error for two models whose paths cross (-101) is shown in plain words on the variant.
+- The server still stores one model file per job. For history, queue and Reslice the page uploads the whole plate as one binary STL named after the first model ("a.stl" or "a + 2 more.stl").
+- Nothing in the New print layout moves while models, presets or the engine load: the 3D preview and the rows have fixed sizes and placeholders.
+- Gap: Reslice brings the plate back as one merged model, without the separate settings and paint of each model.
+- Gap: no scale, and no moving or turning of a model by hand. Only auto-orient and arrange.
+- Gap: one STL with several bodies is not split into separate models.
+
+## 3.10.0 (unreleased)
+
+- Fix: the top bar keeps one row at every width (the name and then the tab labels give way on narrow windows) and the page no longer scrolls sideways or jumps in height while the window is resized.
+- Fix: empty AMS slots on a printer card line up with loaded ones.
+- The printer page shows the running print in 3D ("Current print in 3D"). It is the same preview as on a History print, read from that print's stored file. It loads when the cloud lists the print, up to a minute after the start. A user who is not admin of the printer sees it only for their own prints, as in History.
+- The printer page has a History card with the last 5 prints of this printer and a link "All prints on this printer".
+- History reads a filter from the URL: `#/history?printer=<serial>` (and `user=` for admins). The admin selects start from it. A user sees "One printer" and a link to all their prints.
+- This version includes the History work from the history-settings branch (PR 22) (settings, duration bars, download, 3D preview).
 
 ## 3.9.0 (unreleased)
 
@@ -29,6 +63,7 @@
 - Fix: a printer that was online showed "Printer offline". The daemon asks the printer for a full push on every status call that finds its cache older than 10 s, and an idle printer sends no updates, so the calls queued on one thread and timed out.
 - Bridge: `GET /api/status/<serial>` runs one daemon call at a time per printer, reuses an answer younger than 5 s (`DW_STATUS_CACHE`), waits 8 s for the daemon (`DW_STATUS_TIMEOUT`), and answers a failed call with the last good status up to 10 min old (`DW_STATUS_STALE`). Every answer has the header `X-Status-Age` (seconds). Only without a good status it answers 503.
 - Hub: one failed status call no longer flips a printer offline. The printer view keeps the last good status and adds `stale` (older than 60 s) and `status_age` (seconds). A printer is offline when the bridge printer list says `online: false`, or there has been no status yet. The printer card shows "status from N min ago" when stale. The queue uses a kept status for 10 min at most.
+
 ## 3.7.0 (unreleased)
 
 - The "Slice on the Pi" choice is gone. New print slices in the browser only.
@@ -43,6 +78,14 @@
 - Models that are not STL (3MF, STEP, OBJ) can no longer be sliced in the app. Slice them elsewhere and add the `.gcode.3mf` to the share.
 - The CI image test checks that the image is at most 450 MB and that `/slice` answers 404. It stores a real Bambu Studio G-code through `/gcode` instead of slicing on the server.
 - The Pi half of the slicing progress from 3.6.0 (step lines from the slicer log, `progress` on `GET /api/jobs/{id}` while the Pi slices) is gone with the Pi slicer. Browser slicing progress and the print start steps stay.
+
+- History detail shows all slicing settings of a print: Quality, Strength, Support and adhesion, Speed, Filament, Plate and bed, Printer, and an "All settings" list with every key and a search field. They are read from the sliced file (`Metadata/project_settings.config` and `slice_info.config`) by `hub/slice_settings.py`. `GET /api/history/{id}/settings` is new. The settings are saved when a job is queued, so they stay after the slicer forgot the slice.
+- One primary action on a history item: "New print job with the same settings". It queues the stored file again with the print's target and options (`POST /api/history/{id}/queue` is new). When the file is gone it opens New print with the same printer, options, quality, filament and plate; choose the model again. "Print again" is replaced by this button.
+- Prints that were not started in Druckwerk: the bridge now passes `model_id`, `profile_id` and `design_id` of the Bambu cloud task, and `GET /api/tasks/file` asks the cloud for the file URL. The hub fetches the 3MF once into `data/cloud` and reads the same settings. If the cloud gives no file, the detail says so and shows the fields of the cloud record. The cloud file request is not checked against a real account yet.
+
+- History shows how long each print took: under every entry a bar sits on the day's 00:00 to 24:00 axis, as wide as the print ran (start to end; a running print reaches to now). Colour is the status. A print past midnight is cut at 24:00 and marked, very short prints get a minimum width, and prints without times show no bar.
+- History detail has a download button for the print's model (the STL, 3MF or STEP the slicer still stores), else for the sliced 3MF (Druckwerk's, or the Bambu cloud's). With no stored file the button is not shown. `GET /api/history/{id}/file` is new and follows the same visibility as the history.
+- History detail shows the 3D preview of the print, read from the same stored file as the download (the slicer's sliced file, a file in the share, or the Bambu cloud's 3MF), so prints from the cloud have it too. It loads only when the details open, shows a placeholder while loading and when no file is stored. `GET /api/history/{id}/gcode` is new; `GET /api/history/{id}/settings` now also says `download` and `preview`.
 
 ## 3.6.0 (unreleased)
 

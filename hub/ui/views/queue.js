@@ -1,7 +1,7 @@
 // Queue: jobs grouped by printer, approvals separate, drag or buttons to reorder. #/queue/<job id> is one job.
 // Finished jobs live in History (one list for cloud tasks and jobs).
 import { api } from '../api.js';
-import { h, clear, icon, btn, pill, empty, modal, field, attempt, dateTime, money, loading, thumb, durSec, toast } from '../util.js';
+import { h, clear, icon, btn, pill, empty, modal, field, attempt, dateTime, money, loading, thumb, durSec, toast, staleNote } from '../util.js';
 import * as D from './detail.js';
 import { stepsView, watchStart } from './progress.js';
 
@@ -16,7 +16,7 @@ export async function mount(ctx, root, parts = []) {
 
   root.append(h('div', { class: 'page-head' }, h('div', null, h('h1', null, 'Queue'),
     h('div', { class: 'sub' }, ctx.isAdmin() ? 'All jobs' : 'Jobs on your printers', ' · finished prints are under ', h('a', { href: '#/history' }, 'History'))),
-    h('div', { class: 'row' }, btn([icon('plus', 18), 'New print'], () => ctx.go('#/new'), 'primary'))), list);
+    h('div', { class: 'row' }, btn([icon('plus', 18), 'New print'], () => ctx.go('#/new'), 'primary'))), h('div', { class: 'stale-host' }, staleNote(), list));
 
   const isAdminFor = (j) => ctx.me.is_admin || (j.target === 'any' ? ctx.managesAny() : ctx.canManage(j.target));
   const isOwn = (j) => j.owner_user_id === ctx.me.user_id;

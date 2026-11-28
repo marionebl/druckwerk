@@ -558,7 +558,8 @@ class MultiAccountTest(unittest.TestCase):
         self.assertEqual([t["id"] for t in a], [103, 102])  # limit reaches the cloud and newest comes first
         self.assertEqual(a[1], {"id": 102, "serial": "SERIAL001", "title": "cube-aexamplecom", "status": "failed", "status_code": "failed",
                                 "started_at": 1795773600, "ended_at": 1795775400, "seconds": 1800, "grams": 4.5,
-                                "cover_url": "https://cdn.example/c.png", "plate": 2, "design_title": "Cube"})
+                                "cover_url": "https://cdn.example/c.png", "plate": 2, "design_title": "Cube",
+                                "model_id": "US1", "profile_id": 777, "design_id": 5})
         self.assertEqual(a[0]["title"], "Vase-aexamplecom")  # the design title stands in for an empty title
         self.assertIsNone(a[0]["ended_at"])
         b = s.json("GET", "/api/tasks?serial=SERIALB01")[1]
@@ -583,6 +584,16 @@ class MultiAccountTest(unittest.TestCase):
         self.cloud.owner.update(known)
         self.assertEqual(st, 502)
         self.assertIn("HTTP 401", d["error"])
+
+    def test_02c2_task_file_url(self):
+        s = self.s
+        st, d = s.json("GET", "/api/tasks/file?serial=SERIAL001&model_id=US1&profile_id=777")
+        self.assertEqual((st, d), (200, {"url": "https://cdn.example/file.gcode.3mf"}))
+        used = {q: e for q, e in self.cloud.task_calls}
+        self.assertEqual(used["/v1/iot-service/api/user/profile/777?model_id=US1"], "a@example.com")
+        self.assertEqual(s.req("GET", "/api/tasks/file?serial=SERIAL001&model_id=US1&profile_id=1")[0], 502)  # the cloud has no such file
+        self.assertEqual(s.req("GET", "/api/tasks/file?serial=NOPE&model_id=US1&profile_id=777")[0], 404)
+        self.assertEqual(s.req("GET", "/api/tasks/file?serial=SERIAL001&model_id=..%2Fx&profile_id=777")[0], 400)
 
     def test_02d_filament_library_of_one_account(self):
         s = self.s
@@ -777,7 +788,7 @@ class LiveTest(unittest.TestCase):
 
     def test_log_has_first_frame_time_and_stalls(self):
         self.grab("SERIAL001", 1)
-        self.assertRegex(self.s.logtext(), r"live SERIAL001: first frame after \d+\.\ds")
+        self.assertRegex(self.s.logtext(), r"live SERIAL001: first frame after \d+\.\ds \(headers \d+\.\ds, data \d+\.\ds, ts \d+\.\ds; NAL types before it: 7 8 [56]")
         self.assertTrue(wait_for(lambda: "live SERIAL001: ended after" in self.s.logtext(), self.IDLE + 5))
         self.assertRegex(self.s.logtext(), r"live SERIAL001: ended after \d+s, first frame after \d+\.\ds, \d+\.\d MB, 0 stalls over 2s")
 

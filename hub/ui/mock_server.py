@@ -24,6 +24,11 @@ HERE = os.path.dirname(os.path.abspath(__file__))
 sys.path.insert(0, os.path.dirname(HERE))
 import progress  # noqa: E402  the hub's own step logic, so the mock cannot drift from it
 PREFIX = "/api/hassio_ingress/MOCKTOKEN/"
+# The browser slices with the WebAssembly engine. The mock serves a built one (version.json, presets/, runtime) from MOCK_ENGINE
+# (see hub/slicer/engine/build.sh); without it New print cannot slice here.
+ENGINE = os.environ.get("MOCK_ENGINE", "")
+ENGINE_TYPES = {".wasm": "application/wasm", ".mjs": "text/javascript", ".js": "text/javascript", ".json": "application/json"}
+CUBE = open(os.path.join(os.path.dirname(HERE), "tests", "fixtures", "cube20.stl"), "rb").read()  # what a stored model reads back as
 LIVE_LOG = []  # start times of live camera streams
 NOW = time.time
 
@@ -150,12 +155,20 @@ HISTORY = [
 ]
 HISTORY[0].update(name="Benchy for the shelf", started_at=NOW() - 28 * 3600, print_seconds=3660, spools_used=[{"spool_id": "5000", "grams": 14.0}, {"spool_id": "5001", "grams": 0.4}],
                   slice=slice_of("better", 3660, 14.0, "benchy.stl"), options=dict(HISTORY[0]["options"], timelapse=True))
-HISTORY[4].update(name="Cable clip set (desk)", slice_job=SLICE_JOB, slice=slice_of("best", 2520, 12.5, "cable_clip_set.stl"))
+HISTORY[4].update(name="Cable clip set (desk)", slice_job=SLICE_JOB, slice=slice_of("best", 2520, 12.5, "cable_clip_set.stl"),
+                  options=dict(HISTORY[4]["options"], timelapse=True, flow_cali="auto", bed_leveling=False))
 HISTORY[3].pop("printer", None)
 TASK_JOB = {5: "b00000000001", 4: "b00000000002", 3: "b00000000003", 8: "b00000000005"}
 SLOW = {}  # test hook: path fragment -> seconds to wait before answering
 # Cloud tasks: (id, title, printer, hours ago, status, minutes, grams, user id or None for "not started here", cost)
+def _yesterday_at(hour):  # fixed local clock times, so the two timeline prints never cross midnight whenever the check runs
+    t = time.localtime()
+    return NOW() - time.mktime((t.tm_year, t.tm_mon, t.tm_mday - 1, hour, 0, 0, 0, 0, -1))
+
+
 TASKS = [
+    (11, "Timeline one hour", H2S, _yesterday_at(8) / 3600, "finished", 60, 20.0, "u-lena", 0.4),
+    (12, "Timeline three hours", H2S, _yesterday_at(13) / 3600, "finished", 180, 50.0, "u-lena", 1.0),
     (9, "gridfinity_bin_4x2", H2S, 0.9, "running", 0, 0, "u-alex", None),
     (8, "cable_clip_set", H2S, 3.5, "finished", 42, 12.5, "u-lena", 0.31),
     (7, "Slicer plate 1", P1S, 5, "finished", 95, 61.0, None, None),
@@ -209,6 +222,38 @@ def history_out(ident, q):
                     "when": int(j.get("started_at") or j["finished_at"])})
     out.sort(key=lambda i: i["when"], reverse=True)
     return {"items": out, "unavailable": []}
+
+
+SETTINGS_ALL = [["curr_bed_type", "Textured PEI Plate"], ["filament_flow_ratio", "0.98"], ["layer_height", "0.2"], ["nozzle_diameter", "0.4"],
+                ["outer_wall_speed", "200 / 500"], ["printer_model", "Bambu Lab H2S"], ["sparse_infill_density", "15%"], ["wall_loops", "2"]]
+SETTINGS_GROUPS = [
+    ("Quality", [("Layer height", "0.2 mm"), ("First layer height", "0.2 mm"), ("Outer wall line width", "0.42 mm"), ("Seam position", "aligned")]),
+    ("Strength", [("Wall loops", "2"), ("Top shell layers", "5"), ("Bottom shell layers", "3"), ("Infill density", "15%"), ("Infill pattern", "grid")]),
+    ("Support and adhesion", [("Support", "Off"), ("Brim", "auto_brim"), ("Prime tower", "On")]),
+    ("Speed", [("Outer wall", "200 / 500 mm/s"), ("Infill", "350 / 600 mm/s"), ("Travel", "1000 mm/s")]),
+    ("Filament", [("Preset", "Bambu PLA Basic @BBL H2S"), ("Type", "PLA"), ("Nozzle temperature", "220 °C"), ("Flow ratio", "0.98")]),
+    ("Plate and bed", [("Build plate", "Textured PEI Plate"), ("Bed temperature", "55 °C")]),
+    ("Printer", [("Printer model", "Bambu Lab H2S"), ("Nozzle diameter", "0.4 mm"), ("Process preset", "0.20mm Standard @BBL H2S")])]
+# task id -> (source, can_reprint) of the settings the mock has; other items have none
+SETTINGS_OF = {"8": ("slice", True), "5": ("saved", False), "10": ("cloud", True)}
+
+
+# Files the hub still holds per cloud task: (kind, name). Item 8 has its model, 10 and the running 9 only the cloud's sliced file; the others have none.
+FILES_OF = {"8": ("model", "cable_clip_set.stl"), "10": ("sliced", "Slicer_plate_3.gcode.3mf"), "9": ("sliced", "gridfinity_bin_4x2.gcode.3mf")}
+
+
+def settings_out(item):
+    src, again = SETTINGS_OF.get(str(item["id"]), (None, False))
+    task = {k: item[k] for k in ("title", "design_title", "plate", "status_code") if item.get(k) not in (None, "")}
+    kind, fname = FILES_OF.get(str(item["id"]), (None, None))
+    dl = {"download": kind and {"kind": kind, "name": fname}, "preview": bool(kind)}
+    if not src:
+        return {**dl, "available": False, "source": None, "can_reprint": False, "task": dict(task, model_id="US1", profile_id=4711) if item["source"] == "cloud" else task,
+                "reason": "The Bambu cloud did not give the file (cloud file: HTTP Error 404)." if item["source"] == "cloud" else "The sliced file is gone.",
+                "groups": [], "all": [], "plate": {}, "slicer": None}
+    return {**dl, "available": True, "source": src, "reason": "", "can_reprint": again, "task": task, "slicer": "02.09.02.62", "plate": {},
+            "groups": [{"title": t, "rows": [{"key": l, "label": l, "value": v, "unit": ""} for l, v in rows]} for t, rows in SETTINGS_GROUPS],
+            "all": SETTINGS_ALL}
 
 
 JOB_FIELDS = ("id", "name", "state", "error", "file", "source", "target", "model", "filaments", "options", "spools_used", "grams", "print_seconds",
@@ -469,6 +514,8 @@ def make_job_state(sl):
     if el < 3.0:
         return {"state": "slicing", "elapsed": int(el), "progress": {"percent": int(el / 3 * 100), "message": "Generating infill"}}
     sec, g, proc = QUALITY[sl["quality"]]
+    if "seconds" in sl:
+        sec, g = sl["seconds"], sl["grams"]
     return {"state": "done", "quality": sl["quality"], "info": {"seconds": sec, "grams": g, "warnings": [], "has_png": True, "filaments": []},
             "settings": {"process": proc + " @BBL", "tray": sl["tray"], "bed": sl["bed"]}}
 
@@ -560,6 +607,13 @@ class H(BaseHTTPRequestHandler):
             proc.kill()
 
     def static(self, rel, extra):
+        if rel.startswith("engine/") and ENGINE:
+            root = os.path.realpath(ENGINE)
+            f = os.path.realpath(os.path.join(root, rel[7:]))
+            if not f.startswith(root + os.sep) or not os.path.isfile(f):
+                return self.send(404, {"error": "not found"})
+            with open(f, "rb") as fh:
+                return self.send(200, fh.read(), ENGINE_TYPES.get(os.path.splitext(f)[1], "application/octet-stream"), extra)
         f = os.path.normpath(os.path.join(HERE, rel))
         if not f.startswith(HERE + os.sep) or f.endswith(".py") or not os.path.isfile(f):
             return self.send(404, {"error": "not found"})
@@ -672,18 +726,26 @@ class H(BaseHTTPRequestHandler):
         if r and m == "POST":
             return ok(job_action(ident, r.group(1), r.group(2), J()))
         # slicing
+        if path == "api/engine/filament":  # the first PLA of the printer's presets stands in for the real tray matching
+            printer = PRINTERS.get((q.get("serial") or [""])[0])
+            if not printer or not ENGINE:
+                raise Err(404, "no engine")
+            with open(os.path.join(ENGINE, "presets", printer["model"] + ".json")) as fh:
+                names = [f["name"] for f in json.load(fh)["filaments"]]
+            return ok({"filament": next(n for n in names if n.startswith("Bambu PLA Basic"))})
         if path == "api/jobs" and m == "POST":
             name = (q.get("name") or [""])[0]
             if not re.search(r"\.(stl|3mf|step|stp|obj)$", name, re.I):
                 raise Err(400, "Upload an .stl, .3mf, .obj or .step file.")
             jid = secrets.token_hex(6)
-            SLICES[jid] = {"id": jid, "filename": name, "state": "uploaded"}
+            SLICES[jid] = {"id": jid, "filename": name, "state": "uploaded", "model": bytearray(raw)}
             return ok({"id": jid, "filename": name, "state": "uploaded"})
         r = re.fullmatch(r"api/jobs/([0-9a-f]{12})(?:/(\w+)(?:\.(\w+))?)?", path)
         if r and r.group(1) in SLICES:
             sl, what = SLICES[r.group(1)], r.group(2)
+            shown = lambda: {**{k: v for k, v in sl.items() if k not in ("model", "gcode", "gcode_text")}, **make_job_state(sl)}
             if what is None and m == "GET":
-                return ok({**sl, **make_job_state(sl)})
+                return ok(shown())
             if what == "slice" and m == "POST":
                 b = J()
                 if b.get("quality") not in QUALITY:
@@ -691,8 +753,19 @@ class H(BaseHTTPRequestHandler):
                 MOCK_SLICES.append(b)
                 sl.update(sliced_at=NOW(), quality=b["quality"], tray=b.get("tray"), bed=b.get("bed"), serial=b.get("serial"))
                 return (202, {**sl, "state": "queued"}, "application/json")
+            if what == "model" and m == "POST":  # a later part of the model
+                sl["model"] += raw
+                return ok({"id": sl["id"], "filename": sl["filename"], "state": "uploaded"})
             if what == "model" and m == "GET":
-                return (200, b"solid x\nendsolid x\n", "application/octet-stream")
+                return (200, bytes(sl.get("model") or CUBE), "application/octet-stream")
+            if what == "gcode" and m == "POST":  # the browser's slice: the G-code is dropped, the numbers are kept
+                sl.setdefault("gcode", bytearray()).extend(raw)
+                if len(sl["gcode"]) >= int((q.get("total") or [len(raw)])[0]):
+                    a = {k: v[0] for k, v in q.items()}
+                    sl.update(sliced_at=NOW() - 10, quality=a["quality"], tray=a.get("tray"), bed=a.get("bed"), serial=a.get("serial"),
+                              seconds=int(float(a.get("seconds", 0))), grams=float(a.get("grams", 0)), gcode_text=bytes(sl["gcode"]).decode("utf8", "replace"))
+                    MOCK_SLICES.append({k: v for k, v in a.items() if k not in ("seconds", "grams", "metres", "slice_s", "engine", "filament", "offset", "total")})
+                return ok(shown())
             if what == "plate" and r.group(3) == "png":
                 return svg(plate_svg(sl["id"] + sl.get("quality", "")))
             if what == "plate" and r.group(3) == "gcode":
@@ -812,6 +885,31 @@ class H(BaseHTTPRequestHandler):
             return ok({"entity_id": "input_boolean." + re.sub(r"[^a-z0-9]+", "_", name.lower()), "name": name, "state": "off"})
         if path == "api/history":
             return ok(history_out(ident, q))
+        r = re.fullmatch(r"api/history/([\w-]+)/(settings|queue|file|gcode)", path)
+        if r:
+            item = next((i for i in history_out(ident, {})["items"] if str(i["id"]) == r.group(1)), None)
+            if not item:
+                raise Err(404, "unknown history item")
+            out = settings_out(item)
+            if r.group(2) == "settings":
+                return ok(out)
+            if r.group(2) == "gcode":
+                if not out["preview"]:
+                    raise Err(404, "no G-code for this print")
+                return (200, gcode().encode(), "text/plain")
+            if r.group(2) == "file":
+                if not out["download"]:
+                    raise Err(404, "no stored file for this print")
+                return (200, b"solid mock\nendsolid mock\n", "application/octet-stream")
+            if not out["can_reprint"]:
+                raise Err(409, "No stored file for this print: " + out["reason"] + " Slice the model again.")
+            old = item.get("job") or {}
+            jb = job(secrets.token_hex(6), re.sub(r"\W+", "_", item["title"]) + ".gcode.3mf", item["serial"], uid, "queued", age=0, grams=item.get("grams"))
+            jb["options"] = dict(old.get("options") or jb["options"])
+            jb["name"] = old.get("name") or item["title"]
+            MOCK_QUEUED.append({"options": jb["options"], "name": jb["name"], "target": jb["target"], "history": str(item["id"])})
+            JOBS.append(jb)
+            return ok(jb)
         r = re.fullmatch(r"api/history-cover/(\d+)\.svg", path)
         if r:
             if int(r.group(1)) in BROKEN_COVERS:

@@ -552,10 +552,15 @@ def number(value):
 def normalize_task(t, serial):
     raw = t.get("status")
     status = TASK_STATUS.get(str(raw).strip().lower(), str(raw)) if raw is not None else "unknown"
-    return {"id": t.get("id"), "serial": serial, "title": t.get("title") or t.get("designTitle") or "", "status": status,
-            "status_code": raw, "started_at": epoch(t.get("startTime")), "ended_at": epoch(t.get("endTime")),
-            "seconds": number(t.get("costTime")), "grams": number(t.get("weight")), "cover_url": t.get("cover") or "",
-            "plate": t.get("plateIndex"), "design_title": t.get("designTitle") or ""}
+    out = {"id": t.get("id"), "serial": serial, "title": t.get("title") or t.get("designTitle") or "", "status": status,
+           "status_code": raw, "started_at": epoch(t.get("startTime")), "ended_at": epoch(t.get("endTime")),
+           "seconds": number(t.get("costTime")), "grams": number(t.get("weight")), "cover_url": t.get("cover") or "",
+           "plate": t.get("plateIndex"), "design_title": t.get("designTitle") or ""}
+    # The ids that name the task's file in the cloud (the vendor slicer reads profileId from the same record).
+    for key, cloud_key in (("model_id", "modelId"), ("profile_id", "profileId"), ("design_id", "designId")):
+        if t.get(cloud_key) not in (None, ""):
+            out[key] = t[cloud_key]
+    return out
 
 
 def get_tasks(h, m, body):
@@ -580,6 +585,27 @@ def get_tasks(h, m, body):
     if not isinstance(hits, list):
         raise Upstream("%s cloud sent no task list" % externals.CLOUD_NAME)
     h.send(200, [normalize_task(t, serial) for t in hits if isinstance(t, dict)])
+
+
+def get_task_file(h, m, body):
+    """The download URL of the sliced 3MF behind a task (its modelId and profileId); the caller fetches the file."""
+    q = parse_qs(urlsplit(h.path).query)
+    serial, model_id, profile_id = ((q.get(k) or [""])[0] for k in ("serial", "model_id", "profile_id"))
+    if not (SERIAL.fullmatch(serial) and re.fullmatch(r"[A-Za-z0-9_-]{1,64}", model_id) and re.fullmatch(r"\d{1,19}", profile_id)):
+        raise ValueError("serial, model_id and profile_id are required")
+    acc = owner(serial)
+    if not acc:
+        return h.send(404, {"error": "unknown printer"})
+    token = read_cloud(acc.creds).get("token")
+    if not token:
+        raise Upstream("No cloud login for this printer's account")
+    data = cloud("GET", "/v1/iot-service/api/user/profile/%s?model_id=%s" % (profile_id, model_id), token=token)
+    data = data if isinstance(data, dict) else {}
+    listed = data.get("profile_print_3mf")
+    url = data.get("url") or (listed[0].get("url") if isinstance(listed, list) and listed and isinstance(listed[0], dict) else None)
+    if not isinstance(url, str) or not url.startswith("https://"):
+        raise Upstream("%s cloud sent no file URL" % externals.CLOUD_NAME)
+    h.send(200, {"url": url})
 
 
 # ---- filament library (the cloud's "Filament Manager" spool list) ----
@@ -791,6 +817,19 @@ def ffmpeg_jpeg(args, data):
     return out.stdout if out.stdout and not out.returncode else None
 
 
+def nal_types(raw, most=40):
+    """NAL unit types in an Annex-B H.264 stream, run-length coded: "7 8 5 1x14 ..." (5 IDR, 1 other slice, 6 SEI, 7 SPS, 8 PPS)."""
+    out, i = [], raw.find(b"\x00\x00\x01")
+    while i >= 0 and i + 3 < len(raw) and len(out) < most:
+        t = raw[i + 3] & 0x1F
+        if out and out[-1][0] == t:
+            out[-1][1] += 1
+        else:
+            out.append([t, 1])
+        i = raw.find(b"\x00\x00\x01", i + 3)
+    return " ".join(str(t) if c == 1 else "%dx%d" % (t, c) for t, c in out) or "none"
+
+
 class Live:
     """One upstream connection to the daemon for one printer, fanned out to any number of HTTP clients."""
 
@@ -809,6 +848,8 @@ class Live:
         self.sock = self.proc = None
         self.t0, self.first, self.last_read = time.time(), None, None  # timing for the log line at close
         self.stalls, self.longest, self.bytes = 0, 0.0, 0
+        self.marks = {}  # name -> seconds since t0, for the first-frame log line
+        self.head = b""  # the first upstream bytes, to log which NAL units came before the first keyframe
         threading.Thread(target=self.run, daemon=True).start()
 
     # -- upstream --
@@ -831,6 +872,7 @@ class Live:
             self.sock = conn.sock  # http.client drops its own handle once the response starts
             conn.request("GET", "/camera/%s/live%s" % (self.serial, self.qs))
             resp = conn.getresponse()
+            self.mark("headers")
             self.ctype = resp.getheader("Content-Type", "")
             if resp.status != 200:
                 self.error = (resp.status, resp.read(), self.ctype)
@@ -869,6 +911,8 @@ class Live:
                 if not data:
                     break
                 self.got(len(data))
+                if len(self.head) < 262144 and self.first is None:
+                    self.head += data
                 self.proc.stdin.write(data)
                 self.proc.stdin.flush()
         except (BrokenPipeError, ValueError):
@@ -886,6 +930,7 @@ class Live:
             data = os.read(fd, 65536)
             if not data:
                 return self.close()
+            self.mark("ts")
             data = rest + data
             n = len(data) // TS_PACKET * TS_PACKET
             chunk, rest = data[:n], data[n:]
@@ -933,7 +978,11 @@ class Live:
                 self.broadcast(head + body + tail)
             self.mark_ready()
 
+    def mark(self, name):
+        self.marks.setdefault(name, time.time() - self.t0)
+
     def got(self, n):
+        self.mark("data")
         now = time.time()
         if self.first is not None and now - self.last_read > LIVE_STALL:
             self.stalls += 1
@@ -943,7 +992,9 @@ class Live:
     def mark_ready(self):
         if self.first is None:
             self.first = time.time() - self.t0
-            log("live %s: first frame after %.1fs" % (self.serial, self.first))
+            log("live %s: first frame after %.1fs (%s; NAL types before it: %s)" % (
+                self.serial, self.first, ", ".join("%s %.1fs" % kv for kv in self.marks.items()), nal_types(self.head)))
+            self.head = b""
         self.ready.set()
 
     def broadcast(self, data):
@@ -1485,6 +1536,7 @@ ROUTES = [
     ("GET", r"/api/camera/" + SER + r"/live", lambda h, m, b: get_live(h, m.group(1)), 0),
     ("GET", r"/api/camera/" + SER + r"/snapshot", lambda h, m, b: camera(h, "snapshot", m.group(1)), 0),
     ("GET", r"/api/tasks", get_tasks, 0),
+    ("GET", r"/api/tasks/file", get_task_file, 0),
     ("GET", r"/api/filament", get_filament, 0),
     ("POST", r"/api/filament", post_filament, MAX_SMALL_BODY),
     ("PUT", r"/api/filament/(\d{1,19})", put_filament, MAX_SMALL_BODY),

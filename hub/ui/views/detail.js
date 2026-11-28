@@ -67,12 +67,38 @@ export function reslice(ctx, job, source) {
   ctx.go('#/new');
 }
 
-// Print again: the same slice goes into the queue once more, with the same name, options and target.
-export async function printAgain(ctx, job) {
-  const any = job.target === 'any';
-  const body = { target: any ? 'any' : job.printer || job.target, ...(any ? { model: job.model } : {}), options: job.options, name: job.name };
-  const r = await attempt(() => api.queueJob(job.slice_job, body), 'Added to the queue');
+// New print job with the same settings: the stored file goes into the queue again with the print's target and options.
+export async function sameJob(ctx, id) {
+  const r = await attempt(() => api.historyQueue(id), 'Added to the queue');
   if (r) ctx.go('#/queue/' + r.id);
+}
+
+const FROM = { slice: 'Read from the sliced file.', saved: 'Saved when the job was queued.', cloud: 'Read from the file of the Bambu cloud task.' };
+const TASK_FACTS = [['title', 'Title'], ['design_title', 'Design title'], ['plate', 'Plate'], ['status_code', 'Status code'], ['model_id', 'modelId'],
+  ['profile_id', 'profileId'], ['design_id', 'designId']];
+
+// All slicing settings of a print: the curated groups, then every key. `data` is GET /api/history/{id}/settings.
+export function slicingCard(data, job) {
+  if (!data.available) {
+    const rec = facts(TASK_FACTS.map(([k, l]) => [l, data.task?.[k]]));
+    return card('Slicing settings', h('p', { class: 'muted', style: 'margin:0' }, 'No slicing settings for this print. ' + (data.reason || '')),
+      rec && h('h3', { style: 'margin:6px 0 0' }, 'What the Bambu cloud record has'), rec);
+  }
+  const groups = data.groups.map((g) => h('section', { class: 'sgroup' }, h('h3', null, g.title),
+    facts(g.rows.map((r) => [r.label, r.unit ? `${r.value} ${r.unit}` : r.value]))));
+  const q = h('input', { type: 'search', placeholder: 'Find a setting', 'aria-label': 'Find a setting' });
+  const list = h('dl', { class: 'kv allkeys' });
+  const draw = () => {
+    const f = q.value.trim().toLowerCase();
+    clear(list, data.all.filter(([k, v]) => !f || k.includes(f) || v.toLowerCase().includes(f)).map(([k, v]) => [h('dt', null, k), h('dd', null, v)]));
+  };
+  q.addEventListener('input', draw);
+  let drawn = false;
+  const all = h('details', { class: 'allsettings', ontoggle: (e) => { if (e.target.open && !drawn) { drawn = true; draw(); } } },
+    h('summary', null, `All settings (${data.all.length})`), q, list);
+  const gone = !data.can_reprint && job ? 'The sliced file is gone. The button below opens New print with the same printer and options; choose the model again.' : null;
+  return card('Slicing settings', h('div', { class: 'sgroups' }, groups), all,
+    h('p', { class: 'muted', style: 'margin:0;font-size:13px' }, [FROM[data.source], gone].filter(Boolean).join(' ')));
 }
 
 // Editable print options; get() returns the options that differ from `options`.

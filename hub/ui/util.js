@@ -25,7 +25,7 @@ export const clear = (el, ...kids) => { el.replaceChildren(); add(el, kids); ret
 const ICONS = {
   printer: 'M7 9V4h10v5M7 17H5a2 2 0 0 1-2-2v-4a2 2 0 0 1 2-2h14a2 2 0 0 1 2 2v4a2 2 0 0 1-2 2h-2M7 14h10v6H7z',
   queue: 'M4 6h16M4 12h16M4 18h10',
-  plus: 'M12 5v14M5 12h14',
+  plus: 'M12 5v14M5 12h14', download: 'M12 4v11m0 0l-4-4m4 4l4-4M5 19h14',
   spool: 'M12 3a9 9 0 1 0 0 18 9 9 0 0 0 0-18zm0 6a3 3 0 1 0 0 6 3 3 0 0 0 0-6z',
   key: 'M14 10a4 4 0 1 0-3.9 4L11 15h2v2h2v2h3v-3.2l-4.9-4.9',
   gear: 'M4 7h10M18 7h2M4 17h2M10 17h10M16 4v6M8 14v6',
@@ -132,3 +132,6 @@ export function ring(percent, label, sub) {
   return h('div', { class: 'ring-wrap', role: 'img', 'aria-label': `${Math.round(v)} percent` }, svg,
     h('div', { class: 'ring-txt' }, h('b', null, label ?? Math.round(v) + '%'), sub && h('small', null, sub)));
 }
+
+// Overlay pill over the top of a list; style.css shows it only while #view is stale (it takes no layout space).
+export const staleNote = () => h('div', { class: 'stale-note muted', role: 'status' }, h('i'), ' Checking for newer items…');

@@ -23,7 +23,9 @@ HERE = os.path.dirname(os.path.abspath(__file__))
 PREFIX = "/api/hassio_ingress/MOCKTOKEN/"
 sys.path.insert(0, HERE)
 import ingress_proxy  # noqa: E402
-MODEL = {"name": "demo_part.stl", "mimeType": "model/stl", "buffer": b"solid x\nendsolid x\n"}
+CUBE = open(os.path.join(HERE, "..", "tests", "fixtures", "cube20.stl"), "rb").read()  # a real STL: New print parses it when it is added
+MODEL = {"name": "demo_part.stl", "mimeType": "model/stl", "buffer": CUBE}
+HAS_ENGINE = bool(os.environ.get("MOCK_ENGINE"))  # a built WebAssembly engine for the mock; without it nothing can be sliced here
 SLICE_TIMEOUT = 15000
 MOCKED = True  # False against a real hub (--base-url): no mock hooks, other spool names
 ONLY = None
@@ -268,19 +270,31 @@ def check_history_list(page, base, ident, go, shot):
         b1, b2 = box.bounding_box(), ref.bounding_box()
         assert (b1["width"], b1["height"]) == (b2["width"], b2["height"]) == (56, 56), f"placeholder box keeps its size: {b1} {b2}"
         assert cloud.locator(".thumb img").count() == 0 and "ph" in box.get_attribute("class")
+    check_history_spans(page)
     page.locator("nav.tabs a[data-id=queue]").click()
     page.wait_for_selector(".page-head h1:has-text('Queue')")
     assert page.get_by_role("button", name="History").count() == 0 and page.locator(".seg").count() == 0, "the queue has no History segment"
 
 
+def check_history_spans(page):
+    """A print's bar is as long as the print took on the day's 24 h axis; a print without times has no bar."""
+    one = page.locator(".tl-item", has_text="Timeline one hour").locator(".tl-bar")
+    three = page.locator(".tl-item", has_text="Timeline three hours").locator(".tl-bar")
+    assert one.count() == 1 and three.count() == 1, "prints with times get a bar"
+    w1, w3 = one.bounding_box()["width"], three.bounding_box()["width"]
+    assert 2.7 < w3 / w1 < 3.3, f"1 h and 3 h bars are about 1:3 wide, got {w1:.1f}px and {w3:.1f}px"
+    assert page.locator(".tl-item", has_text="wall_hook_test").locator(".tl-bar").count() == 0, "a print with no times has no bar"
+    assert page.evaluate("document.documentElement.scrollWidth <= window.innerWidth"), "no horizontal page scroll"
+
+
 def check_reslice_lands(page):
     # New print opens with what the old print had: model, name, target, filament (AMS 1·1), build plate
-    page.wait_for_selector(".drop b:has-text('cable_clip_set.stl')", timeout=8000)
+    page.wait_for_selector(".pobj[data-name='cable_clip_set.stl']", timeout=8000)
     assert page.locator(".chip[aria-pressed=true]", has_text="AMS 1·1").count() == 1, "the old filament is preselected"
     assert page.locator(".chip[aria-pressed=true]", has_text="Workshop H2S").count() == 1, "the old printer is preselected"
     assert page.locator("select option:checked", has_text="Textured PEI Plate").count() >= 1
     page.get_by_role("button", name="Slice good, better and best").click()
-    if MOCKED:  # the mock's slice takes 3 s and reports a percent
+    if MOCKED and not HAS_ENGINE:  # the mock's fake slice takes 3 s and reports a percent; the real engine is too quick for that
         must(page, ".variant .slice-progress:not([data-percent=''])", "a slice in progress shows its percent", 4000)
         assert re.search(r"Slicing… \d+% · Generating infill", page.locator(".variant .slice-progress").first.text_content())
     page.wait_for_selector(".variant[aria-pressed=true]", timeout=SLICE_TIMEOUT)
@@ -296,6 +310,39 @@ def check_reslice(page, base, ident):
     check_reslice_lands(page)
 
 
+GROUPS = ["Quality", "Strength", "Support and adhesion", "Speed", "Filament", "Plate and bed", "Printer"]
+SAME = "New print job with the same settings"
+
+
+def check_settings(page, base, ident, shot):
+    """The history detail shows all slicing settings; the one primary action queues the same file with the same options."""
+    page.wait_for_selector(".sgroup", timeout=8000)
+    assert page.locator(".sgroup h3").all_text_contents() == GROUPS, "the settings are grouped"
+    body = page.locator(".detail").text_content()
+    for want in ("Layer height", "0.2 mm", "Infill density", "15%", "Nozzle temperature", "Flow ratio", "Build plate", "Read from the sliced file."):
+        assert want in body, f"settings show {want!r}"
+    all_ = page.locator("details.allsettings")
+    assert all_.locator("summary").text_content().startswith("All settings (") and all_.get_attribute("open") is None
+    all_.locator("summary").click()
+    all_.locator("dt").first.wait_for()
+    assert all_.locator("dt").count() == 8, "all settings list every key"
+    all_.get_by_label("Find a setting").fill("infill")
+    page.wait_for_function("() => document.querySelectorAll('details.allsettings dt').length === 1")
+    assert all_.locator("dt").all_text_contents() == ["sparse_infill_density"], "the list can be searched"
+    all_.get_by_label("Find a setting").fill("")
+    shot("history-detail")
+    assert page.get_by_role("button", name=SAME).count() == 1 and page.get_by_role("button", name="Print again").count() == 0, "one action, not two"
+    assert page.locator(".btn.primary", has_text=SAME).count() == 1, "it is the primary button"
+    page.get_by_role("button", name=SAME).click()
+    page.wait_for_function("() => /^#\\/queue\\/[0-9a-f]{12}$/.test(location.hash)", timeout=5000)
+    page.wait_for_selector("h2:has-text('Change this job')")
+    assert page.locator("h1").text_content() == "Cable clip set (desk)", "the name is kept"
+    assert page.locator("input[data-opt=timelapse]").is_checked() and page.locator("select[data-opt=flow_cali]").input_value() == "auto" \
+        and page.locator("select[data-opt=bed_leveling]").input_value() == "false", "the new job has the options of the print"
+    page.go_back()
+    page.wait_for_selector(".sgroup")
+
+
 def check_history_details(page, base, ident, go, shot):
     go("#/history", ".tl-card")
     page.locator(".tl-card", has_text="Cable clip set (desk)").click()
@@ -306,21 +353,101 @@ def check_history_details(page, base, ident, go, shot):
         assert want in body, f"history detail shows {want!r}"
     assert page.locator("a.spoolprint[href='#/filament/5000']").count() == 1, "the spool links to the filament detail"
     page.wait_for_selector(".preview3d", timeout=8000)  # the slice is still stored: the 3D preview
-    shot("history-detail")
+    check_settings(page, base, ident, shot)
     page.get_by_role("button", name="Reslice").click()
     hash_is(page, "#/new")
     check_reslice_lands(page)
+    fresh(page, f"{base}/?as={ident}#/history/{TASK_BENCHY}")  # settings kept, file gone: the one action opens New print with the options
+    page.wait_for_selector(".sgroup", timeout=8000)
+    assert "Saved when the job was queued." in page.locator(".detail").text_content() and "The sliced file is gone" in page.locator(".detail").text_content()
+    page.get_by_role("button", name=SAME).click()
+    hash_is(page, "#/new")
+    page.wait_for_selector(".toast:has-text('model is no longer stored')")
     fresh(page, f"{base}/?as={ident}#/history/{JOB_ONLY}")
     page.wait_for_selector(".detail")
     body = page.locator(".detail").text_content()
     assert "Druckwerk only" in body and "The printer is busy" in body and "Print options" in body, "a job-only item shows its error and settings"
-    assert page.get_by_role("button", name="Print again").count() == 0, "no stored slice: no Print again"
+    page.wait_for_selector("h2:has-text('Slicing settings')")
+    assert "No slicing settings for this print" in page.locator(".detail").text_content(), "a job without a file says so"
     if ident == "admin":
         fresh(page, f"{base}/?as={ident}#/history/{TASK_CLOUD}")
         page.wait_for_selector(".detail")
         body = page.locator(".detail").text_content()
         assert "Not started here" in body and "Print options" not in body, "a cloud-only print shows what the cloud knows"
+        page.wait_for_selector("h2:has-text('Slicing settings')")
+        body = page.locator(".detail").text_content()
+        assert "No slicing settings for this print" in body and "What the Bambu cloud record has" in body and "profileId" in body and "4711" in body, "cloud-only without a file: the record's fields and the reason"
+        assert page.get_by_role("button", name="New print job with the same settings").count() == 0, "no file and no job: no new print job"
         assert page.locator(".detail-img.ph").count() == 1 and page.locator(".detail-img img").count() == 0, "a broken cover leaves the placeholder box"
+        shot("history-cloud-only")
+        fresh(page, f"{base}/?as={ident}#/history/{TASK_OWNED_CLOUD}")  # the cloud gave a file: settings and the same action as for a Druckwerk print
+        page.wait_for_selector(".sgroup", timeout=8000)
+        assert "Read from the file of the Bambu cloud task." in page.locator(".detail").text_content()
+        page.get_by_role("button", name=SAME).click()
+        page.wait_for_function("() => /^#\\/queue\\/[0-9a-f]{12}$/.test(location.hash)", timeout=5000)
+        page.wait_for_selector("h1:has-text('Slicer plate 3')")
+
+
+def check_history_download(page, base, ident):
+    """The download button shows only when the hub holds a file: the model first, else the sliced 3MF."""
+    def open_item(id_):
+        fresh(page, f"{base}/?as={ident}#/history/{id_}")
+        page.wait_for_function("() => /Slicing settings|No slicing settings|Saved when|Read from/.test(document.querySelector('.detail')?.textContent || '')", timeout=8000)
+        page.wait_for_timeout(300)
+        return page.locator(".detail a[download]")
+    a = open_item(TASK_CLIPS)
+    assert a.count() == 1 and "Download model" in a.text_content() and a.get_attribute("download") == "cable_clip_set.stl", "a print with its model offers the model"
+    assert page.evaluate("async h => (await fetch(h)).status", a.get_attribute("href")) == 200, "the link downloads"
+    if ident == "admin":  # the cloud-only items are not the user's own
+        a = open_item(TASK_OWNED_CLOUD)
+        assert a.count() == 1 and "Download sliced 3MF" in a.text_content(), "no model, a sliced file: the 3MF"
+    for id_ in ((TASK_CLOUD, TASK_BENCHY, JOB_ONLY) if ident == "admin" else (JOB_ONLY,)):
+        assert open_item(id_).count() == 0, f"no file for {id_}: no download button"
+
+
+def check_history_preview(page, base, ident):
+    """The 3D canvas shows for a print with a stored file (also the cloud's, which has no slicer job) and not for one without."""
+    if ident == "admin":
+        fresh(page, f"{base}/?as={ident}#/history/{TASK_OWNED_CLOUD}")
+        page.wait_for_selector(".detail .preview3d canvas.view3d", timeout=10000)
+        page.wait_for_selector('.preview3d[data-ready="1"]', timeout=15000)
+        assert page.evaluate("() => document.documentElement.scrollWidth <= window.innerWidth"), "the preview fits the screen"
+        fresh(page, f"{base}/?as={ident}#/history/{TASK_CLOUD}")
+        page.wait_for_selector(".detail :text('no 3D preview')", timeout=8000)
+        assert page.locator(".detail canvas").count() == 0, "no file: placeholder, no canvas"
+    fresh(page, f"{base}/?as={ident}#/history/{TASK_BENCHY}")
+    page.wait_for_selector(".detail :text('no 3D preview')", timeout=8000)
+    assert page.locator(".detail canvas").count() == 0, "settings kept but no file: no canvas"
+
+
+def check_printer_history(page, base, ident):
+    """The printer page shows the running print in 3D and its last prints, with a link to History filtered by the printer."""
+    fresh(page, f"{base}/?as={ident}#/printers/{H2S}")
+    page.wait_for_selector(".printer-history .tl-item", timeout=10000)
+    items = page.locator(".printer-history .tl-item")
+    assert 1 <= items.count() <= 5, f"excerpt has 1 to 5 prints, got {items.count()}"
+    link = page.locator(".printer-history a", has_text="All prints on this printer")
+    assert link.get_attribute("href") == f"#/history?printer={H2S}", link.get_attribute("href")
+    if ident == "admin":  # the running task 9 is the admin's; a user sees only their own prints
+        page.wait_for_selector('.preview3d[data-ready="1"][data-task="9"]', timeout=15000)
+        assert page.locator("section.card h2", has_text="Current print in 3D").count() == 1
+    else:
+        page.wait_for_selector("section.card :text('You see only your own prints')", timeout=8000)
+        assert page.locator(".preview3d").count() == 0, "not the user's print: no 3D view"
+    page.wait_for_timeout(5500)  # one 5 s redraw: the canvas must survive it
+    assert page.locator(".preview3d canvas").count() == (1 if ident == "admin" else 0), "the 3D view survives the redraw"
+    link.click()
+    hash_is(page, f"#/history?printer={H2S}")
+    page.wait_for_selector(".timeline .tl-item", timeout=8000)
+    metas = page.locator(".timeline .tl-card .meta").all_inner_texts()
+    assert metas and all("Workshop H2S" in m for m in metas), f"only the H2S prints: {metas}"
+    if ident == "admin":
+        assert page.locator(".filters select").nth(1).input_value() == H2S, "the printer select shows the filter"
+    else:
+        assert page.locator(".filters a", has_text="Show all your prints").count() == 1
+    fresh(page, f"{base}/?as={ident}#/printers/{P1S}")
+    page.wait_for_selector(".printer-history", timeout=8000)
+    assert page.locator("section.card h2", has_text="Current print in 3D").count() == 0, "idle printer: no 3D card"
 
 
 def check_queue_details(page, base, ident, go, shot):
@@ -333,7 +460,7 @@ def check_queue_details(page, base, ident, go, shot):
     shot("queue-detail")
     # a fresh job to change and cancel: print the finished clip set again
     go(f"#/history/{TASK_CLIPS}", ".detail")
-    page.get_by_role("button", name="Print again").click()
+    page.get_by_role("button", name=SAME).click()
     page.wait_for_function("() => /^#\\/queue\\/[0-9a-f]{12}$/.test(location.hash)", timeout=5000)
     url = page.url
     page.wait_for_selector(".detail")
@@ -516,13 +643,31 @@ def check_live_video(page, go, shot):
     shot("printer-live-video")
 
 
+def check_layout_stable(page, go):
+    """The top bar keeps one row and the page never scrolls sideways while the window narrows; empty AMS slots line up with loaded ones."""
+    go("#/printers", ".pcard .tray")
+    ys = page.evaluate("[...document.querySelectorAll('.pcard .trays.flat .tray')].map((t) => Math.round(t.querySelector('.ty').getBoundingClientRect().top - t.getBoundingClientRect().top))")
+    assert len(set(ys)) == 1, f"tray labels sit at different heights: {ys}"
+    if page.viewport_size["width"] < 721:
+        return  # a bottom bar there
+    heights, size = {}, page.viewport_size
+    for w in (1256, 1100, 1000, 934, 860, 800, 740, 721):
+        page.set_viewport_size({"width": w, "height": page.viewport_size["height"]})
+        heights[w] = page.evaluate("[document.querySelector('.topbar').getBoundingClientRect().height, document.documentElement.scrollWidth - innerWidth, new Set([...document.querySelectorAll('.tabs a')].map((a) => Math.round(a.getBoundingClientRect().height))).size]")
+        assert heights[w][1] <= 0 and heights[w][2] == 1, f"top bar overflows or wraps at {w}px: {heights[w]}"
+    page.set_viewport_size(size)
+    assert max(v[0] for v in heights.values()) - min(v[0] for v in heights.values()) <= 3, f"top bar height jumps: {heights}"
+
+
 def check_printer_card(page, base, ident, go, shot):
     """A printer whose camera fails and whose AMS slots are all empty: a placeholder, no broken image, no tray row;
     the chamber light switch sends the command and shows the state."""
     ALLOW_502.append("/camera")
     hook(page, "camera_down", P1S, 1)
     hook(page, "empty_ams", P1S, 1)
-    page.goto(f"{base}/?as={ident}")  # a fresh page: no earlier camera frame is kept
+    page.goto(f"{base}/?as={ident}")
+    page.evaluate("Object.keys(localStorage).filter((k) => k.startsWith('dw1:frame:')).forEach((k) => localStorage.removeItem(k))")
+    page.goto(f"{base}/?as={ident}")  # a fresh page with no cached camera frame
     go("#/printers", ".pcard")
     must(page, ".pcard:has-text('Office P1S') .off:has-text('No camera image')", "a failing camera shows a placeholder")
     assert page.evaluate(BROKEN) == [], "broken images on the printer grid: %s" % page.evaluate(BROKEN)
@@ -582,6 +727,45 @@ def check_library_pick(page, go, shot):
     hook(page, "empty_ams", P1S, 0)
 
 
+def check_plate(page, go, shot):
+    """Several models on one plate, settings per selected object, only the chosen variant is sliced."""
+    go("#/new", ".drop")
+    page.set_input_files("input[type=file]", files=[{**MODEL, "name": "a.stl"}, {**MODEL, "name": "b.stl"}])
+    page.wait_for_function("document.querySelectorAll('.pobj[data-id]').length === 2", timeout=8000)
+    page.wait_for_selector('#plate3d[data-ready="1"]', timeout=15000)
+    assert page.locator("#plate3d").get_attribute("data-objects") == "2", "both models are in the preview"
+    page.get_by_role("button", name="Workshop H2S").click()
+    page.locator(".chip", has_text="AMS 1·1").click()
+    page.wait_for_selector("#object-settings .orow", state="attached", timeout=60000)
+    page.locator("#object-settings summary").click()
+    page.locator(".pobj[data-name='a.stl']").click()
+    assert page.locator(".pobj[data-selected=true]").count() == 1 and page.locator("#os-target").text_content() == "a.stl"
+    page.locator("#os-wall_loops").fill("5")
+    page.locator("#os-wall_loops").dispatch_event("change")
+    page.wait_for_selector(".pobj[data-name='a.stl'][data-changed='1']", timeout=8000)
+    assert page.locator(".pobj[data-name='b.stl']").get_attribute("data-changed") == "0", "the other model keeps its preset"
+    assert '"wall_loops":"5"' in page.locator(".pobj[data-name='a.stl']").get_attribute("data-config")
+    page.locator(".pobj[data-name='b.stl']").click(modifiers=["Shift"])
+    assert page.locator("#os-target").text_content() == "a.stl and 1 more" and page.locator("[data-row=wall_loops] .varies").count() == 1, "a mixed selection says varies"
+    assert page.locator("#paint-open").is_disabled(), "paint needs a single selection"
+    page.get_by_role("button", name="Select none").click()
+    assert "Nothing selected" in page.locator("#object-settings").text_content()
+    shot("new-print-plate")
+    page.locator("#variant-chips [data-q=good]").click()
+    page.locator("#variant-chips [data-q=best]").click()
+    assert page.locator("#variant-chips [data-q=better]").get_attribute("aria-pressed") == "true"
+    page.locator("#variant-chips [data-q=better]").click()  # the last one stays on
+    assert page.locator("#variant-chips [data-q=better]").get_attribute("aria-pressed") == "true"
+    before = len(page.evaluate("fetch('api/_mock/slices').then((r) => r.json())"))
+    page.get_by_role("button", name="Slice Better").click()
+    page.wait_for_selector(".variant[aria-pressed=true]", timeout=SLICE_TIMEOUT * 8)
+    sent = page.evaluate("fetch('api/_mock/slices').then((r) => r.json())")[before:]
+    assert page.locator(".variant").count() == 1 and [b["quality"] for b in sent] == ["better"], "one variant is sliced: %s" % sent
+    shot("new-print-plate-sliced")
+    page.evaluate("localStorage.removeItem('dw-variants')")  # the walks after this one slice all three
+    go("#/queue", ".job")  # leave the page, so that the next New print starts fresh
+
+
 def walk(page, ident, base, shot, inject):
     def go(h, wait):
         page.evaluate("h => { location.hash = h }", h)
@@ -619,6 +803,15 @@ def walk(page, ident, base, shot, inject):
     if ONLY == "cache":
         check_cache(page, base, ident)
         return
+    if ONLY == "download":
+        check_history_download(page, base, ident)
+        return
+    if ONLY == "preview":
+        check_history_preview(page, base, ident)
+        return
+    if ONLY == "printerhistory":
+        check_printer_history(page, base, ident)
+        return
     if ONLY == "offline":
         check_back_online(page, base, ident)
         return
@@ -642,6 +835,7 @@ def walk(page, ident, base, shot, inject):
         assert page.locator("section.card h2", has_text="Start next").count() == 0, "empty queue: no start card"
         shot("printer-offline-hms")
     if MOCKED:
+        check_layout_stable(page, go)
         check_printer_card(page, base, ident, go, shot)
         check_back_online(page, base, ident)
         check_connecting(page, base, ident, shot)
@@ -654,12 +848,17 @@ def walk(page, ident, base, shot, inject):
         check_history_list(page, base, ident, go, shot)
         shot("history-list")
         check_history_details(page, base, ident, go, shot)
+        check_history_download(page, base, ident)
+        check_history_preview(page, base, ident)
+        check_printer_history(page, base, ident)
         check_queue_details(page, base, ident, go, shot)
         check_spool_detail(page, base, ident, go, shot)
         check_loading(page, go)
         if ident == "admin":
             check_inside_ha_panel(page, base, ident)
         go("#/queue", ".job")
+    if MOCKED and HAS_ENGINE:
+        check_plate(page, go, shot)
     # new print: upload, pick printer + tray, slice 3 variants, pick
     go("#/new", ".drop")
     page.set_input_files("input[type=file]", files=[MODEL])
@@ -717,7 +916,7 @@ def main():
     ap = argparse.ArgumentParser()
     ap.add_argument("--shots")
     ap.add_argument("--scale", type=float, default=1, help="deviceScaleFactor of the screenshots")
-    ap.add_argument("--only", choices=["cache", "reslice", "panel", "offline"], help="run one check only")
+    ap.add_argument("--only", choices=["cache", "reslice", "panel", "download", "preview", "printerhistory", "offline"], help="run one check only")
     ap.add_argument("--port", type=int, default=18099, help="port of the mock server")
     ap.add_argument("--inject-absolute", action="store_true")
     ap.add_argument("--base-url")

@@ -3,6 +3,8 @@ import { api } from '../api.js';
 import { h, clear, icon, ring, btn, empty, dur, clock, attempt, pill, swatch, modal, field, toast } from '../util.js';
 import { statusPill, isPrinting, hmsBanners, amsBlock, temps, timeLeft, finishAt } from './common.js';
 import { stepsView, watchStart } from './progress.js';
+import { gcodePreview } from './preview.js';
+import { entry } from './history.js';
 
 export async function mount(ctx, root, [serial]) {
   if (!ctx.me.setup_done && !ctx.isAdmin()) {
@@ -19,14 +21,34 @@ const stills = new Map();
 // The <img> stays hidden until a frame has loaded, so a printer whose snapshot fails or takes a minute shows the
 // placeholder, never a broken image. After a first frame, a failed one keeps the last good frame.
 const noImage = (text) => h('div', { class: 'off' }, icon('camera', 28), text);
+// The last frame per printer (640 px wide JPEG, in localStorage) shows at once after a reload, labelled with its age.
+const frameKey = (p) => 'dw1:frame:' + p.serial;
+const readFrame = (p) => { try { const f = JSON.parse(localStorage.getItem(frameKey(p))); return f && f.d && f.t ? f : null; } catch { return null; } };
+const ago = (t) => { const sec = Math.max(0, Math.round((Date.now() - t) / 1000)); return sec < 60 ? sec + ' s ago' : sec < 3600 ? Math.floor(sec / 60) + ' min ago' : Math.floor(sec / 3600) + ' h ago'; };
+function saveFrame(p, img) {
+  try {
+    const w = Math.min(640, img.naturalWidth), c = document.createElement('canvas');
+    c.width = w; c.height = Math.round(img.naturalHeight * w / img.naturalWidth);
+    c.getContext('2d').drawImage(img, 0, 0, c.width, c.height);
+    localStorage.setItem(frameKey(p), JSON.stringify({ t: Date.now(), d: c.toDataURL('image/jpeg', 0.7) }));
+  } catch { /* full, blocked or tainted: no cached frame */ }
+}
 function still(p, big) {
   const key = p.serial + (big ? ':big' : '');
   let s = stills.get(key);
   if (!s) {
     const img = h('img', { alt: `Camera of ${p.name}` }), text = h('span', null, 'Loading camera image…');
     const holder = h('div', { class: 'still' }, h('div', { class: 'off' }, icon('camera', 28), text), img);
-    s = { holder, img, text, running: false, url: p.camera_url, pause: big ? 2000 : 10000 };
+    s = { holder, img, text, running: false, url: p.camera_url, pause: big ? 2000 : 10000, saved: 0 };
     stills.set(key, s);
+    const old = readFrame(p);
+    if (old) {
+      // Overlay label: no layout space. It ticks while the cached frame is the only one.
+      const label = h('span', { class: 'ago' }, ago(old.t));
+      const tick = setInterval(() => { if (!label.isConnected) clearInterval(tick); else label.textContent = ago(old.t); }, 1000);
+      s.label = label; s.tick = tick;
+      img.src = old.d; holder.classList.add('ok'); holder.append(label);
+    }
   }
   s.url = p.camera_url;
   if (!s.running) {
@@ -36,7 +58,12 @@ function still(p, big) {
       if (document.hidden || s.holder.closest('.live.playing')) { setTimeout(next, 1000); return; }
       const probe = new Image();
       const again = () => setTimeout(next, s.pause);
-      probe.onload = () => { s.img.src = probe.src; s.holder.classList.add('ok'); again(); };
+      probe.onload = () => {
+        s.img.src = probe.src; s.holder.classList.add('ok');
+        if (s.label) { s.label.remove(); clearInterval(s.tick); s.label = null; }
+        if (Date.now() - s.saved > 20000) { s.saved = Date.now(); saveFrame(p, probe); }  // not every frame: encoding costs
+        again();
+      };
       probe.onerror = () => { if (!s.holder.classList.contains('ok')) s.text.textContent = 'No camera image'; again(); };
       probe.src = s.url + (s.url.includes('?') ? '&' : '?') + 'mode=snapshot&t=' + Date.now();
     };
@@ -187,23 +214,77 @@ async function grid(ctx, root) {
   });
 }
 
+const RECENT = 5;  // prints in the history excerpt
+
 async function detail(ctx, root, serial) {
   const body = h('div');
   const camHost = h('div');
+  // The 3D view and the history excerpt live outside the 5 s redraw: the canvas keeps its view, and they load once a minute.
+  const model = currentModel(), recent = h('div');
+  let p = null, hist = null;
   root.append(h('a', { class: 'btn sm', href: '#/printers', style: 'margin-bottom:12px' }, icon('back', 16), 'Printers'), body);
+  // The history is cached for a minute on the hub, so a faster poll gives nothing new.
+  ctx.every(60000, async () => {
+    try { hist = await api.history(new URLSearchParams({ printer: serial, limit: RECENT + 1 }).toString()); } catch (e) { hist = { error: e.message }; }
+    clear(recent, historyCard(ctx, serial, hist));
+    if (p) model.sync(p, hist);
+  });
   let camUrl = '', camOnline, last = '';
   ctx.every(5000, async () => {
     let ps, queue;
     try { [ps, queue] = await Promise.all([api.printers(), api.queue()]); } catch (e) { if (!last) clear(body, empty(e.message)); return; }
-    const p = ps.find((x) => x.serial === serial);
+    p = ps.find((x) => x.serial === serial);
     if (!p) { clear(body, empty('This printer was not found, or you have no access to it.')); return; }
+    model.sync(p, hist);
     const sig = JSON.stringify([p, queue.jobs]);
     if (sig === last) return;
     last = sig;
     if (p.camera_url !== camUrl || p.online !== camOnline || !p.online) { camUrl = p.camera_url; camOnline = p.online; clear(camHost, camera(p, true)); }
     const mine = queue.jobs.filter((j) => j.printer === serial || j.target === serial || (j.target === 'any' && j.model === p.model));
-    draw(ctx, body, camHost, p, mine, () => { last = ''; });
+    draw(ctx, body, { camHost, model: model.box, recent }, p, mine, () => { last = ''; });
   });
+}
+
+// The running print in 3D, from the G-code of its history item (the same file as the History detail's preview).
+// The item appears when the cloud lists the print, up to a minute after the start. The preview loads once per print.
+function currentModel() {
+  const box = h('div');
+  let shown = null;
+  const note = (text) => h('p', { class: 'muted', style: 'margin:0' }, text);
+  const card = (...kids) => h('section', { class: 'card stack', style: 'gap:10px' }, h('h2', { style: 'margin:0' }, 'Current print in 3D'), ...kids);
+  return {
+    box,
+    sync(p, hist) {
+      const own = p.role === 'admin';  // printer admins see every print of the printer in the history, others only their own
+      const run = isPrinting(p) && hist?.items?.find((t) => t.status === 'running');
+      const key = !isPrinting(p) ? 'idle' : run ? 'id:' + run.id : hist ? 'wait' : 'loading';
+      if (key === shown) return;
+      shown = key;
+      box.hidden = key === 'idle';  // an empty item would still take a gap in the column
+      if (key === 'idle') return clear(box);
+      if (!run) return clear(box, card(note(hist?.error ? 'Could not load the history: ' + hist.error
+        : hist ? 'The 3D view shows when the history lists this print, up to a minute after the start.' + (own ? '' : ' You see only your own prints.')
+          : 'Loading the 3D view…')));
+      const msg = note('Loading the 3D view…'), view = card(msg);
+      clear(box, view);
+      api.historyGcode(run.id).then((text) => {
+        if (shown !== key) return;
+        const prev = gcodePreview();
+        prev.dataset.task = run.id;
+        msg.replaceWith(h('a', { href: '#/history/' + encodeURIComponent(run.id) }, run.job?.name || run.title || 'This print'), prev);
+        return prev.load(text);
+      }).catch(() => { if (shown === key) msg.textContent = 'No file is stored for this print, so there is no 3D view.'; });
+    },
+  };
+}
+
+function historyCard(ctx, serial, hist) {
+  const all = h('a', { href: '#/history?printer=' + encodeURIComponent(serial) }, 'All prints on this printer');
+  const items = (hist.items || []).slice(0, RECENT);
+  return h('section', { class: 'card printer-history' }, h('div', { class: 'row between' }, h('h2', { style: 'margin:0' }, 'History'), all),
+    hist.error ? h('p', { class: 'muted' }, 'Could not load the history: ' + hist.error)
+      : items.length ? h('ol', { class: 'tl-list' }, items.map((t) => entry(t, { showUser: ctx.managesAny(), excerpt: true })))
+        : h('p', { class: 'muted' }, ctx.isAdmin() ? 'No prints on this printer yet.' : 'You have no prints on this printer yet.'));
 }
 
 function jobCard(p) {
@@ -300,7 +381,7 @@ function startNext(ctx, p, mine, refresh) {
       isPrinting(p) && h('small', null, 'The printer is busy.')));
 }
 
-function draw(ctx, body, camHost, p, mine, refresh) {
+function draw(ctx, body, { camHost, model, recent }, p, mine, refresh) {
   const queueCard = h('section', { class: 'card' }, h('div', { class: 'row between' }, h('h2', { style: 'margin:0' }, 'Queue'), h('a', { href: '#/queue' }, 'Open queue')),
     mine.length ? h('div', { class: 'stack', style: 'margin-top:12px;gap:8px' }, mine.map((j, i) =>
       h('div', { class: 'row between' }, h('span', null, h('b', null, `${i + 1}. `), j.name || j.source, h('small', null, ' · ' + j.owner_name)),
@@ -310,11 +391,11 @@ function draw(ctx, body, camHost, p, mine, refresh) {
     h('div', { class: 'page-head' }, h('div', null, h('h1', null, p.name), h('div', { class: 'sub' }, `${p.model} · ${p.serial.slice(0, 4)}…${p.serial.slice(-3)}`)), statusPill(p)),
     h('div', { class: 'stack', style: 'margin-bottom:16px' }, hmsBanners(p.hms)),
     h('div', { class: 'cols' },
-      h('div', { class: 'stack' }, camHost, jobCard(p), ctx.canManage(p.serial) && startNext(ctx, p, mine, refresh)),
+      h('div', { class: 'stack' }, camHost, jobCard(p), model, ctx.canManage(p.serial) && startNext(ctx, p, mine, refresh)),
       h('div', { class: 'stack' },
         h('section', { class: 'card' }, h('h2', null, 'Temperatures'), p.online ? temps(p) : h('p', { class: 'muted' }, p.online === null ? 'Connecting to the printer…' : 'No data while offline.'),
           p.online && p.light != null && h('div', { class: 'row between', style: 'margin-top:12px' }, h('span', null, 'Chamber light'), lightButton(p))),
         (p.ams?.length || p.external) && h('section', { class: 'card' }, h('h2', null, 'Filament'), filament(p)),
         (p.drying || []).map((u) => dryCard(ctx, p, u, refresh)),
-        queueCard)));
+        queueCard, recent)));
 }
