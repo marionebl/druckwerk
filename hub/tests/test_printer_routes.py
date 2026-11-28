@@ -99,3 +99,10 @@ def test_a_printer_goes_offline_only_when_the_bridge_says_so(hub):
     hub.now += 10  # past the 5 s reuse of the printer list
     p = hub.req("GET", "/api/printers", user=ADMIN)[1][0]
     assert (p["online"], p["status"], p["progress"], p["stale"]) == (False, None, None, False)
+
+
+def test_time_left_is_minutes_and_matches_the_finish_time():
+    """The feedback case: layer 794 of 831 with 40 min left must not read as 0 min (the old vendor sensor was in hours)."""
+    import printer_state
+    v = printer_state.view({"gcode_state": "RUNNING", "mc_percent": 95, "mc_remaining_time": 40, "layer_num": 794, "total_layer_num": 831}, 0)
+    assert (v["remaining_min"], v["end_time"]) == (40, "1970-01-01T00:40:00+00:00")

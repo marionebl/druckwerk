@@ -3,6 +3,8 @@ import { api } from '../api.js';
 import { h, clear, icon, ring, btn, empty, dur, clock, attempt, pill, swatch, modal, field, toast } from '../util.js';
 import { statusPill, isPrinting, hmsBanners, amsBlock, temps, timeLeft, finishAt } from './common.js';
 import { stepsView, watchStart } from './progress.js';
+import { gcodePreview } from './preview.js';
+import { entry } from './history.js';
 
 export async function mount(ctx, root, [serial]) {
   if (!ctx.me.setup_done && !ctx.isAdmin()) {
@@ -187,23 +189,77 @@ async function grid(ctx, root) {
   });
 }
 
+const RECENT = 5;  // prints in the history excerpt
+
 async function detail(ctx, root, serial) {
   const body = h('div');
   const camHost = h('div');
+  // The 3D view and the history excerpt live outside the 5 s redraw: the canvas keeps its view, and they load once a minute.
+  const model = currentModel(), recent = h('div');
+  let p = null, hist = null;
   root.append(h('a', { class: 'btn sm', href: '#/printers', style: 'margin-bottom:12px' }, icon('back', 16), 'Printers'), body);
+  // The history is cached for a minute on the hub, so a faster poll gives nothing new.
+  ctx.every(60000, async () => {
+    try { hist = await api.history(new URLSearchParams({ printer: serial, limit: RECENT + 1 }).toString()); } catch (e) { hist = { error: e.message }; }
+    clear(recent, historyCard(ctx, serial, hist));
+    if (p) model.sync(p, hist);
+  });
   let camUrl = '', last = '';
   ctx.every(5000, async () => {
     let ps, queue;
     try { [ps, queue] = await Promise.all([api.printers(), api.queue()]); } catch (e) { if (!last) clear(body, empty(e.message)); return; }
-    const p = ps.find((x) => x.serial === serial);
+    p = ps.find((x) => x.serial === serial);
     if (!p) { clear(body, empty('This printer was not found, or you have no access to it.')); return; }
+    model.sync(p, hist);
     const sig = JSON.stringify([p, queue.jobs]);
     if (sig === last) return;
     last = sig;
     if (p.camera_url !== camUrl || !p.online) { camUrl = p.camera_url; clear(camHost, camera(p, true)); }
     const mine = queue.jobs.filter((j) => j.printer === serial || j.target === serial || (j.target === 'any' && j.model === p.model));
-    draw(ctx, body, camHost, p, mine, () => { last = ''; });
+    draw(ctx, body, { camHost, model: model.box, recent }, p, mine, () => { last = ''; });
   });
+}
+
+// The running print in 3D, from the G-code of its history item (the same file as the History detail's preview).
+// The item appears when the cloud lists the print, up to a minute after the start. The preview loads once per print.
+function currentModel() {
+  const box = h('div');
+  let shown = null;
+  const note = (text) => h('p', { class: 'muted', style: 'margin:0' }, text);
+  const card = (...kids) => h('section', { class: 'card stack', style: 'gap:10px' }, h('h2', { style: 'margin:0' }, 'Current print in 3D'), ...kids);
+  return {
+    box,
+    sync(p, hist) {
+      const own = p.role === 'admin';  // printer admins see every print of the printer in the history, others only their own
+      const run = isPrinting(p) && hist?.items?.find((t) => t.status === 'running');
+      const key = !isPrinting(p) ? 'idle' : run ? 'id:' + run.id : hist ? 'wait' : 'loading';
+      if (key === shown) return;
+      shown = key;
+      box.hidden = key === 'idle';  // an empty item would still take a gap in the column
+      if (key === 'idle') return clear(box);
+      if (!run) return clear(box, card(note(hist?.error ? 'Could not load the history: ' + hist.error
+        : hist ? 'The 3D view shows when the history lists this print, up to a minute after the start.' + (own ? '' : ' You see only your own prints.')
+          : 'Loading the 3D view…')));
+      const msg = note('Loading the 3D view…'), view = card(msg);
+      clear(box, view);
+      api.historyGcode(run.id).then((text) => {
+        if (shown !== key) return;
+        const prev = gcodePreview();
+        prev.dataset.task = run.id;
+        msg.replaceWith(h('a', { href: '#/history/' + encodeURIComponent(run.id) }, run.job?.name || run.title || 'This print'), prev);
+        return prev.load(text);
+      }).catch(() => { if (shown === key) msg.textContent = 'No file is stored for this print, so there is no 3D view.'; });
+    },
+  };
+}
+
+function historyCard(ctx, serial, hist) {
+  const all = h('a', { href: '#/history?printer=' + encodeURIComponent(serial) }, 'All prints on this printer');
+  const items = (hist.items || []).slice(0, RECENT);
+  return h('section', { class: 'card printer-history' }, h('div', { class: 'row between' }, h('h2', { style: 'margin:0' }, 'History'), all),
+    hist.error ? h('p', { class: 'muted' }, 'Could not load the history: ' + hist.error)
+      : items.length ? h('ol', { class: 'tl-list' }, items.map((t) => entry(t, { showUser: ctx.managesAny(), excerpt: true })))
+        : h('p', { class: 'muted' }, ctx.isAdmin() ? 'No prints on this printer yet.' : 'You have no prints on this printer yet.'));
 }
 
 function jobCard(p) {
@@ -300,7 +356,7 @@ function startNext(ctx, p, mine, refresh) {
       isPrinting(p) && h('small', null, 'The printer is busy.')));
 }
 
-function draw(ctx, body, camHost, p, mine, refresh) {
+function draw(ctx, body, { camHost, model, recent }, p, mine, refresh) {
   const queueCard = h('section', { class: 'card' }, h('div', { class: 'row between' }, h('h2', { style: 'margin:0' }, 'Queue'), h('a', { href: '#/queue' }, 'Open queue')),
     mine.length ? h('div', { class: 'stack', style: 'margin-top:12px;gap:8px' }, mine.map((j, i) =>
       h('div', { class: 'row between' }, h('span', null, h('b', null, `${i + 1}. `), j.name || j.source, h('small', null, ' · ' + j.owner_name)),
@@ -310,11 +366,11 @@ function draw(ctx, body, camHost, p, mine, refresh) {
     h('div', { class: 'page-head' }, h('div', null, h('h1', null, p.name), h('div', { class: 'sub' }, `${p.model} · ${p.serial.slice(0, 4)}…${p.serial.slice(-3)}`)), statusPill(p)),
     h('div', { class: 'stack', style: 'margin-bottom:16px' }, hmsBanners(p.hms)),
     h('div', { class: 'cols' },
-      h('div', { class: 'stack' }, camHost, jobCard(p), ctx.canManage(p.serial) && startNext(ctx, p, mine, refresh)),
+      h('div', { class: 'stack' }, camHost, jobCard(p), model, ctx.canManage(p.serial) && startNext(ctx, p, mine, refresh)),
       h('div', { class: 'stack' },
         h('section', { class: 'card' }, h('h2', null, 'Temperatures'), p.online ? temps(p) : h('p', { class: 'muted' }, 'No data while offline.'),
           p.online && p.light != null && h('div', { class: 'row between', style: 'margin-top:12px' }, h('span', null, 'Chamber light'), lightButton(p))),
         (p.ams?.length || p.external) && h('section', { class: 'card' }, h('h2', null, 'Filament'), filament(p)),
         (p.drying || []).map((u) => dryCard(ctx, p, u, refresh)),
-        queueCard)));
+        queueCard, recent)));
 }

@@ -383,7 +383,8 @@ export async function mount(ctx, root) {
     if (S.target && t.ams == null && t.spool_id != null && spoolById(String(t.spool_id))) S.spool = String(t.spool_id);
     else if (S.target && t.ams != null && trays().some((x) => trayKey(x) === `${t.ams}:${t.id}`)) S.tray = `${t.ams}:${t.id}`;
     // The stored model is the whole plate as one STL: it comes back as one object, in the pose it was printed in.
-    api.jobModel(rs.slice_job).then((blob) => addFiles([new File([blob], rs.model || 'model.stl')], { orient: false }).then(loadMachine),
+    if (!rs.slice_job) toast('The model is no longer stored. Choose it again.', 'info');
+    else api.jobModel(rs.slice_job).then((blob) => addFiles([new File([blob], rs.model || 'model.stl')], { orient: false }).then(loadMachine),
       () => toast('The model is no longer stored. Choose it again.', 'error'));
   }
   startEngine();
