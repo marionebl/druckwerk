@@ -139,6 +139,9 @@ dialog.modal > .body { padding: 8px 20px 20px; display: grid; gap: 14px; }
 .cam .still img { display: none; }
 .cam .still.ok img { display: block; }
 .cam .still.ok .off { display: none; }
+.cam .live { position: absolute; inset: 0; display: grid; place-items: center; }
+.cam .live .video { position: absolute; inset: 0; width: 100%; height: 100%; object-fit: cover; opacity: 0; background: transparent; }
+.cam .live.playing .video { opacity: 1; }
 .light-btn { display: inline-grid; place-items: center; width: 36px; height: 36px; border-radius: 50%; border: 1px solid var(--line); background: var(--card); color: var(--muted); cursor: pointer; padding: 0; }
 .light-btn[aria-checked="true"] { background: #f6c945; border-color: #f6c945; color: #1d1d1d; }
 .light-btn:disabled { cursor: default; opacity: .7; }

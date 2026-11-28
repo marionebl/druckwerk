@@ -5,7 +5,16 @@
 - The printer page shows the running print in 3D ("Current print in 3D"). It is the same preview as on a History print, read from that print's stored file. It loads when the cloud lists the print, up to a minute after the start. A user who is not admin of the printer sees it only for their own prints, as in History.
 - The printer page has a History card with the last 5 prints of this printer and a link "All prints on this printer".
 - History reads a filter from the URL: `#/history?printer=<serial>` (and `user=` for admins). The admin selects start from it. A user sees "One printer" and a link to all their prints.
-- This version includes the History work of 3.7.0 from the history-settings branch (settings, duration bars, download, 3D preview).
+- This version includes the History work from the history-settings branch (PR 22) (settings, duration bars, download, 3D preview).
+
+## 3.8.0 (unreleased)
+
+- The printer page plays the live camera stream. H.264 printers (H2S, X1) send MPEG-TS, which the vendored mpegts.js 1.8.0 (Apache-2.0) plays through Media Source, or ManagedMediaSource on iOS 17.1+. JPEG printers (P1, A1) show the multipart stream in an `<img>`. Before, the page showed a still that the bridge cached for 30 s.
+- The still stays under the video as poster and as fallback. A stream that fails, ends or freezes for 10 s starts again (backoff 1 s to 30 s). A hidden page drops its stream. Printer cards on the grid keep the stills.
+- Bridge: an unused live upstream stays open 90 s (was 30 s, `DW_LIVE_IDLE`), so a viewer who comes back gets a frame at once. A live upstream costs about one Pi 4 core while open (qemu runs the vendor plugin).
+- Bridge: when the camera URL mint times out on a live open, the bridge mints once more before it answers 502. Mints fail about 1 in 7 on the H2S.
+- Bridge log: `live <serial>: first frame after N s` and, at close, the duration, MB, stalls (gaps over 2 s, `DW_LIVE_STALL`) and the longest gap.
+- `GET /api/printers` has `camera_live`: `mpegts` or `mjpeg`.
 
 ## 3.7.1 (unreleased)
 
