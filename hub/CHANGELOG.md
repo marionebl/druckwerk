@@ -2,6 +2,7 @@
 
 ## 3.10.0 (unreleased)
 
+- Fix: the top bar keeps one row at every width (the name and then the tab labels give way on narrow windows) and the page no longer scrolls sideways or jumps in height while the window is resized.
 - Fix: empty AMS slots on a printer card line up with loaded ones.
 - The printer page shows the running print in 3D ("Current print in 3D"). It is the same preview as on a History print, read from that print's stored file. It loads when the cloud lists the print, up to a minute after the start. A user who is not admin of the printer sees it only for their own prints, as in History.
 - The printer page has a History card with the last 5 prints of this printer and a link "All prints on this printer".

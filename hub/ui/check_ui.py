@@ -621,6 +621,22 @@ def check_live_video(page, go, shot):
     shot("printer-live-video")
 
 
+def check_layout_stable(page, go):
+    """The top bar keeps one row and the page never scrolls sideways while the window narrows; empty AMS slots line up with loaded ones."""
+    go("#/printers", ".pcard .tray")
+    ys = page.evaluate("[...document.querySelectorAll('.pcard .trays.flat .tray')].map((t) => Math.round(t.querySelector('.ty').getBoundingClientRect().top - t.getBoundingClientRect().top))")
+    assert len(set(ys)) == 1, f"tray labels sit at different heights: {ys}"
+    if page.viewport_size["width"] < 721:
+        return  # a bottom bar there
+    heights, size = {}, page.viewport_size
+    for w in (1256, 1100, 1000, 934, 860, 800, 740, 721):
+        page.set_viewport_size({"width": w, "height": page.viewport_size["height"]})
+        heights[w] = page.evaluate("[document.querySelector('.topbar').getBoundingClientRect().height, document.documentElement.scrollWidth - innerWidth, new Set([...document.querySelectorAll('.tabs a')].map((a) => Math.round(a.getBoundingClientRect().height))).size]")
+        assert heights[w][1] <= 0 and heights[w][2] == 1, f"top bar overflows or wraps at {w}px: {heights[w]}"
+    page.set_viewport_size(size)
+    assert max(v[0] for v in heights.values()) - min(v[0] for v in heights.values()) <= 3, f"top bar height jumps: {heights}"
+
+
 def check_printer_card(page, base, ident, go, shot):
     """A printer whose camera fails and whose AMS slots are all empty: a placeholder, no broken image, no tray row;
     the chamber light switch sends the command and shows the state."""
@@ -756,6 +772,7 @@ def walk(page, ident, base, shot, inject):
         assert page.locator("section.card h2", has_text="Start next").count() == 0, "empty queue: no start card"
         shot("printer-offline-hms")
     if MOCKED:
+        check_layout_stable(page, go)
         check_printer_card(page, base, ident, go, shot)
         check_back_online(page, base, ident)
         check_start_steps(page, base, ident, go, shot)
