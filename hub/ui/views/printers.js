@@ -33,7 +33,7 @@ function still(p, big) {
     s.running = true;
     const next = () => {
       if (!s.holder.isConnected) { s.running = false; return; }
-      if (document.hidden) { setTimeout(next, 1000); return; }
+      if (document.hidden || s.holder.closest('.live.playing')) { setTimeout(next, 1000); return; }
       const probe = new Image();
       const again = () => setTimeout(next, s.pause);
       probe.onload = () => { s.img.src = probe.src; s.holder.classList.add('ok'); again(); };
@@ -45,9 +45,80 @@ function still(p, big) {
   return s.holder;
 }
 
+// The detail view plays the live stream. H.264 printers send MPEG-TS, which mpegts.js feeds into Media Source
+// (ManagedMediaSource on iOS 17.1+); JPEG printers send multipart, which <img> shows. The still stays underneath as
+// poster and as fallback. A stream that fails, ends or freezes for STALL_MS starts again with backoff.
+// A hidden page drops its stream; the bridge keeps the upstream open for a while, so coming back is quick.
+const STALL_MS = 10000;
+let mpegtsLib = null;
+// Its own console logging is off: a failed stream is an ERROR event here, and a retry follows.
+const loadMpegts = () => (mpegtsLib ||= import('../vendor/mpegts.js').then(() => {
+  window.mpegts.LoggingControl.applyConfig({ enableAll: false });
+  return window.mpegts;
+}));
+
+function live(p) {
+  const wrap = h('div', { class: 'live' }, still(p, true));
+  const url = new URL(p.camera_url, location.href).href;
+  let player = null, starting = false, retry = 0, timer = null;
+  const playing = () => { wrap.classList.add('playing'); retry = 0; };
+  const drop = () => { if (player) { player.destroy(); player = null; } wrap.classList.remove('playing'); };
+  const again = () => {
+    drop();
+    clearTimeout(timer);
+    timer = setTimeout(run, Math.min(30000, 1000 * 2 ** retry++));
+  };
+  const start = async () => {
+    if (player || starting || !wrap.isConnected || document.hidden) return;
+    if (p.camera_live === 'mjpeg') {
+      const img = h('img', { class: 'video', alt: `Live camera of ${p.name}` });
+      img.onload = playing;
+      img.onerror = again;
+      img.src = url + (url.includes('?') ? '&' : '?') + 't=' + Date.now();
+      wrap.append(img);
+      player = { destroy: () => { img.removeAttribute('src'); img.remove(); }, frozen: () => false };
+      return;
+    }
+    starting = true;
+    const mpegts = await loadMpegts().catch(() => null);
+    starting = false;
+    if (!mpegts?.isSupported() || player || !wrap.isConnected) return;  // no Media Source: the still loop stays
+    const video = h('video', { class: 'video', playsinline: '', autoplay: '', muted: '', 'aria-label': `Live camera of ${p.name}` });
+    video.muted = true;
+    wrap.append(video);
+    const pl = mpegts.createPlayer({ type: 'mpegts', isLive: true, hasAudio: false, url },
+      { enableStashBuffer: false, liveBufferLatencyChasing: true, liveBufferLatencyMaxLatency: 2, liveBufferLatencyMinRemain: 0.3 });
+    pl.attachMediaElement(video);
+    pl.on(mpegts.Events.ERROR, again);
+    pl.on(mpegts.Events.LOADING_COMPLETE, again);
+    video.addEventListener('playing', playing);
+    let seen = -1, since = Date.now();
+    player = {
+      destroy: () => { pl.destroy(); video.remove(); },
+      frozen: () => {
+        if (video.currentTime !== seen) { seen = video.currentTime; since = Date.now(); }
+        return Date.now() - since > STALL_MS;
+      },
+    };
+    pl.load();
+    Promise.resolve(pl.play()).catch(() => {});
+  };
+  const watch = () => {
+    if (!wrap.isConnected) { clearTimeout(timer); drop(); return; }
+    if (document.hidden) drop();
+    else if (player?.frozen()) again();
+    else if (!player && !timer) start();
+    setTimeout(watch, 1000);
+  };
+  const run = () => { timer = null; start(); };
+  timer = setTimeout(run, 0);
+  setTimeout(watch, 1000);
+  return wrap;
+}
+
 function camera(p, big) {
   const box = h('div', { class: 'cam' + (big ? ' big' : '') });
-  if (p.online && p.camera_url) box.append(still(p, big));
+  if (p.online && p.camera_url) box.append(big ? live(p) : still(p, big));
   else box.append(noImage(p.online ? 'No camera image' : 'Printer offline'));
   box.append(h('span', { class: 'badge' }, statusPill(p)));
   if (p.online && p.light != null) box.append(lightButton(p));

@@ -485,6 +485,17 @@ def check_back_online(page, base, ident):
         hook(0)
 
 
+def check_live_video(page, go, shot):
+    """The printer page plays the H.264 printer's live stream (the mock sends real MPEG-TS) and the video advances."""
+    go("#/printers/" + H2S, ".cam.big")
+    must(page, ".cam.big .live.playing video", "the printer page plays the live stream", timeout=15000)
+    t = page.eval_on_selector(".cam.big video", "v => v.currentTime")
+    page.wait_for_timeout(2000)
+    moved = page.eval_on_selector(".cam.big video", "v => v.currentTime") - t
+    assert moved > 1, "the live video advanced only %.2f s in 2 s" % moved
+    shot("printer-live-video")
+
+
 def check_printer_card(page, base, ident, go, shot):
     """A printer whose camera fails and whose AMS slots are all empty: a placeholder, no broken image, no tray row;
     the chamber light switch sends the command and shows the state."""
@@ -614,6 +625,7 @@ def walk(page, ident, base, shot, inject):
         check_printer_card(page, base, ident, go, shot)
         check_back_online(page, base, ident)
         check_start_steps(page, base, ident, go, shot)
+        check_live_video(page, go, shot)
     go("#/queue", ".job")
     shot("queue")
     if MOCKED:

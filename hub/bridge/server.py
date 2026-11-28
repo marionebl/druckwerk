@@ -43,7 +43,8 @@ CERT_SRC = env("DW_CERT", "/opt/bridge/slicer_base64.cer")
 DAEMON_CMD = shlex.split(env("DW_DAEMON_CMD", "/bridge.sh"))
 BACKOFF_MIN = float(env("DW_BACKOFF_MIN", "5"))
 BACKOFF_MAX = float(env("DW_BACKOFF_MAX", "60"))
-LIVE_IDLE = float(env("DW_LIVE_IDLE", "30"))  # seconds an unused live upstream stays open for a quick reopen
+LIVE_IDLE = float(env("DW_LIVE_IDLE", "90"))  # seconds an unused live upstream stays open for a quick reopen
+LIVE_STALL = float(env("DW_LIVE_STALL", "2"))  # a gap this long between upstream reads counts as a stall
 # A camera URL timeout alone does not restart the daemon. It marks the printer as suspect. The monitor then asks the printer
 # for a full report (pushall) and restarts the daemon only if the status does not change within PROBE_WAIT seconds, or
 # /health fails for HEALTH_BAD seconds. An idle printer sends no status by itself, so passive staleness proves nothing.
@@ -806,11 +807,24 @@ class Live:
         self.psi = {}  # H.264 mode: newest PAT and PMT packet
         self.idle_timer = None
         self.sock = self.proc = None
+        self.t0, self.first, self.last_read = time.time(), None, None  # timing for the log line at close
+        self.stalls, self.longest, self.bytes = 0, 0.0, 0
         threading.Thread(target=self.run, daemon=True).start()
 
     # -- upstream --
 
     def run(self):
+        try:
+            # Minting fails now and then (the plugin never calls back); a second mint usually works at once.
+            if self.open_upstream() == "mint timeout" and not self.closed:
+                log("live %s: camera URL timed out, minting again" % self.serial)
+                self.error = None
+                self.open_upstream()
+        finally:
+            self.close()
+
+    def open_upstream(self):
+        """Stream from the daemon until it ends. "mint timeout" when no camera URL came."""
         try:
             conn = http.client.HTTPConnection(env("DW_DAEMON_HOST", "127.0.0.1"), self.acc.port, timeout=90)  # also ends a stream that stalls
             conn.connect()
@@ -822,20 +836,19 @@ class Live:
                 self.error = (resp.status, resp.read(), self.ctype)
                 if resp.status == 502 and b"waiting for camera URL callback" in self.error[1]:
                     self.acc.daemon.camera_timeout(self.serial)
+                    return "mint timeout"
+            elif self.ctype.startswith("video/h264"):
+                self.out_type = "video/mp2t"
+                self.run_h264(resp)
+            elif self.ctype.startswith("multipart/x-mixed-replace"):
+                self.out_type = self.ctype
+                self.run_jpeg(resp)
             else:
-                if self.ctype.startswith("video/h264"):
-                    self.out_type = "video/mp2t"
-                    self.run_h264(resp)
-                elif self.ctype.startswith("multipart/x-mixed-replace"):
-                    self.out_type = self.ctype
-                    self.run_jpeg(resp)
-                else:
-                    self.error = (502, b'{"error": "unexpected live stream type"}', "application/json")
+                self.error = (502, b'{"error": "unexpected live stream type"}', "application/json")
         except (OSError, http.client.HTTPException, ValueError) as e:
             if not self.ready.is_set():
                 self.error = (503, json.dumps({"error": "daemon not reachable: " + type(e).__name__}).encode(), "application/json")
-        finally:
-            self.close()
+        return None
 
     def run_h264(self, resp):
         try:
@@ -855,6 +868,7 @@ class Live:
                 data = resp.read1(65536)
                 if not data:
                     break
+                self.got(len(data))
                 self.proc.stdin.write(data)
                 self.proc.stdin.flush()
         except (BrokenPipeError, ValueError):
@@ -892,7 +906,7 @@ class Live:
                     self.gop.append(chunk)
                 self.broadcast(chunk)
             if key is not None:
-                self.ready.set()
+                self.mark_ready()
 
     def run_jpeg(self, resp):
         while True:
@@ -913,10 +927,24 @@ class Live:
             if len(body) < length:
                 return
             tail = resp.readline()  # the CRLF after the body
+            self.got(len(body))
             with self.lock:
                 self.jpeg = body
                 self.broadcast(head + body + tail)
-            self.ready.set()
+            self.mark_ready()
+
+    def got(self, n):
+        now = time.time()
+        if self.first is not None and now - self.last_read > LIVE_STALL:
+            self.stalls += 1
+            self.longest = max(self.longest, now - self.last_read)
+        self.last_read, self.bytes = now, self.bytes + n
+
+    def mark_ready(self):
+        if self.first is None:
+            self.first = time.time() - self.t0
+            log("live %s: first frame after %.1fs" % (self.serial, self.first))
+        self.ready.set()
 
     def broadcast(self, data):
         for c in list(self.clients):
@@ -977,6 +1005,11 @@ class Live:
                 pass
         if not self.ready.is_set() and not self.error:
             self.error = (502, b'{"error": "stream ended before the first frame"}', "application/json")
+        if self.first is None:
+            log("live %s: no frame, ended after %.1fs (%s)" % (self.serial, time.time() - self.t0, (self.error or (0,))[0]))
+        else:
+            log("live %s: ended after %.0fs, first frame after %.1fs, %.1f MB, %d stalls over %.0fs, longest gap %.1fs"
+                % (self.serial, time.time() - self.t0, self.first, self.bytes / 1e6, self.stalls, LIVE_STALL, self.longest))
         if self.sock:
             try:
                 self.sock.shutdown(socket.SHUT_RDWR)  # wakes the blocked read; the daemon then closes the cloud tunnel
