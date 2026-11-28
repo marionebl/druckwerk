@@ -6,7 +6,7 @@ ARG TARGETARCH
 
 # Bridge: boo-cloud v0.2.2 + our patch, always built for x86_64. On an arm64 builder that is a cross build.
 # Fetched by commit id (tag v0.2.2), so a moved tag cannot change the build.
-FROM --platform=$BUILDPLATFORM rust:1.88-bookworm AS bridge
+FROM --platform=$BUILDPLATFORM rust:1.100-bookworm AS bridge
 RUN apt-get update && apt-get install -y --no-install-recommends patch && rm -rf /var/lib/apt/lists/* \
  && rustup target add x86_64-unknown-linux-gnu
 RUN git init -q /src && cd /src && git fetch -q --depth 1 https://github.com/estampo/boo-cloud 7a7860af9ad579152754e5e675493d1b8da76750 \
