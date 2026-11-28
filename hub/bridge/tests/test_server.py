@@ -116,7 +116,16 @@ class Server:
             return f.read()
 
     def close(self):
-        os.killpg(self.proc.pid, signal.SIGKILL)  # the server and the daemons it started
+        if os.environ.get("COVERAGE_PROCESS_START"):  # lets coverage write the data of the server process
+            self.proc.terminate()
+            try:
+                self.proc.wait(5)
+            except subprocess.TimeoutExpired:
+                pass
+        try:
+            os.killpg(self.proc.pid, signal.SIGKILL)  # the server and the daemons it started
+        except ProcessLookupError:  # server and daemons already ended on the SIGTERM
+            pass
         self.proc.wait(10)
         self.log.close()
         self.tmp.cleanup()

@@ -332,3 +332,9 @@ def test_manifest_matches_the_golden_contract(hub):
     for name, want in golden["llm_tools"].items():
         assert sorted(tools[name]["parameters"]["properties"]) == want["properties"], name
         assert sorted(tools[name]["parameters"]["required"]) == want["required"], name
+
+
+def test_manifest_equals_the_integration_fixture():
+    """tests/fixtures/manifest.json is what the integration tests load; it must follow the app."""
+    with open(os.path.join(HERE, "..", "..", "tests", "fixtures", "manifest.json")) as f:
+        assert actions.manifest() == json.load(f)

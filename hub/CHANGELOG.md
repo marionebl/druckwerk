@@ -8,6 +8,13 @@
 - Removed dead code (`role_or_none`, `HA.image`, the `admin` parameter of `printer_access`, unused imports); the ticker takes its pace from `watchdog.CHECK_EVERY`.
 - Added `LICENSE` (MIT), `hub/ui/vendor/README.md`, `ruff.toml`, `AGENTS.md` and `.github/dependabot.yml`; removed `owner_fail.txt`. Changelog headings up to 3.28.0 carry their release date.
 
+## 3.34.0 (unreleased)
+
+- Tests: `FakeHA` copies the shared user, device and entity lists, so the suite passes in any file order (a test that added a user broke `test_access_routes.py` when it ran after `test_history.py`).
+- Tests: `actions.manifest()` must equal `tests/fixtures/manifest.json`.
+- Tests: `.coveragerc` measures the bridge and slicer servers in their subprocesses (`COVERAGE_PROCESS_START`); the bridge suite covers 90 % of `bridge/server.py`. No threshold yet.
+- UI mock: printers have `stale` and `status_age` like the real view, and `check_ui.py` checks the stale mark on a card.
+
 ## 3.33.0 (unreleased)
 
 - CI: the image job needs the full test workflow (`tests.yml`, now reusable), so a failing test in any of the five suites stops the push to ghcr.io. `Tests` runs the bridge, slicer, queue and app suites on Python 3.13 (the app image) and 3.14, with Node installed; a missing `node` fails the browser-module tests when `CI` is set. `push` runs only on main, and a newer push to a pull request cancels the older run.
