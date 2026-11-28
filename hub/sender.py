@@ -70,6 +70,9 @@ class Sender:
         # The slicer writes sliced prints into the app share, which is not always /share.
         path = files.resolve(data["file"], self.app.media_dir, self.app.media_roots + [self.app.share])
         filename = os.path.basename(path)
+        size = os.path.getsize(path)
+        if size > files.MAX_UPLOAD:  # the bridge would refuse the body; say it here, before the file is read
+            raise ActionError(413, "%s is too large to send: %d MB, the limit is %d MB." % (filename, size >> 20, files.MAX_UPLOAD >> 20))
         printer = next((p for p in self.app.bridge_printers() if p.get("serial") == serial), {})
         status = str(printer.get("print_status") or "").upper()
         if status in BUSY and not data.get("force"):
