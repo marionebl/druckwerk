@@ -1,6 +1,6 @@
 # Changelog
 
-## 3.11.0 (unreleased)
+## 3.14.0 (unreleased)
 
 - Pages show cached data at once after a reload. The identity (`api/me`) and the Access lists (grants, Home Assistant users and entities) are cached in the browser too, so the shell and the lists no longer wait for the network. The cached shape (printer cards, filament slots, list rows) stays on screen, so the page does not jump when the answer arrives.
 - While a cached list is still being checked, buttons in the view are dimmed and cannot be clicked (links still work), so nobody decides on old data. The filament view shows cached data as is. Queue and History show a small "Checking for newer items…" pill over the top of the list. It takes no layout space.
@@ -8,8 +8,23 @@
 - A thin loading bar at the top of the page appears when a request takes 3 s or more.
 - Without usable browser storage the UI behaves as before.
 
+## 3.12.0 (unreleased)
+
+- New print has a plate. Step 1 takes several STL files at once (file picker or drop) and puts them on one plate that is sliced as one print. Each model is turned to lie well (auto-orient, on by default, switch it off with "Auto-orient new models") and the plate is arranged with 6 mm between models. A 3D preview shows the bed outline (from the printer's machine preset, 256 x 256 mm until a printer is chosen, and its keep-out area) and every model. Drag to turn the view, wheel or pinch to zoom. The buttons "Auto-orient", "Original orientation", "Arrange" and "Select all" change the plate. A model that is bigger than the bed, or has no room left, is marked "Does not fit the bed" and blocks slicing. A new printer model arranges the plate again on its bed.
+- Auto-orient follows OrcaSlicer's Orient.cpp in short: the big face directions (and the six axes) are tried as "down", and the one with the least overhang, the lowest height and the largest contact wins. A cube tilted by 30 or 40 degrees comes back flat, a pyramid or cone stands on its base, a mushroom goes cap down, and a model that already lies well stays as it is. It takes about 0.2 s for 300,000 triangles.
+- Object settings now work on a selection, as in Bambu Studio. Click a model in the preview or the list (Shift, Ctrl or Cmd for several). The settings card names the selection, shows the values of the first selected model and writes each change to every selected model. A setting where they differ is marked "varies". "Reset all" resets the selected models. Paint works on one selected model. The list shows how many settings each model has changed.
+- You choose the variants to slice: Good, Better and Best are chips in the slice card (at least one stays on, all three at first). The choice is remembered in this browser (`dw-variants`). The button says what it will do ("Slice Better", "Slice Good and Best"), and Compare shows only the sliced ones.
+- The engine's error for two models whose paths cross (-101) is shown in plain words on the variant.
+- The server still stores one model file per job. For history, queue and Reslice the page uploads the whole plate as one binary STL named after the first model ("a.stl" or "a + 2 more.stl").
+- Nothing in the New print layout moves while models, presets or the engine load: the 3D preview and the rows have fixed sizes and placeholders.
+- Gap: Reslice brings the plate back as one merged model, without the separate settings and paint of each model.
+- Gap: no scale, and no moving or turning of a model by hand. Only auto-orient and arrange.
+- Gap: one STL with several bodies is not split into separate models.
+
 ## 3.10.0 (unreleased)
 
+- Fix: the top bar keeps one row at every width (the name and then the tab labels give way on narrow windows) and the page no longer scrolls sideways or jumps in height while the window is resized.
+- Fix: empty AMS slots on a printer card line up with loaded ones.
 - The printer page shows the running print in 3D ("Current print in 3D"). It is the same preview as on a History print, read from that print's stored file. It loads when the cloud lists the print, up to a minute after the start. A user who is not admin of the printer sees it only for their own prints, as in History.
 - The printer page has a History card with the last 5 prints of this printer and a link "All prints on this printer".
 - History reads a filter from the URL: `#/history?printer=<serial>` (and `user=` for admins). The admin selects start from it. A user sees "One printer" and a link to all their prints.
