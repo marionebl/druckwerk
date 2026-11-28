@@ -317,6 +317,10 @@ class Hub:
         def merge(old, new):
             return dict(old, **{k: merge(old.get(k) or {}, v) if isinstance(v, dict) else v for k, v in new.items()})
         FakeBridge.status[serial] = merge(FakeBridge.status.get(serial) or DEFAULT_PRINT.get(serial, {}), fields)
+        with self.app._cache_lock:  # the app shares a view for 2 s; the printer changed now, so the next read must ask the bridge
+            at, view = self.app._cache.get("view:" + serial, (0, None))
+            if view is not None:
+                self.app._cache["view:" + serial] = (at - 3, view)
 
     def seed_share(self):
         """a, b, c and d .gcode.3mf in the share: a start sends the real file, so tests that start jobs need them."""
