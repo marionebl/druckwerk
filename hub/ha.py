@@ -194,8 +194,9 @@ class HA:
     def fire_event(self, event_type, data):
         self._rest("POST", "/events/" + event_type, data, timeout=15)
 
-    def watch_events(self, event_type, callback, stop):
-        """Blocking loop: calls callback(event data) per event of this type; reconnects until stop is set."""
+    def watch_events(self, event_type, callback, stop, with_user=False):
+        """Blocking loop: calls callback(event data) per event of this type; reconnects until stop is set.
+        with_user: callback(event data, user id), the Home Assistant user the event came from (None when it has none)."""
         pause = 2
         while not stop.is_set():
             try:
@@ -206,7 +207,10 @@ class HA:
                     while not stop.is_set():
                         m = ws.recv()
                         if m.get("type") == "event":
-                            callback(m["event"]["data"])
+                            if with_user:
+                                callback(m["event"]["data"], (m["event"].get("context") or {}).get("user_id"))
+                            else:
+                                callback(m["event"]["data"])
                 finally:
                     ws.close()
             except (HAError, OSError, ValueError, KeyError):

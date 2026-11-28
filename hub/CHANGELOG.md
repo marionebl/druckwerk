@@ -10,6 +10,27 @@
 - Plugin: an install stores the zip hash and the library sizes in `<data>/plugin/<version>/.sha256`, and `installed()` compares both. Libraries of a wrong size trigger a new download. An install from an older version has no `.sha256` and is downloaded once more at the next start.
 - App: the camera proxy forwards the bridge stream as it arrives (`read1`). Before, it waited for 64 kB.
 
+## 3.26.0 (unreleased)
+
+- A print start uses a printer status of at most 60 s. The app reads the bridge's `X-Status-Age` and keeps the real observation time, so a cached status of the bridge no longer looks fresh (before: up to 10 min of the bridge plus the app's own cache). The tolerance of 10 min stays for the display and the ticks. A start with an older status is refused with 409 and the job stays queued.
+- One send per printer: a second send to the same printer (action, web UI or queue) gets 409 at once.
+- `print_file` also refuses a printer in `PREPARE`. The bridge gives up on its daemon after 280 s (the app waits 300 s) and answers 504 when the daemon timed out, 503 only when it was not reachable at all.
+- A queue start whose send ends in a timeout or "not reachable" fails the job (`send timed out; check the printer before you retry`) instead of leaving it queued, where a second start printed twice. A refusal (guard, model mismatch, bridge error) still keeps the job first in the queue.
+- The "Plate clear, start" button names the job (`DRUCKWERK_START_<serial>_<job id>`). It starts that job only when it is still the first queued job, the notification is at most 30 minutes old and the phone's Home Assistant user is an admin of the printer (event context user). The app keeps the sent notifications in memory, so a button from before an app restart is refused; use Start in the queue then.
+- The actions `start_next` and `start_job` confirm a drying job, so they can start one.
+- `POST /api/queue/<id>/cancel` takes `{force: true}` for admins: a `printing` job that never ends is removed as `failed` (`removed by admin`).
+- Approving an `any` job needs an admin of a printer that the job fits for its owner, not any printer of the model.
+- Printing a browser slice (`POST /api/jobs/<id>/print`) copies it to a file name with a random part, so two prints of the same name no longer overwrite each other. The copy stays while it is the printer's current file (the printer picture reads it) and is deleted when the slice is sent again; a refused send leaves no copy.
+
+## 3.22.0 (unreleased)
+
+- No call to Home Assistant, the bridge or the cloud runs while the queue lock is held. A slow send, spool settlement or cloud login no longer holds up `GET /api/queue`, `GET /api/events` or the bridge status (before: up to the 300 s send timeout).
+- New job state `sending` (visible in `GET /api/queue`, shown as "Sending" in the queue): the job holds its printer while the file goes out, so a second start is still refused, then it becomes `starting`, or goes back to `queued` with the error. A job found in `sending` after an app restart is marked failed, because the print may have begun; check the printer before a retry.
+- A tick reads the printer status once, before it takes the lock (it read it up to 4 times under the lock).
+- Settling a finished job (spools, cost) runs after the queue and sync locks are released; `job_done` follows the settlement as before.
+- The "Plate clear, start" notification button and the air-print pause run in their own short-lived thread, so a slow send or pause no longer stops the delivery of Home Assistant events or the ticker.
+- Bridge: a cloud login, its code step and the account write hold the global lock only around the account and pending lists; one lock per account keeps two logins of one account in order.
+
 ## 3.21.0 (unreleased)
 
 - Bridge (port 8098): only the app on loopback may use it. Other clients get 403, except `GET /api/camera/<serial>/live` (go2rtc cannot send a header) and `GET /api/health`, which no longer lists account email addresses for them. Before, any client in the Home Assistant network could print, pause and delete a cloud account.
