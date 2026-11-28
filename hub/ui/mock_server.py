@@ -114,7 +114,7 @@ JOBS = [
     job("a00000000003", "phone_stand_v3.gcode.3mf", H2S, "u-jonas", "queued", grams=55.0, cost=1.20),
     job("a00000000004", "bracket_shelf_left.gcode.3mf", "any", "u-jonas", "queued", model="P1S", grams=71.4, cost=1.62),
     job("a00000000005", "toy_dragon_articulated.gcode.3mf", P1S, "u-lena", "pending_approval", grams=96.0, cost=2.10),
-    job("a00000000006", "drawer_divider_s.gcode.3mf", P1S, "u-alex", "queued", grams=8.9, cost=0.22),
+    job("a00000000006", "drawer_divider_s_2026-11-27_v4b_p1s_better_2629fa.gcode.3mf", P1S, "u-alex", "queued", grams=8.9, cost=0.22),
     job("a00000000007", "vase_wide_walls.gcode.3mf", H2S, "u-alex", "queued", grams=30.0, cost=0.66, nozzle="0.6"),  # the printer has 0.4
 ]
 JOBS[1]["name"] = "Cable clips for the desk"
@@ -201,8 +201,8 @@ TASKS = [
     (5, "benchy_test", H2S, 28, "finished", 61, 14.0, "u-lena", 0.35),
     (4, "hook_wall_large", P1S, 47, "failed", 12, 3.1, "u-jonas", 0.08),
     (3, "lens_cap", P1S, 70, "cancelled", 4, 0.6, "u-alex", None),
-    (2, "calibration cube", P1S, 75, "finished", 28, 6.2, None, None),
-    (1, "drawer_divider_s", H2S, 150, "finished", 20, 8.9, "u-alex", 0.22),
+    (2, "knob_cylinder_20x13.stl + knob_cylinder_20x13.stl + v6_spigot_test.stl + testgewinde_satz_platte....", P1S, 75, "finished", 28, 6.2, None, None),
+    (1, "test_plate_2026-11-27_v4b_h2s_better_2629fa", H2S, 150, "finished", 20, 8.9, "u-alex", 0.22),
     (10, "Slicer plate 3", H2S, 9, "finished", 33, 17.0, None, None),
 ]
 OWNERS = {H2S: "u-jonas"}  # printer owner (HA user id); the P1S has none
@@ -302,6 +302,7 @@ SPOOLS = [
     cloud_spool("5002", "Sunlu", "PLA", "PLA Red", "E4572E", 140, 1000, (H2S, 0, 2)),
     cloud_spool("5003", "Generic", "TPU", "TPU 95A Black", "222222", 730, 1000, (H2S, 1, 0)),
     cloud_spool("5004", "Bambu Lab", "PLA", "PLA Matte Charcoal", "2E2E2E", None, None),
+    cloud_spool("5005", "Extrudr", "PETG", "PETG_Silk_Dual_Colour_Gradient_Sunset_Edition_1.75mm", "C04040", 990, 1000),
 ]
 PRICES = {"5000": 19.99, "5001": 27.5, "5002": 14.0, "5003": 32.0}
 LOAD_REQUESTS = []  # open "ask to load" requests (each for a queue job)

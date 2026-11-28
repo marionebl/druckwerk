@@ -609,7 +609,7 @@ def check_cache(page, base, ident):
         assert time.time() - t0 < 4.5 and page.locator("#view .loading").count() == 0, f"{tab}: cached data without a spinner ({time.time() - t0:.1f} s, {page.locator('#view .loading').count()} spinners)"
         assert text in page.locator("#view").text_content()
     page.wait_for_timeout(6500)  # the fresh answer arrives and replaces it without trouble
-    assert page.locator(".spool").count() == 5, f"{page.locator('.spool').count()} spools, page {page.url}"
+    assert page.locator(".spool").count() == 6, f"{page.locator('.spool').count()} spools, page {page.url}"
     page.evaluate("fetch('api/_mock/slow')")
     # the cloud library fails: the cached spools still show at once
     ALLOW_502.append("api/spools")
@@ -1246,7 +1246,10 @@ PHONE = """() => {
   for (const e of document.querySelectorAll('input:not([type=checkbox]):not([type=radio]):not([type=range]):not([type=file]):not([type=color]), select, textarea')) {
     if (seen(e) && parseFloat(getComputedStyle(e).fontSize) < 16) out.push(`iOS zooms into ${name(e)} (font ${getComputedStyle(e).fontSize})`);
   }
-  if (document.documentElement.scrollWidth > vw) out.push(`page scrolls sideways: ${document.documentElement.scrollWidth} > ${vw}`);
+  // A phone widens the layout viewport to the widest content (innerWidth grows), so compare with the screen width.
+  const cw = document.documentElement.clientWidth;
+  if (vw > cw + 1 || document.documentElement.scrollWidth > cw + 1) out.push(`page is wider than the screen: ${Math.max(vw, document.documentElement.scrollWidth)} > ${cw}`);
+  if (seen(document.querySelector('.topbar .brand'))) out.push('the brand row shows on a phone');
   const t = document.querySelector('.tabs').getBoundingClientRect();
   if (Math.abs(t.bottom - vh) > 1) out.push(`tab bar is not at the bottom: ${Math.round(t.top)}-${Math.round(t.bottom)} of ${vh}`);
   const top = document.querySelector('.topbar .in').getBoundingClientRect();
@@ -1264,9 +1267,10 @@ def check_phone_layout(page, base, ident, go):
     if page.viewport_size["width"] >= 721:
         return
     screens = [("#/printers", ".pcard"), ("#/printers/" + H2S, ".cam.big"), ("#/printers/FAKE-P1S-0002", ".cam.big"),
-               ("#/queue", ".job"), ("#/history", ".tl-card"), ("#/new", ".drop"), ("#/filament", ".spool")]
+               ("#/queue", ".job"), ("#/history", ".tl-card"),
+               ("#/new", ".drop"), ("#/filament", ".spool"), ("#/filament/5005", ".detail-img")]
     if ident == "admin":
-        screens += [("#/access", "table"), ("#/setup", ".wizard .card")]
+        screens += [("#/access", "table"), ("#/setup", ".wizard .card"), ("#/queue/a00000000006", ".detail-img"), ("#/history/1", ".detail-img")]
     stub_engine(page)
     found = []
     for w in (375, 390):
@@ -1420,7 +1424,8 @@ def walk(page, ident, base, shot, inject):
         check_library_pick(page, go, shot)
     go("#/filament", ".spool")
     shot("filament")
-    assert page.locator(".spool").count() == 5, "the cloud library lists five spools: %d" % page.locator(".spool").count()
+    want = 6 if MOCKED else 5  # the mock has a long-named sixth spool; the image e2e fakes keep five
+    assert page.locator(".spool").count() == want, "the cloud library lists %d spools: %d" % (want, page.locator(".spool").count())
     assert page.locator("h3", has_text="Not loaded").count() == 1 and page.get_by_text("printer cloud filament library").count() == 1, "not-loaded group and the subtitle"
     if MOCKED:
         assert "unknown" in page.locator(".spool", has_text="Matte Charcoal").text_content(), "a spool without grams says unknown"

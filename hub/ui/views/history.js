@@ -48,7 +48,7 @@ export function entry(t, { showUser = false, excerpt = false } = {}) {
   return h('li', { class: 'tl-item ' + (cls || 'plain') },
     h('a', { class: 'tl-card', href: '#/history/' + encodeURIComponent(t.id) },
       thumb(t.job?.plate_png || t.cover_url),
-      h('div', { class: 'main' }, h('div', { class: 'row between' }, h('b', { class: 'ttl' }, titleOf(t)), t.source === 'job' ? pill(...SOURCE.job) : pill(label, cls)),
+      h('div', { class: 'main' }, h('div', { class: 'row between' }, h('b', { class: 'ttl', title: titleOf(t) }, titleOf(t)), t.source === 'job' ? pill(...SOURCE.job) : pill(label, cls)),
         h('div', { class: 'meta' }, meta))),
     sp && h('div', { class: 'tl-span', title: label }, h('i', {
       class: 'tl-bar st-' + t.status + (sp.cut ? ' cut' : ''),

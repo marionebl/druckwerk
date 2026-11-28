@@ -31,8 +31,8 @@ export async function mount(ctx, root, parts = []) {
     const frac = known(s.grams_left) && s.grams_total ? s.grams_left / s.grams_total : null, low = frac != null && frac < 0.15;
     return h('section', { class: 'card spool' },
       swatch(s.colour, 44),
-      h('div', null, h('div', { class: 'row between' }, h('b', null, h('a', { href: '#/filament/' + s.id, style: 'color:inherit;text-decoration:none' }, `${s.brand} ${s.type}`.trim() || s.name)), s.printer ? pill(where(s), 'ok') : pill('not loaded')),
-        h('small', null, s.name),
+      h('div', { class: 'spool-main' }, h('div', { class: 'row between' }, h('b', { class: 'ell' }, h('a', { href: '#/filament/' + s.id, style: 'color:inherit;text-decoration:none' }, `${s.brand} ${s.type}`.trim() || s.name)), s.printer ? pill(where(s), 'ok') : pill('not loaded')),
+        h('small', { class: 'ell', title: s.name }, s.name),
         mine.map((r) => h('div', null, pill(`Requested for ${pname(r.printer)} by ${r.user_name}`, 'warn'), forJob(r)))),
       h('div', { class: 'bar' + (low ? ' low' : '') }, h('i', { style: `width:${Math.round((frac ?? 0) * 100)}%` })),
       h('div', { class: 'row between', style: 'grid-column:1/-1' },

@@ -54,6 +54,7 @@ const toHa = () => {
   window.parent.postMessage({ type: 'home-assistant/navigate', path: haRoute.prefix + path, options: { replace: !haRoute.path } }, '*');
 };
 if (inPanel) {
+  document.documentElement.classList.add('in-panel');
   addEventListener('message', (e) => {
     if (e.source !== window.parent || e.data?.type !== 'home-assistant/properties' || !e.data.route) return;
     const first = !haRoute;

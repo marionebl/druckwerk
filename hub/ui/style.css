@@ -7,7 +7,10 @@
   --radius: 12px; --gap: 16px; --shadow: 0 1px 2px rgba(16, 24, 40, .06);
   --font: system-ui, -apple-system, "Segoe UI", Roboto, "Helvetica Neue", sans-serif;
   color-scheme: light dark;
+  --sat: env(safe-area-inset-top); --sab: env(safe-area-inset-bottom); --sal: env(safe-area-inset-left); --sar: env(safe-area-inset-right);
 }
+/* Inside the HA app panel the HA frontend already keeps clear of the notch and home indicator. */
+html.in-panel { --sat: 0px; --sab: 0px; --sal: 0px; --sar: 0px; }
 @media (prefers-color-scheme: dark) {
   :root {
     --bg: #111214; --card: #1b1d21; --fg: #eceef1; --muted: #98a1ad; --line: #2c3037; --soft: #23262b;
@@ -17,7 +20,10 @@
 * { box-sizing: border-box; }
 [hidden] { display: none !important; }
 html { -webkit-text-size-adjust: 100%; }
-body { margin: 0; background: var(--bg); color: var(--fg); font: 15px/1.45 var(--font); -webkit-tap-highlight-color: transparent; }
+body { margin: 0; background: var(--bg); color: var(--fg); font: 15px/1.45 var(--font); -webkit-tap-highlight-color: transparent; overflow-wrap: anywhere; }
+/* One column that may shrink below its content, so a long title truncates instead of widening the row. */
+.tl-card .main, .job .main, .spool-main { grid-template-columns: minmax(0, 1fr); }
+.ell { display: block; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 h1, h2, h3 { margin: 0; letter-spacing: -.01em; }
 h1 { font-size: 22px; } h2 { font-size: 17px; } h3 { font-size: 15px; }
 small, .muted { color: var(--muted); }
@@ -28,7 +34,7 @@ button, input, select, textarea { font: inherit; color: inherit; }
 
 /* Shell */
 .topbar { position: sticky; top: 0; z-index: 20; background: color-mix(in srgb, var(--bg) 88%, transparent); backdrop-filter: blur(10px); border-bottom: 1px solid var(--line); }
-.topbar .in { max-width: 1240px; margin: 0 auto; padding: 10px max(16px, env(safe-area-inset-right)) 10px max(16px, env(safe-area-inset-left)); padding-top: max(10px, env(safe-area-inset-top)); display: flex; align-items: center; gap: 16px; }
+.topbar .in { max-width: 1240px; margin: 0 auto; padding: 10px max(16px, var(--sar)) 10px max(16px, var(--sal)); padding-top: max(10px, var(--sat)); display: flex; align-items: center; gap: 16px; }
 .brand { font-weight: 650; font-size: 17px; display: flex; align-items: center; gap: 8px; white-space: nowrap; }
 .brand i { width: 10px; height: 10px; border-radius: 3px; background: var(--accent); display: inline-block; }
 .tabs { display: flex; gap: 4px; flex: 1; min-width: 0; overflow-x: auto; scrollbar-width: none; }
@@ -41,7 +47,7 @@ button, input, select, textarea { font: inherit; color: inherit; }
 .menu .pop { position: absolute; right: 0; top: 42px; min-width: 220px; background: var(--card); border: 1px solid var(--line); border-radius: var(--radius); padding: 6px; box-shadow: 0 8px 24px rgba(0, 0, 0, .18); }
 .menu .pop button, .menu .pop a { display: block; width: 100%; text-align: left; padding: 10px 12px; border: 0; background: none; border-radius: 8px; cursor: pointer; text-decoration: none; color: var(--fg); }
 .menu .pop button:hover, .menu .pop a:hover { background: var(--soft); }
-main { max-width: 1240px; margin: 0 auto; padding: 20px max(16px, env(safe-area-inset-right)) 96px max(16px, env(safe-area-inset-left)); }
+main { max-width: 1240px; margin: 0 auto; padding: 20px max(16px, var(--sar)) 96px max(16px, var(--sal)); }
 .page-head { display: flex; align-items: center; justify-content: space-between; gap: 12px; margin-bottom: 16px; flex-wrap: wrap; }
 .page-head .sub { color: var(--muted); font-size: 13.5px; }
 .stack { display: grid; gap: var(--gap); }
@@ -53,16 +59,16 @@ main { max-width: 1240px; margin: 0 auto; padding: 20px max(16px, env(safe-area-
 @media (min-width: 721px) and (max-width: 860px) { .tabs a span { position: absolute; width: 1px; height: 1px; overflow: hidden; clip-path: inset(50%); } }
 @media (max-width: 720px) {
   /* backdrop-filter would make the top bar the containing block of the fixed tab bar, and pin the tabs over the top bar. */
-  .topbar { backdrop-filter: none; background: var(--bg); }
+  .topbar { position: static; backdrop-filter: none; background: none; border: 0; }
+  .topbar .in { padding: 0; }
+  .topbar .brand, .topbar .who { display: none; }
   /* Room for the tab bar and the feedback button above it, also when focus or scrollIntoView moves to a control. */
-  main { padding-bottom: calc(136px + env(safe-area-inset-bottom)); }
-  html { scroll-padding-bottom: calc(136px + env(safe-area-inset-bottom)); }
-  :root { --pb-feedback-bottom: calc(60px + env(safe-area-inset-bottom)); }
-  .topbar .tabs { position: fixed; bottom: 0; left: 0; right: 0; z-index: 30; background: var(--card); border-top: 1px solid var(--line); padding: 6px 6px calc(6px + env(safe-area-inset-bottom)); justify-content: space-around; gap: 0; }
+  main { padding-bottom: calc(136px + var(--sab)); }
+  html { scroll-padding-bottom: calc(136px + var(--sab)); }
+  :root { --pb-feedback-bottom: calc(60px + var(--sab)); }
+  .topbar .tabs { position: fixed; bottom: 0; left: 0; right: 0; z-index: 30; background: var(--card); border-top: 1px solid var(--line); padding: 6px 6px calc(6px + var(--sab)); justify-content: space-around; gap: 0; }
   .tabs a { flex-direction: column; justify-content: center; gap: 2px; font-size: 11px; padding: 6px 4px; min-width: 0; min-height: 48px; flex: 1; align-items: center; border-radius: 8px; }
   .tabs a span { max-width: 100%; overflow: hidden; text-overflow: ellipsis; }
-  .who .nm { display: none; }
-  .topbar .in { justify-content: space-between; }
 }
 
 /* Cards and basics */
@@ -123,7 +129,7 @@ input:focus, select:focus { border-color: var(--accent); }
 @media (prefers-reduced-motion: reduce) { .spin { animation-duration: 3s; } }
 
 /* Toast and modal */
-.toasts { position: fixed; z-index: 100; left: 50%; transform: translateX(-50%); bottom: calc(84px + env(safe-area-inset-bottom)); display: grid; gap: 8px; width: min(92vw, 420px); }
+.toasts { position: fixed; z-index: 100; left: 50%; transform: translateX(-50%); bottom: calc(84px + var(--sab)); display: grid; gap: 8px; width: min(92vw, 420px); }
 @media (min-width: 721px) { .toasts { bottom: 24px; } }
 .toast { background: #23262b; color: #fff; padding: 12px 16px; border-radius: 10px; box-shadow: 0 8px 24px rgba(0, 0, 0, .3); border-left: 4px solid #888; }
 .toast.ok { border-color: #34d27b; } .toast.error { border-color: #ff7b72; }
@@ -209,7 +215,7 @@ dialog.modal > .body { padding: 8px 20px 20px; display: grid; gap: 14px; }
 .job.pending { border-style: dashed; background: var(--warn-soft); border-color: color-mix(in srgb, var(--warn) 50%, transparent); }
 .job .thumb { width: 56px; height: 56px; border-radius: 8px; background: var(--soft); object-fit: cover; display: block; }
 .job .main { min-width: 0; display: grid; gap: 4px; }
-.job .title { font-weight: 600; overflow-wrap: anywhere; }
+.job .title { font-weight: 600; min-width: 0; flex: 1 1 0; display: -webkit-box; -webkit-box-orient: vertical; -webkit-line-clamp: 2; overflow: hidden; }
 .job .sub { display: flex; gap: 6px 12px; flex-wrap: wrap; align-items: center; color: var(--muted); font-size: 13px; }
 .job .acts { grid-column: 1 / -1; display: flex; gap: 6px; flex-wrap: wrap; align-items: center; padding-top: 4px; }
 .job .pos { width: 26px; text-align: center; color: var(--muted); font-weight: 650; font-variant-numeric: tabular-nums; }
@@ -274,6 +280,9 @@ canvas.view3d:active { cursor: grabbing; }
 /* Filament */
 .spool { display: grid; grid-template-columns: auto 1fr; gap: 6px 14px; align-items: center; }
 .spool .bar { grid-column: 2; }
+.spool-main { min-width: 0; display: grid; gap: 2px; }
+.spool-main > .row { flex-wrap: nowrap; }
+.spool-main b.ell { flex: 1 1 0; }
 .spool .acts { grid-column: 1 / -1; display: flex; gap: 6px; flex-wrap: wrap; }
 
 /* Setup */
@@ -292,7 +301,8 @@ canvas.view3d:active { cursor: grabbing; }
 .tl-card { display: grid; grid-template-columns: 56px 1fr; gap: 12px; align-items: center; padding: 10px 12px; background: var(--card); border: 1px solid var(--line); border-radius: var(--radius); }
 .tl-card .thumb { width: 56px; height: 56px; border-radius: 8px; background: var(--soft); object-fit: cover; display: block; }
 .tl-card .main { min-width: 0; display: grid; gap: 4px; }
-.tl-card .ttl { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; min-width: 0; }
+.tl-card .ttl { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; min-width: 0; flex: 1 1 0; }
+.tl-card .main > .row { flex-wrap: nowrap; }
 .tl-card .meta { display: flex; flex-wrap: wrap; gap: 2px 12px; color: var(--muted); font-size: 13px; font-variant-numeric: tabular-nums; }
 .who-tag { display: inline-flex; align-items: center; gap: 4px; }
 
@@ -317,7 +327,7 @@ details.adv .form { margin-top: 12px; }
 /* Time axis: every day is 00:00 to 24:00, so bar lengths compare across days. */
 .tl-day { --bar-min: 4px; }
 .tl-axis { position: relative; height: 16px; margin: -4px 0 6px 24px; font-size: 11px; color: var(--muted); font-variant-numeric: tabular-nums; }
-.tl-axis span { position: absolute; top: 0; transform: translateX(-50%); }
+.tl-axis span { position: absolute; top: 0; transform: translateX(-50%); white-space: nowrap; }
 .tl-axis span:first-child { transform: none; } .tl-axis span:last-child { transform: translateX(-100%); }
 .tl-span { position: relative; height: 6px; margin-top: 4px; border-radius: 3px; background: var(--soft); overflow: hidden;
   background-image: repeating-linear-gradient(90deg, var(--line) 0 1px, transparent 1px 25%); }
