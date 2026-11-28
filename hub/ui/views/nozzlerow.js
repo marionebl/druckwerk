@@ -14,7 +14,7 @@ export function nozzleRow(S, ref, draw) {
   const lib = ref?.nozzles, pick = chosenNozzle(S, ref), now = ref?.nozzle || null;
   // A change is asked for once the job is queued, so the request belongs to it. The controls look the same checked or not.
   const note = h('input', { type: 'text', id: 'nozzle-note', maxlength: 200, placeholder: 'Note (optional)', value: S.askNozzleNote || '',
-    style: 'min-height:32px;max-width:220px', oninput: (e) => (S.askNozzleNote = e.target.value) });
+    class: 'nnote', oninput: (e) => (S.askNozzleNote = e.target.value) });
   let status = null;
   if (pick && same(pick, now)) status = pill('installed', 'ok');
   else if (pick && !now) status = h('small', { class: 'muted' }, 'The installed nozzle is unknown. Check it before the print starts.');
