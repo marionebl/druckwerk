@@ -511,11 +511,13 @@ def isolation_headers(h):
 
 class Handler(BaseHTTPRequestHandler):
     timeout = 120  # a client that stops sending must not hold a thread
-    def head(self, status, ctype, length, cache):
+    def head(self, status, ctype, length, cache, etag=None):
         self.send_response(status)
         self.send_header("Content-Type", ctype)
         self.send_header("Content-Length", str(length))
         self.send_header("Cache-Control", cache)
+        if etag:
+            self.send_header("ETag", etag)
         isolation_headers(self)
         self.end_headers()
 
@@ -533,8 +535,15 @@ class Handler(BaseHTTPRequestHandler):
             self.head(200, ctype, os.fstat(f.fileno()).st_size, cache)
             shutil.copyfileobj(f, self.wfile, 1 << 20)
 
+    def require_json(self):
+        # A cross-site form can post text/plain without a preflight; only a script of our own origin sets this type.
+        if (self.headers.get("Content-Type") or "").split(";")[0].strip().lower() != "application/json":
+            raise ValueError("Content-Type must be application/json.")
+
     def json(self):
         length = content_length(self.headers)
+        if length:  # a call without a body (the integration's) has no type
+            self.require_json()
         if length > 8192:
             raise ValueError("Body too large.")
         body = json.loads(self.rfile.read(length) or b"{}")

@@ -15,7 +15,7 @@ def test_feedback_adds_a_todo_item_for_any_ha_user(hub):
     for user in (USER, ADMIN):
         hub.ha.calls.clear()
         assert post_feedback(hub, {"item": item, "description": description}, user) == (200, {"ok": True})
-        assert hub.ha.calls == [("todo", "add_item", {"entity_id": "todo.feedback", "item": item, "description": description})]
+        assert hub.ha.calls == [("todo", "add_item", {"entity_id": "todo.feedback", "item": "%s · from %s" % (item, user.upper()), "description": description})]
 
 
 def test_feedback_needs_a_home_assistant_identity(hub):
@@ -35,13 +35,50 @@ def test_feedback_rejects_bad_bodies_with_400(hub):
     assert post_feedback(hub, {"item": "x" * 300, "description": "{}"})[0] == 200  # 300 characters is the limit
 
 
-def test_feedback_accepts_screenshots_up_to_1_5_mb(hub):
-    big = json.dumps({"message": "m", "screenshot": "a" * 1_000_000})
+def test_feedback_accepts_a_description_up_to_300_kb(hub):
+    big = json.dumps({"message": "m", "screenshot": "a" * 250_000})
     assert post_feedback(hub, {"item": "x", "description": big})[0] == 200
     assert hub.ha.calls[-1][2]["description"] == big
     hub.ha.calls.clear()
-    st, out = post_feedback(hub, {"item": "x", "description": "a" * 1_600_000})
-    assert st == 400 and "1500000" in out["error"] and hub.ha.calls == []
+    st, out = post_feedback(hub, {"item": "x", "description": "a" * 300_001})
+    assert st == 400 and "300000" in out["error"] and hub.ha.calls == []
+
+
+def test_feedback_item_carries_the_display_name_of_the_caller(hub):
+    post_feedback(hub, {"item": "Feedback · #/queue · slow", "description": "{}"}, USER)
+    assert hub.ha.calls[-1][2]["item"] == "Feedback · #/queue · slow · from %s" % USER.upper()
+
+
+def test_feedback_is_limited_to_10_items_per_user_per_hour(hub):
+    for _ in range(10):
+        assert post_feedback(hub, {"item": "x", "description": "{}"}, USER)[0] == 200
+    st, out = post_feedback(hub, {"item": "x", "description": "{}"}, USER)
+    assert st == 429 and "10" in out["error"] and len(hub.ha.calls) == 10
+    assert post_feedback(hub, {"item": "x", "description": "{}"}, ADMIN)[0] == 200  # the limit is per user
+
+
+def test_feedback_limit_frees_up_after_an_hour(hub):
+    now = [1000.0]
+    hub.app.clock = lambda: now[0]
+    for _ in range(10):
+        post_feedback(hub, {"item": "x", "description": "{}"}, USER)
+    assert post_feedback(hub, {"item": "x", "description": "{}"}, USER)[0] == 429
+    now[0] += 3601
+    assert post_feedback(hub, {"item": "x", "description": "{}"}, USER)[0] == 200
+
+
+def test_json_routes_need_the_json_content_type(hub):
+    """A cross-site form can send text/plain without a preflight; the body of a JSON route must say it is JSON."""
+    body = json.dumps({"item": "x", "description": "{}"}).encode()
+    for ctype in ({"Content-Type": "text/plain"}, {"Content-Type": "application/x-www-form-urlencoded"}, {"Content-Type": ""}):
+        st, out = hub.req("POST", "/api/feedback", raw=body, user=USER, headers=ctype)
+        assert st == 400 and "Content-Type" in out["error"], (ctype, st, out)
+    grant = json.dumps({"user_id": USER, "printer": "*"}).encode()
+    st, out = hub.req("POST", "/api/grants", raw=grant, user=ADMIN, headers={"Content-Type": "text/plain"})
+    assert st == 400 and "Content-Type" in out["error"]
+    assert hub.ha.calls == []
+    st, _ = hub.req("POST", "/api/grants", raw=grant, user=ADMIN, headers={"Content-Type": "application/json; charset=utf-8"})
+    assert st == 200
 
 
 def test_feedback_other_routes_keep_the_small_body_limit(hub):

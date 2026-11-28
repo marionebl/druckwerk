@@ -2,15 +2,27 @@ name: Hub app
 on:
   push:
     branches: [main]
-    paths: [hub/**, .github/workflows/hub.yml]
+    paths: [hub/**, .github/workflows/hub.yml, .github/workflows/tests.yml]
   pull_request:
-    paths: [hub/**, .github/workflows/hub.yml]
+    paths: [hub/**, .github/workflows/hub.yml, .github/workflows/tests.yml]
   workflow_dispatch:
+    inputs:
+      force:
+        description: Overwrite the image tag of this version if it exists
+        type: boolean
+        default: false
 permissions:
   contents: read
   packages: write
+# A newer push to a pull request cancels the older run. On main a run is never cancelled: it may be pushing.
+concurrency:
+  group: hub-${{ github.ref }}
+  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
 jobs:
+  tests:
+    uses: ./.github/workflows/tests.yml
   image:
+    needs: tests
     name: Image ${{ matrix.arch }}
     strategy:
       fail-fast: false
@@ -22,8 +34,15 @@ jobs:
     timeout-minutes: 90
     steps:
       - uses: actions/checkout@v4
-      - name: Unit tests (slicer server)
-        run: pip install -q pytest && python3 -m pytest -q hub/slicer
+      - name: Version must change with the app
+        if: github.event_name == 'pull_request'
+        run: |
+          git fetch -q --depth 1 origin "$GITHUB_BASE_REF"
+          old=$(git show FETCH_HEAD:hub/config.yaml 2>/dev/null | sed -n 's/^version: //p')
+          new=$(sed -n 's/^version: //p' hub/config.yaml)
+          if ! git diff --quiet FETCH_HEAD -- hub && [ "$old" = "$new" ]; then
+            echo "::error::The app changed but its version ($new) did not; HA would not offer the update"; exit 1
+          fi
       - name: Base image (WASM engine, qemu, ffmpeg, bridge; built once per content hash, reused by every app version)
         env:
           GH_TOKEN: ${{ github.token }}
@@ -47,21 +66,14 @@ jobs:
           python3 -c "import json,sys;b,a=json.loads(sys.argv[1]),json.loads(sys.argv[2]);print(len(b),'base layers,',len(a)-len(b),'app layers');sys.exit(0 if a[:len(b)]==b and len(a)-len(b)==1 else 1)" "$b" "$a"
       - name: Browser tools for the UI tests
         run: pip install -q playwright && python3 -m playwright install --with-deps chromium
+      - name: UI checks against the mock server (the groups that need no engine; the real image runs the rest)
+        run: for g in cache panel download preview printerhistory offline; do python3 hub/ui/check_ui.py --only $g || exit 1; done
       - name: WebKit check of the phone promotion (iPhone profile, isolation headers, no loop)
         run: python3 -m playwright install --with-deps webkit && python3 hub/tests/webkit_isolation.py
       - name: UI end-to-end (real hub in the image, fake HA and bridge, slicing in the browser)
         run: SKIP_BUILD=1 IMG=druckwerk-test hub/tests/ui_e2e.sh
       - name: Slice in headless Chromium (mt, iframe, not isolated), G-code guard
         run: SKIP_BUILD=1 IMG=druckwerk-test hub/tests/browser_test.sh
-      - name: Version must change with the app
-        if: github.event_name == 'pull_request'
-        run: |
-          git fetch -q --depth 1 origin "$GITHUB_BASE_REF"
-          old=$(git show FETCH_HEAD:hub/config.yaml 2>/dev/null | sed -n 's/^version: //p')
-          new=$(sed -n 's/^version: //p' hub/config.yaml)
-          if ! git diff --quiet FETCH_HEAD -- hub && [ "$old" = "$new" ]; then
-            echo "::error::The app changed but its version ($new) did not; HA would not offer the update"; exit 1
-          fi
       - name: Push to ghcr.io
         if: github.event_name != 'pull_request' && github.ref == 'refs/heads/main'
         env:
@@ -70,6 +82,10 @@ jobs:
           V=$(sed -n 's/^version: "\(.*\)"/\1/p' hub/config.yaml)
           IMG=ghcr.io/${{ github.repository_owner }}/druckwerk-${{ matrix.arch }}
           echo "$GH_TOKEN" | docker login ghcr.io -u "${{ github.actor }}" --password-stdin
+          # A tag is what HA pulls for that version: an existing one is never overwritten, except by a manual run with force.
+          if [ "${{ inputs.force }}" != true ] && docker manifest inspect "$IMG:$V" >/dev/null 2>&1; then
+            echo "::error::$IMG:$V exists. Raise the version in hub/config.yaml, or run this workflow by hand with force."; exit 1
+          fi
           docker tag druckwerk-test "$IMG:$V"
           docker push -q "$IMG:$V"
           echo "pushed $IMG:$V"

@@ -5,6 +5,7 @@ import threading
 import xml.etree.ElementTree as ET
 import zipfile
 
+import files
 from queue_registry import read_json, write_json
 
 # Average printing watts, PLA column of the vendor wiki's "Supply voltage" page;
@@ -16,7 +17,7 @@ DEFAULT_WATTS = 105
 def slice_usage(path):
     """{"seconds", "filaments": [{"type", "colour", "grams"}], "grams"} from Metadata/slice_info.config of a .gcode.3mf."""
     with zipfile.ZipFile(path) as z:
-        root = ET.fromstring(z.read("Metadata/slice_info.config"))
+        root = ET.fromstring(files.read_member(z, "Metadata/slice_info.config", files.CONFIG_MAX))
     plate = root.find("plate")
     meta = {m.get("key"): m.get("value") for m in plate.iter("metadata")}
     fils = [{"type": f.get("type") or "", "colour": re.sub(r"[^0-9A-Fa-f]", "", f.get("color") or "")[:6].upper(),

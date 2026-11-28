@@ -5,12 +5,20 @@
 ARG TARGETARCH
 
 # Bridge: boo-cloud v0.2.2 + our patch, always built for x86_64. On an arm64 builder that is a cross build.
+# Fetched by commit id (tag v0.2.2), so a moved tag cannot change the build.
 FROM --platform=$BUILDPLATFORM rust:1.88-bookworm AS bridge
-RUN apt-get update && apt-get install -y --no-install-recommends xz-utils patch && rm -rf /var/lib/apt/lists/* \
+RUN apt-get update && apt-get install -y --no-install-recommends patch && rm -rf /var/lib/apt/lists/* \
  && rustup target add x86_64-unknown-linux-gnu
-RUN git clone --depth 1 --branch v0.2.2 https://github.com/estampo/boo-cloud /src
-COPY hub/bridge/bridge.patch.xz /tmp/
-RUN set -e; cd /src/bridge && xz -dc /tmp/bridge.patch.xz | patch -p1; \
+RUN git init -q /src && cd /src && git fetch -q --depth 1 https://github.com/estampo/boo-cloud 7a7860af9ad579152754e5e675493d1b8da76750 \
+ && git checkout -q FETCH_HEAD
+COPY hub/bridge/bridge.patch /tmp/
+RUN cd /src/bridge && patch -p1 < /tmp/bridge.patch
+# The patch's Rust tests (redact() keeps camera credentials out of logs, body limit, ...) run on the builder's own arch.
+# camera tests t1..t11 (except t1b, t6) compile tests/fake_bambusource.c, which the patch does not contain: skipped until it does.
+RUN cd /src/bridge && cargo test --locked -- \
+    --skip camera::tests::t1_ --skip camera::tests::t2_ --skip camera::tests::t3_ --skip camera::tests::t4_ --skip camera::tests::t5_ \
+    --skip camera::tests::t7_ --skip camera::tests::t8_ --skip camera::tests::t9_ --skip camera::tests::t10_ --skip camera::tests::t11_
+RUN set -e; cd /src/bridge; \
     if [ "$(uname -m)" != x86_64 ]; then \
       apt-get update && apt-get install -y --no-install-recommends g++-x86-64-linux-gnu libc6-dev-amd64-cross; \
       export CARGO_TARGET_X86_64_UNKNOWN_LINUX_GNU_LINKER=x86_64-linux-gnu-gcc CC_x86_64_unknown_linux_gnu=x86_64-linux-gnu-gcc \
@@ -25,13 +33,14 @@ RUN set -e; cd /src/bridge && xz -dc /tmp/bridge.patch.xz | patch -p1; \
 FROM debian:trixie-slim AS cert
 COPY hub/externals.env /externals.env
 RUN apt-get update && apt-get install -y --no-install-recommends curl ca-certificates && rm -rf /var/lib/apt/lists/*
-RUN . /externals.env && mkdir /out && curl -fsSL -o /out/slicer_base64.cer "$CERT_URL" && test -s /out/slicer_base64.cer
+RUN . /externals.env && mkdir /out && curl -fsSL -o /out/slicer_base64.cer "$CERT_URL" \
+ && echo "$CERT_SHA256  /out/slicer_base64.cer" | sha256sum -c -
 
 # OrcaSlicer compiled to WebAssembly (Muon3D Slicer Engine, AGPL-3.0) for slicing in the browser, with the presets flattened
 # at build time. The output is the same on every arch, so it is built natively on the builder. Only /out/engine is used.
 FROM --platform=$BUILDPLATFORM node:22-bookworm AS engine
 COPY hub/slicer/engine/ /w/hub/slicer/engine/
-COPY hub/externals.py /w/hub/externals.py
+COPY hub/externals.py hub/externals.env /w/hub/
 RUN /w/hub/slicer/engine/build.sh /out
 
 # ffmpeg with only what hub/bridge/server.py runs: raw H.264 and MPEG-TS in, MJPEG stills and MPEG-TS out. The Debian
@@ -39,7 +48,9 @@ RUN /w/hub/slicer/engine/build.sh /out
 # hevc is only there because libavcodec 7.1 links the H.264 SEI code against the HEVC one (aom_film_grain.o).
 FROM debian:trixie-slim AS ffmpeg
 RUN apt-get update && apt-get install -y --no-install-recommends build-essential git ca-certificates && rm -rf /var/lib/apt/lists/*
-RUN git clone --depth 1 --branch n7.1.1 https://github.com/FFmpeg/FFmpeg /src && cd /src \
+# Commit id of tag n7.1.1.
+RUN git init -q /src && cd /src && git fetch -q --depth 1 https://github.com/FFmpeg/FFmpeg db69d06eeeab4f46da15030a80d539efb4503ca8 \
+ && git checkout -q FETCH_HEAD \
  && ./configure --prefix=/out --disable-everything --disable-autodetect --disable-doc --disable-debug --disable-network \
       --disable-ffplay --disable-ffprobe --disable-x86asm --enable-small --enable-static --disable-shared \
       --enable-protocol=pipe,fd,file --enable-demuxer=h264,mpegts --enable-muxer=mpegts,image2 --enable-parser=h264 \

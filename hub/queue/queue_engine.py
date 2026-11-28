@@ -79,11 +79,13 @@ def _tray_ok(v):
 class Queue:
     def __init__(self, registry, data_dir, get_state, call_service, get_trays=None,
                  clock=time.time, start_timeout=START_TIMEOUT, job_allowed=None, dry=None, send_print=None, get_nozzle=None, get_requests=None,
-                 get_start_state=None):
+                 get_start_state=None, on_drop=None, has_file=None):
         self.registry = registry
         self.path = os.path.join(data_dir, "queue.json")
         self.get_state, self.call_service = get_state, call_service
         self.get_start_state = get_start_state or get_state
+        # on_drop(job): the job left the history, so its files can go. has_file(job): the job's file still exists.
+        self.on_drop, self.has_file = on_drop, has_file
         self.send_print = send_print  # send_print(data) sends one file; raises with the refusal text
         self.get_trays = get_trays or (lambda serial: [])
         self.clock, self.start_timeout = clock, start_timeout
@@ -109,7 +111,10 @@ class Queue:
 
     # -- storage --
     def _save(self):
+        dropped = self.history[:-HISTORY]
         del self.history[:-HISTORY]
+        for j in dropped:
+            self._drop(j)
         write_json(self.path, {"jobs": self.jobs, "history": self.history})
 
     def _find(self, job_id):
@@ -118,10 +123,17 @@ class Queue:
                 return j
         raise NotFound("no such queued job")
 
+    def _drop(self, job):
+        if self.on_drop:
+            try:
+                self.on_drop(job)
+            except Exception:  # noqa: BLE001 - a file that stays must not stop the queue
+                pass
+
     def _finish(self, job, state, error=None):
         job.update(state=state, error=error, finished_at=self.clock())
         self.jobs.remove(job)
-        self.history.append(job)
+        self.history.append(job)  # its files stay until it leaves the history: a cancelled job can be retried
 
     # -- jobs --
     def add(self, file, source="", target="any", model="", filaments=None, options=None,
@@ -254,6 +266,8 @@ class Queue:
                 raise NotFound("no such finished job")
             if job["state"] not in ("failed", "cancelled"):
                 raise QueueError("only failed or cancelled jobs can be retried")
+            if self.has_file and not self.has_file(job):
+                raise QueueError("the file of this job is gone (a cancelled job's file is removed); add the file again")
             self.history.remove(job)
             for k in ("finished_at", "started_at"):
                 job.pop(k, None)
