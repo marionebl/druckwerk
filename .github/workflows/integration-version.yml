@@ -1,0 +1,18 @@
+name: Integration version
+# HACS users get a release only for a new manifest version (release.yml), so a change under custom_components/ needs one.
+on:
+  pull_request:
+    paths: ['custom_components/**', 'tools/check-integration-version.sh', '.github/workflows/integration-version.yml']
+permissions:
+  contents: read
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+jobs:
+  check:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0  # the merge base with the target branch
+      - run: bash tools/check-integration-version.sh "origin/$GITHUB_BASE_REF"

@@ -1,5 +1,13 @@
 # Changelog
 
+## 3.24.0 (unreleased)
+
+- CI: the image job needs the full test workflow (`tests.yml`, now reusable), so a failing test in any of the five suites stops the push to ghcr.io. `Tests` runs the bridge, slicer, queue and app suites on Python 3.13 (the app image) and 3.14, with Node installed; a missing `node` fails the browser-module tests when `CI` is set. `push` runs only on main, and a newer push to a pull request cancels the older run.
+- CI: the push step refuses to overwrite an existing image tag (`workflow_dispatch` input `force` overrides it). The version guard is the first step of the image job. The image job also runs `check_ui.py` against the mock server for the groups that need no engine (cache, panel, download, preview, printerhistory, offline).
+- CI: a pull request that changes `custom_components/` without a new manifest version fails (`tools/check-integration-version.sh`). A weekly workflow checks that the plugin download still matches its pinned hash and that the certificate URL answers (`tools/check-externals.sh`).
+- Image build: the bridge's Rust tests run before `cargo build`, and the patch is stored as plain text (`hub/bridge/bridge.patch`). Ten camera tests need `tests/fake_bambusource.c`, which the patch lacks; they are skipped. boo-cloud and FFmpeg are fetched by commit id. The certificate (now pinned to a commit of its repository) and the three engine downloads are checked against SHA-256 values in `hub/externals.env`.
+- The base image tag no longer changes with edits of `hub/externals.py` outside `PRINTERS`. The base image is rebuilt once for this release.
+
 ## 3.20.0 (unreleased)
 
 - Bridge: the live camera upstream of each printer stays open at all times (`DW_LIVE_KEEP`, on by default). A viewer gets video without the 12 to 14 s mint and keyframe wait on the H2S, and stills and fresh stills (after a light switch) come from the live frames. A dropped upstream opens again after 5 s, then up to 120 s between tries. No new upstream opens while a print is sent. Cost on a Pi 4: about one core and the camera's bit rate per printer, all the time.
