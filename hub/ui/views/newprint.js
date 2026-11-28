@@ -4,6 +4,9 @@ import { h, clear, icon, btn, pill, field, swatch, empty, attempt, toast, fail, 
 import { gcodePreview } from './preview.js';
 import { warm, sliceVariant } from './browserslice.js';
 import { promote } from './promote.js';
+import { objectCard } from './objectsettings.js';
+import { paintModel } from './paint.js';
+import { paintedCount } from './paintcodes.js';
 import { sliceProgress } from './progress.js';
 
 const QUALITIES = [['good', 'Good', 'Fastest, visible layers'], ['better', 'Better', 'Balanced'], ['best', 'Best', 'Finest detail, slowest']];
@@ -19,7 +22,8 @@ export async function mount(ctx, root) {
   // tray: "unit:slot" of a loaded AMS tray; spool: id of a library spool. At most one of them is set.
   const S = { file: null, target: null, tray: null, spool: null, bed: BEDS[0], variants: null, pick: null,
     options: { timelapse: false, bed_leveling: true, use_ams: true, flow_cali: true, vibration_cali: true, layer_inspect: false, nozzle_offset_cali: false, bed_type: 'auto', ext_change_assist: false },
-    name: '', busy: false, engine: null };
+    name: '', busy: false, engine: null,
+    obj: {}, paint: null, filName: null, filKey: null };  // obj: the object's own Orca settings; paint: {positions, states} from the painter
   const box = h('div', { class: 'stack' });
   root.append(h('div', { class: 'page-head' }, h('div', null, h('h1', null, 'New print'), h('div', { class: 'sub' }, 'Upload, compare three slices, then queue'))), box);
 
@@ -58,11 +62,11 @@ export async function mount(ctx, root) {
   function pickFile(f) {
     if (!f) return;
     if (!ACCEPT.test(f.name)) return toast('Upload an STL file.', 'error');
-    S.file = f; S.variants = null; S.pick = null; draw();
+    S.file = f; S.obj = {}; S.paint = null; S.variants = null; S.pick = null; draw();
   }
 
   function stepper(n) {
-    return h('div', { class: 'steps' }, ['Model', 'Printer and filament', 'Compare', 'Queue'].map((l, i) =>
+    return h('div', { class: 'steps' }, ['Model', 'Printer and filament', 'Object settings', 'Compare', 'Queue'].map((l, i) =>
       h('div', { class: 'step' + (i + 1 === n ? ' on' : i + 1 < n ? ' done' : '') }, h('i', null, i + 1 < n ? '✓' : i + 1), l)));
   }
 
@@ -89,9 +93,50 @@ export async function mount(ctx, root) {
             l, h('small', null, sub))))),
       S.target && filamentPicker(),
       S.target && engineNote(),
-      S.target && field('Build plate', h('select', { onchange: (e) => (S.bed = e.target.value) }, BEDS.map((b) => h('option', { selected: b === S.bed }, b)))),
+      S.target && field('Build plate', h('select', { onchange: (e) => { S.bed = e.target.value; S.variants = null; draw(); } }, BEDS.map((b) => h('option', { selected: b === S.bed }, b)))));
+  }
+
+  function sliceCard() {
+    return h('section', { class: 'card stack' },
       btn(S.busy ? [h('span', { class: 'spin' }), ' Slicing three variants…'] : 'Slice good, better and best', sliceAll, 'primary',
         { disabled: !(S.file && S.target && (S.tray || S.spool)) || S.busy }));
+  }
+
+  // The filament preset name that the engine slices with, for the settings rules. The app resolves it from the tray or spool.
+  function ensureFilament() {
+    const ref = refPrinter(), fil = filChoice();
+    if (!ref || !fil) return null;
+    const key = ref.serial + JSON.stringify(fil);
+    if (S.filKey !== key) {
+      S.filKey = key; S.filName = null;
+      api.engineFilament(ref.serial, fil).then((r) => { if (S.filKey === key) { S.filName = r.filament; if (box.isConnected) draw(); } }, () => {});
+    }
+    return S.filName;
+  }
+
+  function paintSummary() {
+    const c = paintedCount(S.paint?.states), any = c.supports || c.seam;
+    const txt = [c.supports && `${c.supports.toLocaleString()} support triangles`, c.seam && `${c.seam.toLocaleString()} seam triangles`].filter(Boolean).join(', ');
+    return h('div', { class: 'ogroup', id: 'paint-summary' }, h('div', { class: 'row between', style: 'gap:8px;flex-wrap:wrap;align-items:center' },
+      h('span', null, h('b', null, 'Paint supports and seam'), h('br'),
+        h('small', { class: 'muted' }, any ? 'Painted: ' + txt : 'Mark where supports or the seam must (or must not) go.')),
+      h('span', { class: 'row', style: 'gap:8px' },
+        btn(any ? 'Edit paint…' : 'Paint…', async () => {
+          try {
+            const r = await paintModel(S.file, S.paint);
+            if (!r) return;
+            S.paint = Object.keys(paintedCount(r.states)).length ? r : null;
+            S.variants = null; S.pick = null; draw();
+          } catch (e) { toast(e.message, 'error'); }
+        }, 'sm', { id: 'paint-open' }),
+        any ? btn('Remove paint', () => { S.paint = null; S.variants = null; S.pick = null; draw(); }, 'sm') : null)));
+  }
+
+  function objectSection() {
+    const name = ensureFilament(), ref = refPrinter();
+    if (!name || !ref) return h('section', { class: 'card' }, h('h2', null, '3 · Object settings'), h('p', { class: 'muted', style: 'margin:0' }, 'Pick a printer and a filament first.'));
+    return objectCard(S, { engine: () => S.engine, model: ref.model, quality: 'better', bed: S.bed, filament: name },
+      { onChange: () => { if (S.variants) { S.variants = null; S.pick = null; draw(); } }, paintSummary });
   }
 
   function filamentPicker() {
@@ -137,7 +182,7 @@ export async function mount(ctx, root) {
       for (const v of S.variants) {
         v.state = 'slicing'; v.elapsed = 0;
         const t0 = performance.now(), ticker = setInterval(() => { v.elapsed = Math.round((performance.now() - t0) / 1000); draw(); }, 1000);
-        const opts = { file: S.file, jobId: v.id, model: ref.model, serial: ref.serial, fil: filChoice(), bed: S.bed, quality: v.q,
+        const opts = { file: S.file, jobId: v.id, model: ref.model, serial: ref.serial, fil: filChoice(), bed: S.bed, quality: v.q, objectConfig: S.obj, paint: S.paint,
           onProgress: (p) => (v.progress = { percent: p.percent, message: p.message || p.stage || '' }) };  // drawn by the 1 s ticker
         try {
           let r;
@@ -181,7 +226,7 @@ export async function mount(ctx, root) {
         v.slice_ms != null ? h('small', { class: 'slice-time', 'data-slice-ms': v.slice_ms, 'data-engine': v.engine_variant },
           `Sliced here in ${(v.slice_ms / 1000).toFixed(1)} s (${v.engine_variant})`) : null);
     });
-    return h('section', { class: 'card stack' }, h('h2', { style: 'margin:0' }, '3 · Compare'),
+    return h('section', { class: 'card stack' }, h('h2', { style: 'margin:0' }, '4 · Compare'),
       h('p', { class: 'muted', style: 'margin:0' }, 'Pick the trade-off between quality and speed. Prices use your spool and the printer power estimate.'),
       h('div', { class: 'variants' }, cards));
   }
@@ -208,7 +253,7 @@ export async function mount(ctx, root) {
         opt('layer_inspect', 'First layer inspection', 'The camera checks the first layer'),
         opt('ext_change_assist', 'External spool change assist', 'Help when you change the external spool')),
       h('small', null, 'Not every printer supports every option. The printer ignores what it cannot do.'));
-    return h('section', { class: 'card stack' }, h('h2', { style: 'margin:0' }, '4 · Preview and queue'),
+    return h('section', { class: 'card stack' }, h('h2', { style: 'margin:0' }, '5 · Preview and queue'),
       warn.map((w) => h('div', { class: 'hms warn' }, icon('alert', 20), h('div', { class: 'txt' }, w))),
       h('div', { class: 'preview' }, v.info.has_png ? h('img', { src: api.plateUrl(v.id) + '?v=' + v.id, alt: 'Plate preview', onerror: (e) => e.target.remove() }) : null, prev),
       field('Name of the print', h('input', { type: 'text', maxlength: 80, placeholder: S.file ? S.file.name.replace(/\.[^.]+$/, '') : '', value: S.name,
@@ -227,9 +272,9 @@ export async function mount(ctx, root) {
   }
 
   function draw() {
-    const step = S.pick ? 4 : S.variants ? 3 : S.file ? 2 : 1;
+    const step = S.pick ? 5 : S.variants ? 4 : S.file && S.target ? 3 : S.file ? 2 : 1;
     if (!printers.length) return clear(box, empty('You have no printer access yet. Ask an admin for a grant.'));
-    clear(box, stepper(step), fileCard(), S.file && printerCard(), S.variants && compareCard(), S.pick && queueCard());
+    clear(box, stepper(step), fileCard(), S.file && printerCard(), S.file && S.target && objectSection(), S.file && sliceCard(), S.variants && compareCard(), S.pick && queueCard());
   }
   // Reslice (from a history or queue detail) hands over what the old print had; it is used once.
   const rs = ctx.reslice;

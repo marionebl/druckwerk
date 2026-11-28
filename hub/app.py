@@ -888,7 +888,7 @@ class App:
             job = self.s.jobs[body["id"]]
             job["owner_user_id"] = c.user_id
             self.s.save_job(job)
-            body = self.s.public(job)
+            body = dict(self.s.public(job), **({"received": body["received"]} if "received" in body else {}))
         h.send(status, body, ctype)
 
     def queue_job(self, h, m, q, c):
@@ -1408,6 +1408,7 @@ class App:
             ("GET", r"/api/engine/filament", self.get_engine_filament),
             ("GET", r"/api/jobs/" + JOB_ID + r"/(plate\.png|plate\.gcode)", self.slicer_job(self.s.get_file)),
             ("GET", r"/api/jobs/" + JOB_ID + r"/model", self.slicer_job(self.s.get_model)),
+            ("POST", r"/api/jobs/" + JOB_ID + r"/model", self.slicer_job(self.s.post_model_part)),
             ("POST", r"/api/jobs/" + JOB_ID + r"/print", self.slicer_job(self.s.post_print, self.check_print)),
             ("POST", r"/api/jobs/" + JOB_ID + r"/queue", w(self.queue_job)),
             ("GET", r"/api/history", w(self.get_history)),

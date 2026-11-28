@@ -1,6 +1,7 @@
 // Slicing in the browser: OrcaSlicer compiled to WebAssembly (Muon3D Slicer Engine) in a Web Worker, speaking the
 // engine's protocol v2. The server hands out the runtime at engine/ and the flattened presets; see hub/slicer/engine.
 import { api } from '../api.js';
+import { toObjectPaint } from './paintcodes.js';
 
 const cache = { presets: {} };
 
@@ -40,7 +41,7 @@ export function warm() {
   })();
 }
 
-function parseStl(buf) {
+export function parseStl(buf) {
   const dv = new DataView(buf);
   if (buf.byteLength >= 84 && buf.byteLength === 84 + dv.getUint32(80, true) * 50) {  // binary: 84 bytes + 50 per triangle
     const n = dv.getUint32(80, true), out = new Float32Array(n * 9);
@@ -53,7 +54,7 @@ function parseStl(buf) {
 }
 
 // The engine wants bed coordinates: centred on the printable area, resting on z = 0.
-function placeOnBed(pos, machine) {
+export function placeOnBed(pos, machine) {
   const area = [machine.printable_area].flat().join(',').split(',').map((p) => p.split('x').map(Number));
   const mid = (a) => (Math.min(...area.map((p) => p[a])) + Math.max(...area.map((p) => p[a]))) / 2;
   const lo = [Infinity, Infinity, Infinity], hi = [-Infinity, -Infinity, -Infinity];
@@ -63,26 +64,66 @@ function placeOnBed(pos, machine) {
   return pos;
 }
 
+// The presets of a printer model, loaded once. Per request they are cut to what the engine needs.
+export async function loadPresets(model) {
+  return (cache.presets[model] ||= await (await fetch(`engine/presets/${model}.json`)).json());
+}
+
+// The flattened configs of a variant. Orca refuses PETG on its default Cool Plate, so the plate must be set.
+export async function variantConfigs(model, quality, bed, filamentName) {
+  const presets = await loadPresets(model);
+  const filament = presets.filaments.find((f) => f.name === filamentName);
+  if (!filament) throw new Error('No filament preset ' + filamentName);
+  return { machine: { ...presets.machine, curr_bed_type: bed }, process: { ...presets.process[quality], curr_bed_type: bed }, filament: filament.config };
+}
+
+// Settings service of the engine (settings.view, settings.edit). Configs travel once per engine and then by hash.
+export async function settingsCall(eng, ctx, op, params) {
+  const { model, quality, bed, filament } = ctx;
+  const c = await variantConfigs(model, quality, bed, filament);
+  eng.sent ||= new Set();
+  const ref = (kind, hash, config) => (eng.sent.has(hash) ? { hash } : { hash, config });
+  const refs = { machine: ref('m', `m:${model}:${bed}`, c.machine), process: ref('p', `p:${model}:${quality}:${bed}`, c.process), filament: ref('f', `f:${model}:${filament}`, c.filament) };
+  const body = { presets: refs, env: { mode: 'expert', vendor: 'BBL', filamentCount: 1 }, ...params };
+  try {
+    const r = await eng.request(op, body);
+    Object.values(refs).forEach((x) => eng.sent.add(x.hash));
+    return r;
+  } catch (e) {
+    if (!/cache/i.test(e.message) || !Object.values(refs).some((x) => !x.config)) throw e;
+    eng.sent.clear();  // the host dropped a config: send them all again
+    return settingsCall(eng, ctx, op, params);
+  }
+}
+
+// What a painted object needs to have any effect: supports must be on for support paint (Orca warns and ignores it otherwise).
+export function effectiveObjectConfig(config, process, paint) {
+  const out = { ...(config || {}) };
+  if (paint?.supports && (out.enable_support ?? process.enable_support) !== '1') out.enable_support = '1';
+  return out;
+}
+
 // One variant: slice in the (warm) engine, then hand the G-code to the app, which packs and checks it like a Pi slice.
-// opts: file, jobId, model, serial, fil, bed, quality, onProgress. Returns the job and the slice time.
+// opts: file, jobId, model, serial, fil, bed, quality, onProgress, objectConfig (ConfigPatch), paint ({positions, states} from paint.js).
+// Returns the job and the slice time.
 export async function sliceVariant(eng, opts) {
   const { file, jobId, model, serial, fil, bed, quality } = opts;  // fil: {tray} or a library spool, see api.engineFilament
-  cache.presets[model] ||= await (await fetch(`engine/presets/${model}.json`)).json();
-  const presets = cache.presets[model];
   const [{ filament: name }, buf] = await Promise.all([api.engineFilament(serial, fil), file.arrayBuffer()]);
-  const filament = presets.filaments.find((f) => f.name === name);
-  if (!filament) throw new Error('No filament preset ' + name);
-  // Orca refuses PETG on its default Cool Plate, so the plate must be set.
-  const machine = { ...presets.machine, curr_bed_type: bed }, process = { ...presets.process[quality], curr_bed_type: bed };
-  const positions = placeOnBed(parseStl(buf), machine);
+  const c = await variantConfigs(model, quality, bed, name);
+  const { machine, process } = c;
+  const painted = opts.paint ? toObjectPaint(opts.paint.states) : null;
+  // Painted triangles are numbered in the refined mesh that the painter made, so that mesh goes to the engine.
+  const positions = placeOnBed(painted ? Float32Array.from(opts.paint.positions) : parseStl(buf), machine);
+  const config = effectiveObjectConfig(opts.objectConfig, process, painted);
+  const object = { name: file.name, mesh: { positions }, ...(Object.keys(config).length ? { config } : {}), ...(painted ? { paint: painted } : {}) };
   const t0 = performance.now();
   const r = await eng.request('slice', {
-    configs: { machine, process, filaments: [filament.config] },
-    objects: [{ name: file.name, mesh: { positions } }], output: { toolpaths: false },
+    configs: { machine, process, filaments: [c.filament] },
+    objects: [object], output: { toolpaths: false },
   }, (p) => opts.onProgress?.(p), [positions.buffer]);
   const sliceMs = performance.now() - t0, st = r.stats;
   const qs = new URLSearchParams({ serial, quality, ...fil, bed, filament: name, seconds: st.printTimeSeconds ?? 0, grams: st.filamentG ?? 0,
     metres: (st.filamentMm ?? 0) / 1000, engine: eng.variant, slice_s: (sliceMs / 1000).toFixed(1) });
   const job = await api.uploadGcode(jobId, qs, r.gcode);
-  return { job, sliceMs };
+  return { job, sliceMs, warnings: r.warnings || [] };
 }
