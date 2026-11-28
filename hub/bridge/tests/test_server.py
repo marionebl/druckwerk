@@ -4,9 +4,11 @@ import base64
 import http.client
 import json
 import os
+import shlex
 import signal
 import socket
 import stat
+import struct
 import subprocess
 import sys
 import tempfile
@@ -66,6 +68,9 @@ class Server:
         self.base = free_range()  # first daemon port; the next ones are base+1, ...
         self.logpath = os.path.join(self.tmp.name, "server.log")
         self.bodies = []  # every HTTP response body we received
+        # The server gives its daemon only PATH, HOME, LANG and TZ, so the mock's MOCK_* controls go on its command line.
+        mock_env = " ".join("%s=%s" % (k, shlex.quote(v)) for k, v in (extra_env or {}).items() if k.startswith("MOCK_"))
+        daemon_cmd = "env %s %s" % (mock_env, daemon_cmd) if mock_env else daemon_cmd
         env = dict(os.environ, DW_DATA=self.data, DW_PORT=str(self.port), DW_HOST="127.0.0.1",
                    DW_API_BASE="http://127.0.0.1:%d" % cloud.server_port, DW_DAEMON_PORT_BASE=str(self.base),
                    DW_CERT=self.cert, DW_DAEMON_CMD=daemon_cmd, DW_BACKOFF_MIN="0.2", DW_BACKOFF_MAX="0.8",
@@ -403,6 +408,44 @@ class FlowVariantsTest(unittest.TestCase):
             self.assertEqual(s.json("POST", "/api/login/start", {"email": "direct@x.org", "password": "pw"})[1],
                              {"state": "done", "account": "direct_x_org"})  # ADAPTED
             self.assertEqual(s.req("POST", "/api/login/start", {"email": "a@x.org"})[0], 400)
+        finally:
+            s.close()
+
+
+class PrintTimeoutTest(unittest.TestCase):
+    """A daemon that does not answer a print in time gives 504, not 503: the file may be on the printer."""
+
+    def test_a_slow_daemon_gives_504_and_the_default_waits_less_than_the_app(self):
+        cloud = mock_cloud.start()
+        s = Server(cloud, extra_env={"MOCK_SLOW": "3", "DW_PRINT_TIMEOUT": "1"})
+        try:
+            s.json("POST", "/api/login/start", {"email": "a@example.com", "password": "pw"})
+            s.json("POST", "/api/login/code", {"code": "123456"})
+            st, d = s.json("POST", "/api/print", {"serial": "SERIAL001", "filename": "slow.gcode.3mf",
+                                                  "file_b64": base64.b64encode(b"x").decode()})
+            self.assertEqual(st, 504)
+            self.assertIn("may have started", d["error"])
+        finally:
+            s.close()
+        src = open(SERVER_PY).read()
+        self.assertIn('env("DW_PRINT_TIMEOUT", "280")', src)  # the app's own timeout is 300 s
+
+
+class LoginLockTest(unittest.TestCase):
+    """A slow cloud login must not hold up the endpoints that only read the account list."""
+
+    def test_status_answers_while_a_login_waits_for_the_cloud(self):
+        cloud = mock_cloud.start()
+        cloud.login_delay = 2
+        s = Server(cloud)
+        try:
+            t = threading.Thread(target=s.json, args=("POST", "/api/login/start", {"email": "direct@x.org", "password": "pw"}))
+            t.start()
+            time.sleep(0.5)
+            t0 = time.time()
+            self.assertEqual(s.req("GET", "/api/health")[0], 200)
+            self.assertLess(time.time() - t0, 0.5)
+            t.join()
         finally:
             s.close()
 
@@ -1033,6 +1076,57 @@ class DaemonOutageTest(unittest.TestCase):
         os.unlink(self.gate)
 
 
+class DaemonLoopErrorTest(unittest.TestCase):
+    """An exception while the daemon's output is read must not end the restart loop."""
+
+    def test_a_line_that_note_progress_cannot_parse_restarts_the_daemon(self):
+        cloud = mock_cloud.start()
+        tmp = tempfile.TemporaryDirectory()
+        mark = os.path.join(tmp.name, "mark")
+        wrapper = os.path.join(tmp.name, "wrapper.py")
+        with open(wrapper, "w") as f:
+            f.write("import os, sys, time\n"
+                    "if not os.path.exists(%r):\n"
+                    "    open(%r, 'w').close()\n"
+                    # a code with 5000 digits: int() refuses it, so note_progress raises
+                    "    print('print progress stage=\"Upload\" code=' + '9' * 5000, flush=True)\n"
+                    "    time.sleep(600)\n"
+                    "os.execv(sys.executable, [sys.executable, '-I', %r, sys.argv[1], sys.argv[2]])\n"
+                    % (mark, mark, os.path.join(HERE, "mock_daemon.py")))
+        s = Server(cloud, "%s %s" % (sys.executable, wrapper))
+        try:
+            login(s, "a@example.com")
+            self.assertTrue(daemon_up(s, s.base), s.logtext())
+            self.assertIn("loop error: ValueError", s.logtext())
+            self.assertEqual(s.json("GET", "/api/health")[1]["accounts"][0]["daemon"]["running"], True)
+        finally:
+            s.close()
+            tmp.cleanup()
+
+
+class ClientGoneTest(unittest.TestCase):
+    """A client that closes before the answer is not an error of the bridge."""
+
+    def test_a_closed_socket_leaves_one_log_line_and_no_traceback(self):
+        cloud = mock_cloud.start()
+        s = Server(cloud, extra_env={"MOCK_SLOW": "1.5"})
+        try:
+            login(s, "a@example.com")
+            daemon_up(s, s.base)
+            body = json.dumps({"serial": "SERIAL001", "filename": "slow.gcode.3mf", "file_b64": base64.b64encode(b"x").decode()})
+            sock = socket.create_connection(("127.0.0.1", s.port))
+            sock.sendall(("POST /api/print HTTP/1.1\r\nHost: x\r\nContent-Length: %d\r\n\r\n%s" % (len(body), body)).encode())
+            time.sleep(0.4)
+            sock.setsockopt(socket.SOL_SOCKET, socket.SO_LINGER, struct.pack("ii", 1, 0))  # close with a reset
+            sock.close()
+            self.assertTrue(wait_for(lambda: "client went away" in s.logtext(), 5), s.logtext())
+            time.sleep(0.5)
+            self.assertNotIn("Traceback", s.logtext())
+            self.assertEqual(s.logtext().count("client went away"), 1)
+        finally:
+            s.close()
+
+
 class MigrationTest(unittest.TestCase):
     OLD_TOKEN = "TOKEN-OLD-V01-SECRET"
 
@@ -1071,6 +1165,62 @@ class MigrationTest(unittest.TestCase):
             self.assertNotIn(b"ACCESS-OLD", b"".join(s.bodies))
         finally:
             s.close()
+
+
+class OpenPathsTest(unittest.TestCase):
+    """Port 8098 has no secret: only loopback may control it; go2rtc and the manual setup need two routes."""
+
+    @classmethod
+    def setUpClass(cls):
+        cls.cloud = mock_cloud.start()
+        cls.s = Server(cls.cloud, extra_env={"SUPERVISOR_TOKEN": "TOKEN-SECRET", "DW_DATA_SECRET": "x"})
+        login(cls.s, "a@example.com")
+        daemon_up(cls.s, cls.s.base)
+
+    @classmethod
+    def tearDownClass(cls):
+        cls.s.close()
+
+    def remote(self, method, path, body=None):
+        # 127.0.0.2 is not the loopback address 127.0.0.1 that the app uses
+        c = http.client.HTTPConnection("127.0.0.1", self.s.port, timeout=30, source_address=("127.0.0.2", 0))
+        c.request(method, path, json.dumps(body) if body is not None else None)
+        r = c.getresponse()
+        data = b"" if path.endswith("/live") else r.read()  # a stream does not end
+        c.close()
+        return r.status, data
+
+    def test_remote_client_cannot_control(self):
+        self.assertEqual(self.remote("POST", "/api/print", {"serial": "SERIAL001"})[0], 403)
+        self.assertEqual(self.remote("POST", "/api/pause/SERIAL001", {"action": "pause"})[0], 403)
+        self.assertEqual(self.remote("DELETE", "/api/accounts/a_example_com")[0], 403)
+        self.assertEqual(self.remote("GET", "/api/printers")[0], 403)
+        self.assertEqual(self.s.json("GET", "/api/printers")[0], 200)  # loopback is unchanged
+
+    def test_remote_client_keeps_live_and_health(self):
+        self.assertEqual(self.remote("GET", "/api/camera/SERIAL001/live")[0], 200)
+        status, data = self.remote("GET", "/api/health")
+        self.assertEqual(status, 200)
+        self.assertEqual(json.loads(data)["server"], "ok")
+        self.assertNotIn(b"a@example.com", data)  # no email address for a remote client
+        self.assertIn(b"a@example.com", self.s.req("GET", "/api/health")[1])
+
+    def test_daemon_does_not_get_the_supervisor_token(self):
+        env = self.s.daemon(self.s.base, "/health")["env"]
+        self.assertEqual([k for k in env if k.startswith(("SUPERVISOR", "DW_"))], [])
+
+    def test_bad_content_length_is_400(self):
+        for value in ("-1", "abc"):
+            sock = socket.create_connection(("127.0.0.1", self.s.port), timeout=10)
+            sock.sendall(("POST /api/login/start HTTP/1.1\r\nHost: x\r\nContent-Length: %s\r\n\r\n" % value).encode()
+                         + b'{"email": "x@y.org", "password": "p"}')
+            sock.shutdown(socket.SHUT_WR)
+            answer = b""
+            while chunk := sock.recv(65536):
+                answer += chunk
+            sock.close()
+            self.assertTrue(answer.startswith(b"HTTP/1.0 400"), answer[:200])
+            self.assertIn(b"non-negative", answer)
 
 
 if __name__ == "__main__":

@@ -11,6 +11,7 @@ from homeassistant.core import State
 from homeassistant.exceptions import HomeAssistantError, ServiceValidationError
 from homeassistant.helpers import device_registry as dr
 from homeassistant.helpers import entity_registry as er
+from homeassistant.helpers import issue_registry as ir
 from pytest_homeassistant_custom_component.common import mock_restore_cache
 from pytest_homeassistant_custom_component.test_util.aiohttp import AiohttpClientMockResponse
 
@@ -127,12 +128,17 @@ async def test_app_down_makes_entities_unavailable_until_it_answers(hass, app, v
     assert hass.states.get(SENSOR).state == "sent"
 
 
-async def test_a_401_from_the_app_is_a_failed_poll(hass, app, vendor_device):
+async def test_a_401_from_the_app_is_a_failed_poll_with_a_repair_issue(hass, app, vendor_device):
     await setup_entry(hass)
     app.get(f"{HUB_URL}/api/integration/state", status=401, json={"error": "no"})
     app._mocks.insert(0, app._mocks.pop())
     await tick(hass)
     assert hass.states.get(SENSOR).state == STATE_UNAVAILABLE
+    assert {i for (_, i) in ir.async_get(hass).issues} == {"hub_secret_rejected"}  # not "not reachable"
+    mock_hub(app)
+    await tick(hass, 12)
+    assert hass.states.get(SENSOR).state == "sent"
+    assert ir.async_get(hass).issues == {}
 
 
 async def test_setup_does_not_wait_for_an_app_that_is_down_and_entities_appear_later(hass, app, vendor_device):
@@ -231,13 +237,13 @@ async def test_a_press_polls_the_state_at_once(hass, app, vendor_device):
     assert len(calls(app, "GET", "/api/integration/state")) == before + 1
 
 
-async def test_reread_slot_posts_to_the_rfid_route_without_act_as(hass, app, vendor_device):
+async def test_reread_slot_posts_to_the_rfid_route_as_the_user(hass, app, vendor_device):
     app.post(f"{HUB_URL}/api/integration/printers/{SERIAL}/rfid", json={"sent": 1})
     await setup_entry(hass)
     anna = await hass.auth.async_create_user("Anna")
     await press(hass, "button.my_h2s_re_read_slot_3", user=anna.id)
     (post,) = calls(app, "POST", f"/printers/{SERIAL}/rfid")
-    assert post[2] == {"ams_id": 0, "slot_id": 2} and "X-Druckwerk-Act-As" not in post[3]
+    assert post[2] == {"ams_id": 0, "slot_id": 2} and post[3]["X-Druckwerk-Act-As"] == anna.id
 
 
 async def test_reread_error_surfaces(hass, app, vendor_device):
@@ -351,10 +357,20 @@ async def test_light_shows_the_apps_state_and_commands_go_through_the_app(hass, 
     await hass.services.async_call("light", "turn_on", {"entity_id": LIGHT}, blocking=True)
     posts = calls(app, "POST", f"/printers/{SERIAL}/light")
     assert [p[2] for p in posts] == [{"on": False}, {"on": True}]
-    assert posts[0][3]["X-Hub-Secret"] == HUB_SECRET
+    assert posts[0][3]["X-Hub-Secret"] == HUB_SECRET and "X-Druckwerk-Act-As" not in posts[0][3]  # no user: admin
     mock_hub(app, state=state_doc(**{SERIAL: {"chamber_light": {"on": None}}}))
     await tick(hass)
     assert hass.states.get(LIGHT).state == "unknown"
+
+
+async def test_light_command_is_sent_as_the_user(hass, app, vendor_device):
+    from homeassistant.core import Context
+    app.post(f"{HUB_URL}/api/integration/printers/{SERIAL}/light", json={"sent": 2})
+    await setup_entry(hass)
+    anna = await hass.auth.async_create_user("Anna")
+    await hass.services.async_call("light", "turn_off", {"entity_id": LIGHT}, blocking=True, context=Context(user_id=anna.id))
+    (post,) = calls(app, "POST", f"/printers/{SERIAL}/light")
+    assert post[3]["X-Druckwerk-Act-As"] == anna.id
 
 
 async def test_a_light_command_error_shows_the_apps_text(hass, app, vendor_device):
@@ -409,12 +425,27 @@ async def test_todo_lists_the_apps_items_in_order(hass, app, vendor_device):
     assert not hass.states.get(TODO).attributes["supported_features"] & 1  # no create
 
 
-async def test_todo_delete_cancels_each_job_as_the_integration(hass, app, vendor_device):
+async def test_todo_delete_cancels_each_job_as_the_integration_without_a_user(hass, app, vendor_device):
     app.post(f"{HUB_URL}/api/queue/{FIRST}/cancel", json={})
     await setup_entry(hass)
     await hass.services.async_call("todo", "remove_item", {"entity_id": TODO, "item": FIRST}, blocking=True)
     (post,) = calls(app, "POST", f"/api/queue/{FIRST}/cancel")
     assert post[2] == {} and post[3]["X-Hub-Secret"] == HUB_SECRET and "X-Druckwerk-Act-As" not in post[3]
+
+
+async def test_todo_delete_and_move_run_as_the_user_and_a_refusal_is_shown(hass, app, vendor_device):
+    from homeassistant.core import Context
+    app.post(f"{HUB_URL}/api/queue/{FIRST}/cancel", status=403, json={"error": "rule: only the owner can cancel this job"})
+    app.post(f"{HUB_URL}/api/queue/{FIRST}/reorder", json={})
+    await setup_entry(hass)
+    ben = await hass.auth.async_create_user("Ben")  # no grant on the printer
+    with pytest.raises(HomeAssistantError, match="Druckwerk: rule: only the owner"):
+        await hass.services.async_call("todo", "remove_item", {"entity_id": TODO, "item": FIRST}, blocking=True,
+                                       context=Context(user_id=ben.id))
+    ent = hass.data["entity_components"]["todo"].get_entity(TODO)
+    ent.async_set_context(Context(user_id=ben.id))
+    await ent.async_move_todo_item(FIRST, None)
+    assert [c[3]["X-Druckwerk-Act-As"] for c in calls(app, "POST", "/cancel") + calls(app, "POST", "/reorder")] == [ben.id, ben.id]
 
 
 async def test_todo_move_computes_the_position_among_the_waiting_jobs(hass, app, vendor_device):

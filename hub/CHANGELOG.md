@@ -1,6 +1,6 @@
 # Changelog
 
-## 3.23.0 (unreleased)
+## 3.32.0 (unreleased)
 
 - Web UI: a button whose action is still running cannot be pressed again (a double click on "Add to queue" made two jobs).
 - Web UI: the page frame draws first and the name, tabs and cached lists come after `api/me` has answered. Before, the cached identity showed the previous user's name and lists to the next person on the same browser profile. The cached lists of other users are removed when the user changes, and a full storage drops the other cached lists instead of no cache at all.
@@ -11,6 +11,57 @@
 - `feedback.js` loads snapdom from `vendor/snapdom.mjs` (3.8.3, MIT) instead of jsdelivr.
 - `POST /api/feedback`: the item ends with the caller's display name ("... · from Name"), each user may send 10 items per hour (429 above), the description is at most 300000 bytes (400 above).
 - Routes that read a JSON body refuse a body without `Content-Type: application/json` (400). A form from another site can send `text/plain` without a preflight. Calls without a body are unchanged.
+
+## 3.28.0 (unreleased)
+
+- A damaged or empty data file (`queue.json`, `printers.json`, `grants.json`, the sender, notification, price and request files) no longer stops the app at start: it is renamed to `<name>.corrupt-<time>`, one line goes to the log and the app starts with that file empty.
+- Data files are written with `fsync` before the rename, so a power loss cannot leave an empty file; a failed write removes its temp file. The saved settings of a queued file and the slicer's `job.json` use the same write.
+- A torn saved-settings file no longer gives a 400 on `GET /api/history/<id>/settings` for ever: it counts as not saved and the next source answers.
+- A running job no longer rewrites `queue.json` at every tick (360 writes per hour); it is written when the state, error or end time of a job changes.
+- Two requests for one cloud file no longer share one `.part` file: the download uses a unique temp file in the target directory and a second request waits for the first.
+
+## 3.27.0 (unreleased)
+
+- An unexpected exception in a route is answered with 500 (`internal error`) and its stack trace goes to the log. Before, the connection was dropped (for example `POST /api/grants {}`).
+- Queueing a file by path or a slice: a step that fails after the job was added (copy into the share, plate image, settings) removes the job and its files again. Before, a queued job without a file stayed. The copy still comes after the access check.
+- `POST /api/queue`: `filaments` that is not a list of objects and `options` that is not an object are a 400 (they dropped the connection).
+- Home Assistant events: the watcher no longer ends when a callback raises, or on any other exception; it logs and reconnects. The socket is no longer left without a timeout: after 60 s without a frame it sends a ping and reconnects when nothing answers. An idle socket stays open.
+- Home Assistant websocket commands: a timeout or reset during the login is "Home Assistant is restarting" (503 or the caller's fallback) instead of an uncaught `TimeoutError`; a connect error inside `command` is an `HAError`.
+- A client that closes the connection before the answer writes one log line (`client went away`), not a stack trace, in the app and the bridge.
+- A failed `turn_on` of a paused automation after a send is logged with the entity id and the error; when the send itself was refused, the job error names the entities that stay off.
+- Bridge: an exception while the daemon's output is read ends that daemon and restarts it with the usual backoff, instead of ending the restart loop for good.
+- Bridge: `watchdog: http://[HOST]:8098/api/health` in the app config, so the Supervisor restarts the app when the bridge stops answering. Needs `/api/health` to stay open for clients that are not on the loopback (package 1).
+- Integration 0.15.1: a manifest with a value it cannot apply is not applied in part. The old actions stay, a warning is logged, the repair issue "bad_manifest" is raised, and the next poll tries again (the revision is kept only after the manifest applied). Actions are tracked as they are registered, so an unload removes all of them. A 401 from the app raises the repair issue "hub_secret_rejected" (before: only "not reachable").
+
+## 3.26.0 (unreleased)
+
+- A print start uses a printer status of at most 60 s. The app reads the bridge's `X-Status-Age` and keeps the real observation time, so a cached status of the bridge no longer looks fresh (before: up to 10 min of the bridge plus the app's own cache). The tolerance of 10 min stays for the display and the ticks. A start with an older status is refused with 409 and the job stays queued.
+- One send per printer: a second send to the same printer (action, web UI or queue) gets 409 at once.
+- `print_file` also refuses a printer in `PREPARE`. The bridge gives up on its daemon after 280 s (the app waits 300 s) and answers 504 when the daemon timed out, 503 only when it was not reachable at all.
+- A queue start whose send ends in a timeout or "not reachable" fails the job (`send timed out; check the printer before you retry`) instead of leaving it queued, where a second start printed twice. A refusal (guard, model mismatch, bridge error) still keeps the job first in the queue.
+- The "Plate clear, start" button names the job (`DRUCKWERK_START_<serial>_<job id>`). It starts that job only when it is still the first queued job, the notification is at most 30 minutes old and the phone's Home Assistant user is an admin of the printer (event context user). The app keeps the sent notifications in memory, so a button from before an app restart is refused; use Start in the queue then.
+- The actions `start_next` and `start_job` confirm a drying job, so they can start one.
+- `POST /api/queue/<id>/cancel` takes `{force: true}` for admins: a `printing` job that never ends is removed as `failed` (`removed by admin`).
+- Approving an `any` job needs an admin of a printer that the job fits for its owner, not any printer of the model.
+- Printing a browser slice (`POST /api/jobs/<id>/print`) copies it to a file name with a random part, so two prints of the same name no longer overwrite each other. The copy stays while it is the printer's current file (the printer picture reads it) and is deleted when the slice is sent again; a refused send leaves no copy.
+
+## 3.22.0 (unreleased)
+
+- No call to Home Assistant, the bridge or the cloud runs while the queue lock is held. A slow send, spool settlement or cloud login no longer holds up `GET /api/queue`, `GET /api/events` or the bridge status (before: up to the 300 s send timeout).
+- New job state `sending` (visible in `GET /api/queue`, shown as "Sending" in the queue): the job holds its printer while the file goes out, so a second start is still refused, then it becomes `starting`, or goes back to `queued` with the error. A job found in `sending` after an app restart is marked failed, because the print may have begun; check the printer before a retry.
+- A tick reads the printer status once, before it takes the lock (it read it up to 4 times under the lock).
+- Settling a finished job (spools, cost) runs after the queue and sync locks are released; `job_done` follows the settlement as before.
+- The "Plate clear, start" notification button and the air-print pause run in their own short-lived thread, so a slow send or pause no longer stops the delivery of Home Assistant events or the ticker.
+- Bridge: a cloud login, its code step and the account write hold the global lock only around the account and pending lists; one lock per account keeps two logins of one account in order.
+
+## 3.21.0 (unreleased)
+
+- Bridge (port 8098): only the app on loopback may use it. Other clients get 403, except `GET /api/camera/<serial>/live` (go2rtc cannot send a header) and `GET /api/health`, which no longer lists account email addresses for them. Before, any client in the Home Assistant network could print, pause and delete a cloud account.
+- `druckwerk.print_file` obeys the calling user: with a user id only an admin of the printer (HA admin or printer owner) may send, and only they can use `force`. A call without a user stays admin.
+- Integration 0.15.0: the to-do list, the chamber light and the buttons send the HA user id (`X-Druckwerk-Act-As`), so the app's rules apply to them. The light and the slot re-read need an admin of the printer (HA admin or owner), as in the web UI. The upload route answers 401 and counts a failed login for a secret with a byte that is not UTF-8 (it was a 500).
+- A negative or non-numeric `Content-Length` is a 400 in the bridge and the app (the app read until the client closed). The bridge has a read timeout of 30 s, the app of 120 s.
+- The login daemon and ffmpeg of the bridge start with `PATH`, `HOME`, `LANG` and `TZ` only; they no longer get `SUPERVISOR_TOKEN`.
+- An empty `HUB_INGRESS_IPS` uses the default ingress address 172.30.32.2. Before, it made each network client a trusted ingress gateway.
 
 ## 3.20.0 (unreleased)
 

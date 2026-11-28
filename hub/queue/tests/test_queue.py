@@ -186,3 +186,22 @@ def test_job_name_defaults_to_the_file_and_is_limited(make):
         make.add(F, target="S1", name="x" * 81)
     with pytest.raises(ValueError, match="name"):
         make.add(F, target="S1", name=5)
+
+
+def test_a_failed_turn_on_of_a_paused_entity_is_logged_and_named_in_the_error(make, fake, caplog):
+    make.add(F, target="S1")
+    fake.fail[("homeassistant", "turn_on")] = "HA says no"
+    fake.fail[("druckwerk", "print_file")] = "boom"
+    with pytest.raises(QueueError, match=r"boom.*automation\.snap"):
+        make.start("S1", plate_clear=True)
+    assert "automation.snap" in make.jobs[0]["error"]
+    records = [r for r in caplog.records if "automation.snap" in r.getMessage()]
+    assert len(records) == 1 and "HA says no" in records[0].getMessage()
+
+
+def test_a_failed_turn_on_after_a_sent_file_is_logged_and_the_job_still_starts(make, fake, caplog):
+    make.add(F, target="S1")
+    fake.fail[("homeassistant", "turn_on")] = "HA says no"
+    job = make.start("S1", plate_clear=True)
+    assert job["state"] == "starting" and job["error"] is None
+    assert len([r for r in caplog.records if "automation.snap" in r.getMessage()]) == 1

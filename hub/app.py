@@ -13,8 +13,10 @@ import os
 import re
 import secrets
 import sys
+import tempfile
 import threading
 import time
+import traceback
 import urllib.request
 import zipfile
 from urllib.parse import parse_qs, quote, unquote, urlsplit
@@ -24,6 +26,7 @@ import externals
 import files
 import filament
 import history
+from httplen import content_length
 import nozzles
 import printer_state
 import progress
@@ -31,8 +34,8 @@ import slice_settings
 from gcode_guard import file_nozzle
 from ha import HAError, HAUnavailable
 from queue_access import Access, Caller, Forbidden, Grants, Unauthorized, caller_from_headers
-from queue_engine import WAITING, NotFound, Queue, QueueError
-from queue_registry import Registry, check_nozzles
+from queue_engine import START_STATUS_AGE, WAITING, NotFound, Queue, QueueError
+from queue_registry import Registry, check_nozzles, write_json
 from integration import JPEG_PRODUCTS, Integration
 from notify import Notifier
 from sender import Sender
@@ -106,10 +109,10 @@ def fetch_file(url, dest):
     """Download an http(s) URL to dest; a failure or a file over FILE_MAX is a 502 and leaves nothing."""
     if urlsplit(url).scheme not in ("http", "https"):
         raise HttpError(502, "cloud file: not a web address")
-    part = dest + ".part"
     os.makedirs(os.path.dirname(dest), exist_ok=True)
+    fd, part = tempfile.mkstemp(dir=os.path.dirname(dest), suffix=".part")
     try:
-        with urllib.request.urlopen(url, timeout=60) as r, open(part, "wb") as out:
+        with os.fdopen(fd, "wb") as out, urllib.request.urlopen(url, timeout=60) as r:
             size = 0
             while True:
                 chunk = r.read(1 << 20)
@@ -175,7 +178,8 @@ class App:
         self.access = Access(self.registry, self.grants, self.get_user)
         self.queue = Queue(self.registry, data_dir, self.state, self._call_service, self.get_trays, clock=clock,
                            job_allowed=self.access.job_allowed, dry=Drying(self), send_print=self.send_print,
-                           get_nozzle=self.installed_diameter, get_requests=self.job_requests)
+                           get_nozzle=self.installed_diameter, get_requests=self.job_requests,
+                           get_start_state=lambda e: self.state(e, START_STATUS_AGE))
         self.plates_inbox = None  # set by hub.py when the app has a plates token
         self.media_roots = list(MEDIA_ROOTS)
         self.media_dir = MEDIA_DIR
@@ -183,6 +187,7 @@ class App:
         self.secret = self._load_secret()
         self._auto_at = None
         self._cache = {}
+        self.cloud_locks = {}  # task id -> lock, one download per cloud file
         self.cloud_miss = {}  # task id -> (time, reason) of a failed cloud file fetch
         self._cache_lock = threading.Lock()
         self._feedback_lock, self._feedback_sent = threading.Lock(), {}  # user id -> times of the last hour
@@ -193,6 +198,7 @@ class App:
         self.seq = int(clock())
         self.events = collections.deque(maxlen=500)
         self.sync_lock = threading.RLock()
+        self.emit_lock = threading.Lock()  # settle() emits after it left sync_lock
         self.known = self._states_of_jobs()
         self.waiting = self._waiting_ids()
 
@@ -311,13 +317,16 @@ class App:
         return [{"type": t["type"], "colour": "#" + t["colour"]} for a in self.ams(serial) for t in a["trays"] if t["type"]]
 
     # -- calls to the bridge and HA --
-    def bridge_json(self, method, path, body=None, timeout=30):
+    def bridge_json(self, method, path, body=None, timeout=30, headers=None):
+        """(status, data). A dict in `headers` is filled with the answer's headers."""
         conn = http.client.HTTPConnection(*self.bridge, timeout=timeout)
         try:
             conn.request(method, path, json.dumps(body).encode() if body is not None else None,
                          {"Content-Type": "application/json"})
             r = conn.getresponse()
             raw = r.read()
+            if headers is not None:
+                headers.update(r.getheaders())
         except OSError as e:
             raise HttpError(502, "bridge is not reachable: %s" % e)
         finally:
@@ -340,7 +349,7 @@ class App:
         conn = http.client.HTTPConnection(*self.bridge, timeout=300)
         try:
             conn.request(h.command, path + ("?" + query if query else ""),
-                         h.rfile.read(int(h.headers.get("Content-Length") or 0)) or None,
+                         h.rfile.read(content_length(h.headers)) or None,
                          {k: v for k, v in h.headers.items() if k.lower() in ("content-type",)})
             r = conn.getresponse()
         except OSError as e:
@@ -399,11 +408,19 @@ class App:
         return now["diameter"] if now else None
 
     def bridge_print(self, serial):
+        """(the printer's `print` object, seconds the bridge says it is old); the bridge may serve a cached status."""
+        head = {}
         try:
-            status, data = self.bridge_json("GET", "/api/status/" + serial, timeout=10)
+            status, data = self.bridge_json("GET", "/api/status/" + serial, timeout=10, headers=head)
         except HttpError:
-            return {}
-        return (data or {}).get("print") or {} if status == 200 and isinstance(data, dict) else {}
+            return {}, 0
+        if status != 200 or not isinstance(data, dict):
+            return {}, 0
+        try:
+            age = max(0.0, float(head.get("X-Status-Age", 0)))
+        except ValueError:
+            age = 0.0
+        return data.get("print") or {}, age
 
     def _load_views(self):
         """Last good views from the data dir with their real time, so after a restart the age stays honest."""
@@ -431,20 +448,22 @@ class App:
 
     def status_entry(self, serial):
         """(view, age in s) of the printer: fresh from the bridge, else the last good one (one failed call is not offline)."""
-        v = printer_state.view(self.bridge_print(serial), self.clock())
+        data, served = self.bridge_print(serial)
+        v = printer_state.view(data, self.clock())
         with self._cache_lock:
-            if v is not None:
-                self._cache["view:" + serial] = (self.clock(), v)
             at, last = self._cache.get("view:" + serial, (0, None))
+            if v is not None and self.clock() - served >= at:  # the observation time, not the time of this call
+                at, last = self.clock() - served, v
+                self._cache["view:" + serial] = (at, v)
         if v is not None:
             self._save_views(serial)
         return (last, self.clock() - at) if last is not None else (None, 0)
 
-    def printer_status(self, serial):
+    def printer_status(self, serial, max_age=STATUS_STALE_MAX):
         """What the printer reports now (hub/printer_state.py), from the bridge; None when the bridge cannot say.
-        The queue acts on it, so a last good view counts for 10 min only."""
+        The queue acts on it, so a last good view counts for 10 min only (a start passes a shorter max_age)."""
         v, age = self.status_entry(serial)
-        return v if age <= STATUS_STALE_MAX else None
+        return v if age <= max_age else None
 
     def cloud_online(self, serial):
         """False only when the bridge's printer list has said offline, reading after reading, for CLOUD_OFFLINE_AFTER s;
@@ -465,12 +484,12 @@ class App:
             self._cloud_false[serial] = (first, max(read, last))
             return max(read, last) - first < CLOUD_OFFLINE_AFTER
 
-    def state(self, entity_id):
+    def state(self, entity_id, max_age=STATUS_STALE_MAX):
         """The queue's state lookup: a registered printer's own sensors come from the bridge, any other entity from HA."""
         for p in self.registry.all():
             for key in SENSORS:
                 if entity_id == self.entity(p, key):
-                    v = self.printer_status(p["serial"])
+                    v = self.printer_status(p["serial"], max_age)
                     if v is None:
                         return None
                     if key == "tray":
@@ -511,7 +530,7 @@ class App:
         # null: no view was ever seen and nothing says offline (fresh start); the page waits instead of calling it offline
         online = None if not seen and self.cloud_online(serial) else v is not None and b["status"] != "offline"
         tray = b.get("active_tray")
-        job = next((j for j in self.queue.jobs if j.get("printer") == serial and j["state"] in ("starting", "printing")), None)
+        job = next((j for j in self.queue.jobs if j.get("printer") == serial and j["state"] in ("sending", "starting", "printing")), None)
         start, start_job = self.start_steps(serial, v, job)
         now = self.installed_nozzle(p)
         return {
@@ -545,14 +564,16 @@ class App:
         return [j["id"] for j in self.queue.jobs if j["state"] in WAITING]
 
     def emit(self, type_, serial, job, **extra):
-        self.seq += 1
-        # job always carries id, file, owner_name, target and printer (None until a printer took it).
-        event = {"seq": self.seq, "type": type_, "serial": serial or "", "job": dict({"printer": None}, **job) if job else None, **extra}
-        self.events.append(event)
+        with self.emit_lock:
+            self.seq += 1
+            # job always carries id, file, owner_name, target and printer (None until a printer took it).
+            event = {"seq": self.seq, "type": type_, "serial": serial or "", "job": dict({"printer": None}, **job) if job else None, **extra}
+            self.events.append(event)
         self.notifier.put(event)
 
     def sync(self):
         """Turn queue changes into events, and settle a finished job's spools and cost exactly once."""
+        done = []
         with self.sync_lock, self.queue.lock:
             now = self._states_of_jobs()
             changed = now != self.known or self._waiting_ids() != self.waiting
@@ -568,14 +589,22 @@ class App:
                 elif state == "starting":
                     self.emit("job_started", serial, j)
                 elif state == "done":
-                    self.settle(j)
-                    self.emit("job_done", serial, j)
-                elif state == "failed" and before in ("starting", "printing"):
+                    done.append((serial, j))
+                elif state == "failed" and before in ("sending", "starting", "printing"):
                     self.emit("job_failed", serial, j)
             if changed:
-                self.emit("queue_changed", "", None)
                 self.queue._save()
+                if not done:
+                    self.emit("queue_changed", "", None)
             self.known, self.waiting = now, self._waiting_ids()
+        for serial, j in done:  # settle() calls the cloud, so it runs without a lock; known already counts the job as done
+            try:
+                self.settle(j)
+            except Exception as e:  # noqa: BLE001 - the job is done either way; the event must still go out
+                log("settle %s: %s" % (j["id"], e))
+            self.emit("job_done", serial, j)
+        if done:  # after the job_done events, as before
+            self.emit("queue_changed", "", None)
 
     def settle(self, job):
         """Take the grams off the spools in use and price the job."""
@@ -593,9 +622,11 @@ class App:
                     sp["grams_left"] = max(0, sp["grams_left"] - g)  # a second filament on this spool starts from here
                     self.update_cloud_spool(sp["account"], sp["id"], {"grams_left": sp["grams_left"]})
                 used.append({"spool_id": sp["id"], "grams": g})
-        job["spools_used"] = used
-        job["cost"] = filament.job_cost(grams, prices, job.get("print_seconds") or 0, printer.get("model"),
-                                        printer.get("electricity_kwh_price") or 0)
+        cost = filament.job_cost(grams, prices, job.get("print_seconds") or 0, printer.get("model"),
+                                 printer.get("electricity_kwh_price") or 0)
+        with self.queue.lock:
+            job["spools_used"], job["cost"] = used, cost
+            self.queue._save()
         try:  # the shared copy is only needed until the print is done; retry is for failed jobs
             os.remove(os.path.join(self.share, job["file"]))
         except OSError:
@@ -704,6 +735,9 @@ class App:
                 return h.send(502, {"error": str(e)})
             except ValueError as e:
                 return h.send(400, {"error": str(e)})
+            except Exception:  # noqa: BLE001 - answer instead of dropping the connection
+                log("%s %s failed:\n%s" % (method, u.path, traceback.format_exc().rstrip()))
+                return h.send(500, {"error": "internal error"})
             if out is not h:
                 try:
                     self.sync()
@@ -937,13 +971,16 @@ class App:
         parsed = slice_settings.read(path)
         if parsed:
             os.makedirs(os.path.join(self.data_dir, "settings"), exist_ok=True)
-            with open(self.saved_settings_path(job_id), "w") as f:
-                json.dump(parsed, f)
+            write_json(self.saved_settings_path(job_id), parsed)
 
     def cloud_file(self, it):
         """Path of the item's sliced 3MF from the Bambu cloud (fetched once, kept in data/cloud); ValueError says why not."""
         if it["source"] == "job" or not re.fullmatch(r"\d{1,19}", str(it["id"])):
             raise ValueError("This print has no Bambu cloud task.")
+        with self.cloud_locks.setdefault(it["id"], threading.Lock()):  # a second request waits for the first download
+            return self._cloud_file(it)
+
+    def _cloud_file(self, it):
         dest = os.path.join(self.data_dir, "cloud", "%s.gcode.3mf" % it["id"])
         if os.path.isfile(dest):
             return dest
@@ -1015,19 +1052,22 @@ class App:
         keep = ("title", "design_title", "status_code", "plate", "seconds", "grams", "started_at", "ended_at", "model_id", "profile_id", "design_id")
         out = {"available": False, "source": None, "reason": "", "can_reprint": False,
                "task": {k: it[k] for k in keep if it.get(k) not in (None, "")}, "groups": [], "all": [], "plate": {}, "slicer": None}
-        path, source, sj = None, None, self.kept_slice(it)
+        path, source, sj, saved = None, None, self.kept_slice(it), None
         if sj:
             path, source = sj["result"], "slice"
         elif job and os.path.isfile(self.saved_settings_path(job["id"])):
-            source = "saved"
+            try:
+                with open(self.saved_settings_path(job["id"])) as f:
+                    saved, source = json.load(f), "saved"
+            except (OSError, ValueError):
+                pass  # a torn file counts as not saved: the next source answers
         if not source:
             try:
                 path, source = self.cloud_file(it), "cloud"
             except ValueError as e:
                 out["reason"] = str(e)
         if source == "saved":
-            with open(self.saved_settings_path(job["id"])) as f:
-                parsed = json.load(f)
+            parsed = saved
         else:
             parsed = path and slice_settings.read(path)
         if parsed:
@@ -1171,28 +1211,45 @@ class App:
             name, job["filename"], target, model,
             [{"type": f["type"], "colour": f["colour"]} for f in use["filaments"]], b.get("options"),
             name=b.get("name") or job["filename"].rsplit(".", 1)[0])
-        os.makedirs(self.share, exist_ok=True)
-        with open(job["result"], "rb") as src:
-            # Written after the job passed the access check, so a refused request leaves nothing in the share.
-            with open(os.path.join(self.share, name), "wb") as dst:
-                dst.write(src.read())
-        png = None
-        with zipfile.ZipFile(job["result"]) as z:
-            if "Metadata/plate_1.png" in z.namelist():
-                with open(os.path.join(self.data_dir, "plates", added["id"] + ".png"), "wb") as f:
-                    f.write(z.read("Metadata/plate_1.png"))
-                png = "api/queue/%s/plate.png" % added["id"]
-        self.save_settings(added["id"], job["result"])
-        tray = (job.get("settings") or {}).get("tray")
-        with self.queue.lock:
-            added.update(nozzle=job.get("nozzle") or file_nozzle(job["result"]), grams=use["grams"], filament_grams=[f["grams"] for f in use["filaments"]],
-                         print_seconds=use["seconds"], plate_png=png,
-                         slice_tray=[int(tray["ams"]), int(tray["id"])] if tray and tray.get("ams") is not None else None,
-                         slice_spool={k: tray.get(k) for k in ("spool_id", "brand", "type", "name", "colour")}
-                         if tray and tray.get("ams") is None else None,
-                         slice_job=job["id"], slice=self.slice_view(job, use))
-            self.queue._save()
+        files = [os.path.join(self.share, name), os.path.join(self.data_dir, "plates", added["id"] + ".png")]
+        try:
+            os.makedirs(self.share, exist_ok=True)
+            with open(job["result"], "rb") as src:
+                # Written after the job passed the access check, so a refused request leaves nothing in the share.
+                with open(files[0], "wb") as dst:
+                    dst.write(src.read())
+            png = None
+            with zipfile.ZipFile(job["result"]) as z:
+                if "Metadata/plate_1.png" in z.namelist():
+                    with open(files[1], "wb") as f:
+                        f.write(z.read("Metadata/plate_1.png"))
+                    png = "api/queue/%s/plate.png" % added["id"]
+            self.save_settings(added["id"], job["result"])
+            tray = (job.get("settings") or {}).get("tray")
+            with self.queue.lock:
+                added.update(nozzle=job.get("nozzle") or file_nozzle(job["result"]), grams=use["grams"], filament_grams=[f["grams"] for f in use["filaments"]],
+                             print_seconds=use["seconds"], plate_png=png,
+                             slice_tray=[int(tray["ams"]), int(tray["id"])] if tray and tray.get("ams") is not None else None,
+                             slice_spool={k: tray.get(k) for k in ("spool_id", "brand", "type", "name", "colour")}
+                             if tray and tray.get("ams") is None else None,
+                             slice_job=job["id"], slice=self.slice_view(job, use))
+                self.queue._save()
+        except BaseException:
+            self.drop_new_job(added, files)
+            raise
         return added
+
+    def drop_new_job(self, job, files):
+        """A failed step after `add` leaves no job and no file behind, as a refused start does in post_drying."""
+        with self.queue.lock:
+            if job in self.queue.jobs:
+                self.queue.jobs.remove(job)
+            self.queue._save()
+        for f in files:
+            try:
+                os.remove(f)
+            except OSError:
+                pass
 
     @staticmethod
     def slice_view(job, use):
@@ -1226,6 +1283,11 @@ class App:
     def post_queue(self, h, m, q, c):
         """POST /api/queue: the queue's own add, plus a file named by absolute path, which is copied into the share."""
         b = h.json()
+        fils, opts = b.get("filaments"), b.get("options")
+        if fils is not None and not (isinstance(fils, list) and all(isinstance(x, dict) for x in fils)):
+            raise ValueError("filaments must be a list of {type, colour}")
+        if opts is not None and not isinstance(opts, dict):
+            raise ValueError("options must be an object")
         f = b.get("file")
         api = self.access.bind(self.queue, c)
         if b.get("kind") == "dry" or not (isinstance(f, str) and f.startswith("/")):
@@ -1244,21 +1306,26 @@ class App:
         fils = b.get("filaments") or [{"type": x["type"], "colour": x["colour"]} for x in use["filaments"]]
         added = api.add(name, shown, b.get("target", "any"), b.get("model", ""), fils, b.get("options"),
                         name=b.get("name") or base)
-        self.stamp_nozzle(added, real)
-        os.makedirs(self.share, exist_ok=True)
-        with open(real, "rb") as src, open(os.path.join(self.share, name), "wb") as dst:  # after the access check
-            dst.write(src.read())
-        png = None
-        with zipfile.ZipFile(real) as z:
-            if "Metadata/plate_1.png" in z.namelist():
-                with open(os.path.join(self.data_dir, "plates", added["id"] + ".png"), "wb") as out:
-                    out.write(z.read("Metadata/plate_1.png"))
-                png = "api/queue/%s/plate.png" % added["id"]
-        self.save_settings(added["id"], real)
-        with self.queue.lock:
-            added.update(grams=use["grams"], filament_grams=[x["grams"] for x in use["filaments"]],
-                         print_seconds=use["seconds"], plate_png=png)
-            self.queue._save()
+        files = [os.path.join(self.share, name), os.path.join(self.data_dir, "plates", added["id"] + ".png")]
+        try:
+            self.stamp_nozzle(added, real)
+            os.makedirs(self.share, exist_ok=True)
+            with open(real, "rb") as src, open(files[0], "wb") as dst:  # after the access check
+                dst.write(src.read())
+            png = None
+            with zipfile.ZipFile(real) as z:
+                if "Metadata/plate_1.png" in z.namelist():
+                    with open(files[1], "wb") as out:
+                        out.write(z.read("Metadata/plate_1.png"))
+                    png = "api/queue/%s/plate.png" % added["id"]
+            self.save_settings(added["id"], real)
+            with self.queue.lock:
+                added.update(grams=use["grams"], filament_grams=[x["grams"] for x in use["filaments"]],
+                             print_seconds=use["seconds"], plate_png=png)
+                self.queue._save()
+        except BaseException:
+            self.drop_new_job(added, files)
+            raise
         return added
 
     def queue_routes_add(self, api, b):
@@ -1606,7 +1673,7 @@ class App:
 
     def post_feedback(self, h, m, q, c):
         """The feedback button: one item of the to-do list todo.feedback, which an HA automation turns into a Claude session."""
-        length = int(h.headers.get("Content-Length") or 0)
+        length = content_length(h.headers)
         err = "expected {\"item\": ..., \"description\": ...} of at most %d bytes" % FEEDBACK_MAX
         h.require_json()
         if not 0 < length <= FEEDBACK_MAX:
@@ -1669,7 +1736,7 @@ class App:
     def put_upload(self, h, m, q):
         self.internal_caller(h)
         try:
-            h.send(200, files.store(self.media_dir, unquote(m.group(1)), h.rfile, int(h.headers.get("Content-Length") or 0),
+            h.send(200, files.store(self.media_dir, unquote(m.group(1)), h.rfile, content_length(h.headers),
                                     q.get("overwrite") == ["1"]))
         except files.UploadError as e:
             raise HttpError(e.status, str(e))
@@ -1694,29 +1761,43 @@ class App:
                 return h.send(200, f.read(), "image/jpeg")
         self.proxy(h, "/api/camera/%s/snapshot" % serial)
 
+    def admin_caller(self, h, serial, what):
+        """An integration route that changes a printer: the act-as user must be an admin of it, as in the web UI."""
+        c = self.internal_caller(h)
+        if (h.headers.get(ACT_AS_HEADER) or "").strip() and self.access.role(c, serial) != "admin":
+            raise Forbidden("rule: only an admin of the printer can " + what)
+        return c
+
     def post_light(self, h, m, q):
-        self.internal_caller(h)
+        self.admin_caller(h, m.group(1), "switch its light")
         on = h.json().get("on")
         if not isinstance(on, bool):
             raise ValueError('Body must be {"on": true|false}.')
         h.send(200, self.bridge_ok("POST", "/api/light/" + m.group(1), {"on": on}, timeout=60))
 
     def post_rfid(self, h, m, q):
-        self.internal_caller(h)
+        self.admin_caller(h, m.group(1), "re-read its AMS slots")
         b = h.json()
         h.send(200, self.bridge_ok("POST", "/api/rfid/" + m.group(1),
                                    {"ams_id": b.get("ams_id", 0), "slot_id": b.get("slot_id")}, timeout=60))
 
     def post_operation(self, run):
         def route(h, m, q):
-            self.internal_caller(h)
+            c = self.internal_caller(h)
             act_as = (h.headers.get(ACT_AS_HEADER) or "").strip()
             port = h.server.server_address[1]
 
             def call(method, path, body=None, data=None, binary=False, timeout=30):
                 return self.local_call(port, act_as, method, path, body, data, binary, timeout)
+
+            def print_file(fields):
+                # Only an admin of the printer sends directly (as for the web UI); that includes force.
+                serial = fields.get("serial") or fields.get("device_id")
+                if act_as and self.access.role(c, serial) != "admin":
+                    raise Forbidden("rule: only an admin of the printer can print directly; use the queue")
+                return self.sender.print_file(fields)
             try:
-                result = run(m.group(1), h.json(), actions.Ops(call, self.media_dir, self.sender.print_file))
+                result = run(m.group(1), h.json(), actions.Ops(call, self.media_dir, print_file))
             except actions.ActionError as e:
                 raise HttpError(e.status, str(e))
             h.send(200, {"result": result})

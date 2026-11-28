@@ -5,14 +5,13 @@ while `until` is in the future and its condition entity (any HA helper or binary
 so HA decides schedules and presence, not this app.
 get_user(user_id) -> {"name": str, "is_admin": bool} | None
 """
-import json
 import os
 import secrets
 import threading
 from datetime import datetime, timezone
 
 from queue_engine import QueueError, NotFound
-from queue_registry import write_json
+from queue_registry import read_json, write_json
 
 ROLES = ("user",)  # ownership is a printer property (Registry.set_owner)
 
@@ -52,10 +51,7 @@ class Grants:
         self.registry, self.get_state, self.clock = registry, get_state, clock
         self.path = os.path.join(data_dir, "grants.json")
         self.lock = threading.RLock()
-        self.items = []
-        if os.path.exists(self.path):
-            with open(self.path) as f:
-                self.items = json.load(f)
+        self.items = read_json(self.path, [])
         self.migrate_owners()
 
     def add(self, user_id, printer, role="user", until=None, condition_entity=None, needs_approval=False):
@@ -221,10 +217,13 @@ class Bound:
             return self.q.edit(job_id, name, options)
         raise Forbidden("rule: users may only edit their own jobs; admins edit any job")
 
-    def cancel(self, job_id):
+    def cancel(self, job_id, force=False):
         job = self._job(job_id)
         serials = self.a.serials_of(job)
         role = self.a.best(self.c, serials)
+        if force:
+            self._need_admin(serials, "only an admin of the job's printer can remove a started job")
+            return self.q.cancel(job_id, force=True)
         if role == "admin" or (role == "user" and job.get("owner_user_id") == self.c.user_id):
             return self.q.cancel(job_id)
         raise Forbidden("rule: users may only cancel their own jobs; admins cancel any job")
@@ -237,7 +236,11 @@ class Bound:
         return self.q.retry(job_id)
 
     def approve(self, job_id):
-        self._need_admin(self.a.serials_of(self._job(job_id)), "only an admin of the job's printer can approve")
+        job = self._job(job_id)
+        serials = self.a.serials_of(job)
+        # An any job runs only where its owner has a grant: its approver must administer such a printer.
+        fits = [s for s in serials if self.a.job_allowed(job, s)] or serials
+        self._need_admin(fits, "only an admin of a printer that the job fits can approve")
         return self.q.approve(job_id)
 
     def reject(self, job_id):

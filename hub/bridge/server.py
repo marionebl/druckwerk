@@ -35,6 +35,7 @@ HERE = os.path.dirname(os.path.abspath(__file__))
 for _d in (HERE, os.path.dirname(HERE)):  # python -I drops the script dir; the repo keeps externals.py one level up
     sys.path.insert(0, _d)
 import externals  # noqa: E402
+from httplen import content_length  # noqa: E402
 
 env = os.environ.get
 DATA = env("DW_DATA", "/data")
@@ -68,6 +69,7 @@ STATUS_CACHE = float(env("DW_STATUS_CACHE", "5"))
 STATUS_TIMEOUT = float(env("DW_STATUS_TIMEOUT", "8"))  # under the hub's 10 s, so the hub gets our answer, not its own timeout
 STATUS_STALE = float(env("DW_STATUS_STALE", "600"))
 SNAPSHOT_CACHE = float(env("DW_SNAPSHOT_CACHE", "30"))  # seconds a good snapshot is served again
+PRINT_DAEMON_TIMEOUT = float(env("DW_PRINT_TIMEOUT", "280"))  # seconds; the app waits 300 s, so the bridge answers first
 RETRY_WINDOW = float(env("DW_RETRY_WINDOW", "60"))  # seconds a print start or command waits for a daemon that is not up
 MAX_PRINT_BODY = 50 * 1024 * 1024
 MAX_SMALL_BODY = 8192
@@ -125,7 +127,8 @@ def write_private(path, text):
 # ---- accounts and daemon supervision ----
 
 accounts = {}  # id -> Account
-lock = threading.RLock()  # guards accounts, pending and the login calls
+lock = threading.RLock()  # guards the accounts and pending dicts only; never held during a cloud call
+login_locks = {}  # account id -> Lock: two logins of one account run one after the other
 
 
 def slug(email):
@@ -318,7 +321,7 @@ class Daemon:
                 install_cert(self.acc.home)
                 self.proc = subprocess.Popen(DAEMON_CMD + [self.acc.creds, str(self.acc.port)],
                                              stdout=subprocess.PIPE, stderr=subprocess.STDOUT, text=True,
-                                             errors="replace", env=dict(os.environ, HOME=self.acc.home))
+                                             errors="replace", env=dict(clean_env(), HOME=self.acc.home))
                 self.started, self.bad_since = time.time(), None
                 if self.dead:  # stop() ran before the process existed
                     self.proc.kill()
@@ -331,6 +334,12 @@ class Daemon:
                 code = self.proc.wait()
             except OSError as e:
                 code = "start failed: %s" % type(e).__name__
+            except Exception as e:  # noqa: BLE001 - the loop is the only restarter of this daemon
+                code = "loop error: %s" % type(e).__name__
+                log(tag + code)
+                if self.proc and self.proc.poll() is None:
+                    self.proc.kill()
+                    self.proc.wait()
             if self.dead:
                 return
             if self.wake.is_set():  # restart requested by a new login
@@ -402,16 +411,23 @@ def cloud(method, path, body=None, token=None, parse=True):
         raise Upstream("%s cloud sent invalid JSON for %s" % (externals.CLOUD_NAME, path))
 
 
+def login_lock(email):
+    with lock:
+        return login_locks.setdefault(slug(email), threading.Lock())
+
+
 def advance(email, data):
     """Look at a login answer: finish, or say which code is needed next."""
     if data.get("accessToken"):
         finish(email, data["accessToken"], data.get("refreshToken", ""))
         return "done"
     if data.get("tfaKey"):
-        pending[email.lower()] = {"email": email, "kind": "tfa", "tfaKey": data["tfaKey"]}
+        with lock:
+            pending[email.lower()] = {"email": email, "kind": "tfa", "tfaKey": data["tfaKey"]}
         return "need_tfa"
     if data.get("loginType") == "verifyCode":
-        pending[email.lower()] = {"email": email, "kind": "code"}
+        with lock:
+            pending[email.lower()] = {"email": email, "kind": "code"}
         # The real cloud answers this call without a JSON body (upstream auth.py checks only the status).
         cloud("POST", "/v1/user-service/user/sendemail/code", {"email": email, "type": "codeLogin"}, parse=False)
         return "need_code"
@@ -420,8 +436,9 @@ def advance(email, data):
 
 def finish(email, token, refresh):
     id = slug(email)
-    if id in accounts and accounts[id].email.lower() != email.lower():
-        raise ValueError("Another account already uses the id " + id)
+    with lock:
+        if id in accounts and accounts[id].email.lower() != email.lower():
+            raise ValueError("Another account already uses the id " + id)
     secrets_seen.update(s for s in (token, refresh) if s)
     uid = str(cloud("GET", "/v1/design-user-service/my/preference", token=token).get("uid", ""))
     devices = [d for d in cloud("GET", "/v1/iot-service/api/user/bind", token=token).get("devices", []) if d.get("dev_id")]
@@ -435,24 +452,26 @@ def finish(email, token, refresh):
             slug_ += "_" + d["dev_id"].lower()
         used.add(slug_)
         lines += ["", "[printers.%s]" % slug_, "serial = %s" % q(d["dev_id"])]
-    acc = accounts.get(id)
-    if not acc:
-        os.makedirs(os.path.join(ACCOUNTS, id), exist_ok=True)
-        acc = Account(id, email)
-    write_private(acc.printers, json.dumps(devices))
-    write_private(acc.creds, "\n".join(lines) + "\n")
-    pending.pop(email.lower(), None)
-    if id in accounts:
+    with lock:
+        acc = accounts.get(id)
+        known = acc is not None
+        if not acc:
+            os.makedirs(os.path.join(ACCOUNTS, id), exist_ok=True)
+            acc = Account(id, email)
+        write_private(acc.printers, json.dumps(devices))
+        write_private(acc.creds, "\n".join(lines) + "\n")
+        pending.pop(email.lower(), None)
+        if not known:
+            accounts[id] = acc
+            acc.daemon = Daemon(acc)
+    if known:
         acc.daemon.restart()
-    else:
-        accounts[id] = acc
-        acc.daemon = Daemon(acc)
 
 
 def login_start(email, password):
-    with lock:
-        if not slug(email):
-            raise ValueError("That is not an email address.")
+    if not slug(email):
+        raise ValueError("That is not an email address.")
+    with login_lock(email):
         return advance(email, cloud("POST", "/v1/user-service/user/login",
                                     {"account": email, "password": password, "apiError": ""}))
 
@@ -460,13 +479,14 @@ def login_start(email, password):
 def login_code(code, email):
     with lock:
         key = email.lower() if email else next(iter(pending)) if len(pending) == 1 else None
-        p = pending.get(key)
-        if not p:
-            raise ValueError("No pending login. Start it first, and send the email when several are pending.")
-        if p["kind"] == "tfa":
-            body, path = {"tfaKey": p["tfaKey"], "tfaCode": code}, "/v1/user-service/user/tfa"
-        else:
-            body, path = {"account": p["email"], "code": code}, "/v1/user-service/user/login"
+        p = dict(pending.get(key) or {})
+    if not p:
+        raise ValueError("No pending login. Start it first, and send the email when several are pending.")
+    if p["kind"] == "tfa":
+        body, path = {"tfaKey": p["tfaKey"], "tfaCode": code}, "/v1/user-service/user/tfa"
+    else:
+        body, path = {"account": p["email"], "code": code}, "/v1/user-service/user/login"
+    with login_lock(p["email"]):
         return p["email"], advance(p["email"], cloud("POST", path, body))
 
 
@@ -763,7 +783,7 @@ def fetch_camera(acc, serial, kind, qs):
         acc.daemon.camera_timeout(serial)
     if status == 200 and ctype.startswith("video/h264"):
         jpeg = subprocess.run(["ffmpeg", "-loglevel", "error", "-f", "h264", "-i", "-", "-frames:v", "1", "-f", "image2", "-c:v", "mjpeg", "-"],
-                              input=raw, capture_output=True, timeout=60)
+                              input=raw, capture_output=True, timeout=60, env=clean_env())
         if jpeg.returncode or not jpeg.stdout:
             err = {"error": "could not decode keyframe", "stage": "decode", "detail": jpeg.stderr.decode(errors="replace")[-300:]}
             return 502, json.dumps(err).encode(), "application/json"
@@ -818,10 +838,15 @@ TS_PACKET = 188
 PAT_PID, PMT_PID = 0, 0x1000  # ffmpeg's mpegts muxer puts the PMT here
 
 
+def clean_env():
+    """The plugin and ffmpeg must not see SUPERVISOR_TOKEN or the other variables of the app."""
+    return {k: os.environ[k] for k in ("PATH", "HOME", "LANG", "TZ") if k in os.environ}
+
+
 def ffmpeg_jpeg(args, data):
     """First decoded frame of a stream on stdin, as JPEG; None if it did not decode."""
     out = subprocess.run(["ffmpeg", "-loglevel", "error"] + args + ["-i", "-", "-frames:v", "1", "-f", "image2", "-c:v", "mjpeg", "-"],
-                         input=data, capture_output=True, timeout=60)
+                         input=data, capture_output=True, timeout=60, env=clean_env())
     return out.stdout if out.stdout and not out.returncode else None
 
 
@@ -912,7 +937,7 @@ class Live:
             ["ffmpeg", "-loglevel", "error", "-probesize", "32", "-analyzeduration", "0",
              "-framerate", str(rate if 1 <= rate <= 60 else 15), "-f", "h264", "-i", "-",
              "-c", "copy", "-flush_packets", "1", "-f", "mpegts", "-"],
-            stdin=subprocess.PIPE, stdout=subprocess.PIPE)
+            stdin=subprocess.PIPE, stdout=subprocess.PIPE, env=clean_env())
         threading.Thread(target=self.read_ts, daemon=True).start()
         try:
             while True:
@@ -1102,7 +1127,7 @@ class Live:
         with tempfile.TemporaryDirectory() as d:  # -update 1 overwrites the file with each frame: the last one stays
             out = os.path.join(d, "last.jpg")
             r = subprocess.run(["ffmpeg", "-loglevel", "error", "-f", "mpegts", "-i", "-", "-update", "1", "-c:v", "mjpeg", out],
-                               input=data, capture_output=True, timeout=60)
+                               input=data, capture_output=True, timeout=60, env=clean_env())
             if r.returncode or not os.path.exists(out):
                 return None
             with open(out, "rb") as f:
@@ -1186,8 +1211,9 @@ def daemon_json(acc, path, timeout):
 def get_health(h, m, body):
     with lock:
         accs = list(accounts.values())
+    local = h.client_address[0] in LOOPBACK  # the manual setup of the integration calls this from the network
     h.send(200, {"server": "ok", "plugin": plugin.status() if plugin else {"state": "ready"}, "accounts": [
-        {"id": a.id, "email": a.email, "logged_in": True,
+        {"id": a.id, **({"email": a.email} if local else {}), "logged_in": True,
          "daemon": {"running": a.daemon.running(), "restarts": a.daemon.restarts,
                     "health": daemon_json(a, "/health", 3)}} for a in accs]})
 
@@ -1325,8 +1351,10 @@ def post_print(h, m, body):
                              ("params", None, "application/json", json.dumps(params).encode())])
     acc.upload = {"serial": serial, "stage": "create", "percent": None}
     try:
-        status, answer, actype = call_daemon(acc, "POST", "/print", {"Content-Type": ctype}, data, timeout=300)
-    except Upstream:
+        status, answer, actype = call_daemon(acc, "POST", "/print", {"Content-Type": ctype}, data, timeout=PRINT_DAEMON_TIMEOUT)
+    except Upstream as e:
+        if not e.refused:  # a timeout or a cut connection: the file may have reached the printer, the caller must not send it again
+            return h.send(504, {"error": "daemon did not answer in time; the print may have started"})
         return h.send(503, {"error": "daemon not reachable"})
     finally:
         acc.upload = None
@@ -1576,6 +1604,9 @@ def get_page(h, m, body):
 
 
 SER = r"([A-Za-z0-9_-]{1,64})"
+LOOPBACK = ("127.0.0.1", "::1")  # the app proxies from here; the secret lives in the app
+# Open to the network: go2rtc cannot send a header, and the integration's setup step reads the health.
+REMOTE_OK = (r"/api/health", r"/api/camera/" + SER + r"/live")
 # (method, regex) -> (handler, max body bytes)
 ROUTES = [
     ("GET", r"/", get_page, 0),
@@ -1607,6 +1638,8 @@ ROUTES = [
 
 
 class Handler(BaseHTTPRequestHandler):
+    timeout = 30  # a client that stops sending must not hold a thread
+
     def send(self, status, body, ctype="application/json", headers=None):
         data = body if isinstance(body, bytes) else body.encode() if isinstance(body, str) else json.dumps(body).encode()
         self.send_response(status)
@@ -1615,8 +1648,12 @@ class Handler(BaseHTTPRequestHandler):
         self.send_header("Cache-Control", "no-store")
         for k, v in (headers or {}).items():
             self.send_header(k, v)
-        self.end_headers()
-        self.wfile.write(data)
+        try:
+            self.end_headers()
+            self.wfile.write(data)
+        except (BrokenPipeError, ConnectionResetError):  # the client gave up before the answer
+            self.close_connection = True
+            log("client went away: %s %s" % (self.command, urlsplit(self.path).path))
 
     def dispatch(self, method):
         path = urlsplit(self.path).path
@@ -1624,7 +1661,14 @@ class Handler(BaseHTTPRequestHandler):
             match = m == method and re.fullmatch(regex, path)
             if not match:
                 continue
-            length = int(self.headers.get("Content-Length") or 0)
+            if regex not in REMOTE_OK and self.client_address[0] not in LOOPBACK:
+                self.close_connection = True
+                return self.send(403, {"error": "Only the app may use this route."})
+            try:
+                length = content_length(self.headers)
+            except ValueError as e:
+                self.close_connection = True  # the body stays unread
+                return self.send(400, {"error": str(e)})
             if length > limit:
                 self.close_connection = True  # the body stays unread
                 return self.send(413, {"error": "Body too large (limit %d bytes)." % limit})

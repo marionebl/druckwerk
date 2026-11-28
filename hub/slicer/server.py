@@ -21,10 +21,12 @@ from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from urllib.parse import parse_qs, urlsplit
 
 HERE = os.path.dirname(os.path.abspath(__file__))
-for _d in (HERE, os.path.dirname(HERE)):  # python -I drops the script dir; the repo keeps externals.py one level up
+for _d in (HERE, os.path.dirname(HERE), os.path.join(os.path.dirname(HERE), "queue")):  # python -I drops the script dir; the repo keeps externals.py one level up
     sys.path.insert(0, _d)
 import externals  # noqa: E402
+from httplen import content_length  # noqa: E402
 import pack  # noqa: E402
+from queue_registry import write_json  # noqa: E402
 
 env = os.environ.get
 JOBS = env("SLICER_JOBS", "/data/jobs")
@@ -109,8 +111,9 @@ def job_dir(jid):
 
 
 def save_job(job):
-    with open(os.path.join(job_dir(job["id"]), "job.json"), "w") as f:
-        json.dump(job, f)
+    path = os.path.join(job_dir(job["id"]), "job.json")
+    write_json(path, job)
+    os.chmod(path, 0o644)  # mkstemp makes 0600; the jobs folder is shared with tests that run as another user
 
 
 def load_jobs():
@@ -190,7 +193,7 @@ def read_body(h, f, length):
 
 def refuse(h, status, body):
     """Answer an error to an upload. The body is read first (up to 8 MB), or the client sees a reset connection, not the error."""
-    left = min(int(h.headers.get("Content-Length") or 0), 8 << 20)
+    left = min(content_length(h.headers), 8 << 20)
     while left > 0:
         left -= len(h.rfile.read(min(left, 1 << 20)) or b"\0" * left)
     h.send(status, body)
@@ -205,7 +208,7 @@ def chunk_args(h, q):
         offset, total = int((q.get("offset") or ["0"])[0]), int(q["total"][0])
     except ValueError:
         total = 0
-    length = int(h.headers.get("Content-Length") or 0)
+    length = content_length(h.headers)
     if not 0 < total <= MAX_MODEL or offset < 0 or not 0 < length <= min(MAX_PART, total - offset):
         refuse(h, 413 if length > MAX_PART else 400, {"error": "Send the file in parts of at most %d bytes with a valid offset and total." % MAX_PART})
         return False
@@ -219,7 +222,7 @@ def post_job(h, m, q):
     part = chunk_args(h, q)
     if part is False:
         return
-    length = int(h.headers.get("Content-Length") or 0)
+    length = content_length(h.headers)
     total = part[1] if part else length
     if part and part[0]:
         return h.send(400, {"error": "The first part starts at offset 0."})
@@ -255,7 +258,7 @@ def post_model_part(h, m, q):
     size = os.path.getsize(job["model"])
     if part[0] != size:
         return refuse(h, 409, {"error": "Expected offset %d." % size, "received": size})
-    length = int(h.headers.get("Content-Length") or 0)
+    length = content_length(h.headers)
     with open(job["model"], "ab") as f:
         read_body(h, f, length)
     size = os.path.getsize(job["model"])
@@ -366,7 +369,7 @@ def post_gcode(h, m, q):
     if not job:
         return h.send(404, {"error": "unknown job"})
     arg = {k: v[0] for k, v in q.items()}
-    length = int(h.headers.get("Content-Length") or 0)
+    length = content_length(h.headers)
     part = chunk_args(h, q)
     if part is False:
         return
@@ -448,19 +451,30 @@ def post_print(h, m, q):
     if body.get("confirm") is not True:
         return h.send(400, {"error": "Confirm the print first."})
     os.makedirs(SHARE, exist_ok=True)
-    dest = os.path.join(SHARE, print_name(job))
+    dest = os.path.join(SHARE, print_name(job).replace(".gcode.3mf", "_%s.gcode.3mf" % secrets.token_hex(3)))
     shutil.copyfile(job["result"], dest)
     call = {"serial": job["printer"]["serial"], "file": dest, "use_ams": True, "bed_leveling": True,
             "timelapse": bool(body.get("timelapse")), "force": bool(body.get("force"))}
-    if PRINT:  # the app sends the file itself
-        try:
-            status, answer = 200, PRINT(call)
-        except Exception as e:  # noqa: BLE001 - the refusal text is what the person needs
-            status, answer = getattr(e, "status", 400 if isinstance(e, ValueError) else 502), {"error": str(e)}
-    else:
-        token = env("SUPERVISOR_TOKEN", "")
-        status, answer = http_json("POST", CORE + "/services/druckwerk/print_file?return_response", call,
-                                   {"Authorization": "Bearer " + token}, timeout=360)
+    status = None
+    try:
+        if PRINT:  # the app sends the file itself
+            try:
+                status, answer = 200, PRINT(call)
+            except Exception as e:  # noqa: BLE001 - the refusal text is what the person needs
+                status, answer = getattr(e, "status", 400 if isinstance(e, ValueError) else 502), {"error": str(e)}
+        else:
+            token = env("SUPERVISOR_TOKEN", "")
+            status, answer = http_json("POST", CORE + "/services/druckwerk/print_file?return_response", call,
+                                       {"Authorization": "Bearer " + token}, timeout=360)
+    finally:
+        # The printer's picture (integration, preview) reads the sent copy while it prints, so the copy of a sent
+        # print stays until this slice is sent again; a refused send leaves none.
+        old = (job.get("sent") or {}).get("file")
+        for path in ([dest] if status != 200 else []) + ([old] if status == 200 and old and old != dest else []):
+            try:
+                os.remove(path)
+            except OSError:
+                pass
     job["sent"] = {"at": time.time(), "file": dest, "status": status, "answer": answer}
     save_job(job)
     log("print %s -> %s: %s" % (os.path.basename(dest), job["printer"]["serial"], status))
@@ -496,6 +510,7 @@ def isolation_headers(h):
 
 
 class Handler(BaseHTTPRequestHandler):
+    timeout = 120  # a client that stops sending must not hold a thread
     def head(self, status, ctype, length, cache):
         self.send_response(status)
         self.send_header("Content-Type", ctype)
@@ -506,8 +521,12 @@ class Handler(BaseHTTPRequestHandler):
 
     def send(self, status, body, ctype="application/json"):
         data = body if isinstance(body, bytes) else json.dumps(body).encode()
-        self.head(status, ctype, len(data), "no-store")
-        self.wfile.write(data)
+        try:
+            self.head(status, ctype, len(data), "no-store")
+            self.wfile.write(data)
+        except (BrokenPipeError, ConnectionResetError):  # the client gave up before the answer
+            self.close_connection = True
+            log("client went away: %s %s" % (self.command, urlsplit(self.path).path))
 
     def send_file(self, path, ctype, cache):
         with open(path, "rb") as f:
@@ -520,7 +539,7 @@ class Handler(BaseHTTPRequestHandler):
             raise ValueError("Content-Type must be application/json.")
 
     def json(self):
-        length = int(self.headers.get("Content-Length") or 0)
+        length = content_length(self.headers)
         if length:  # a call without a body (the integration's) has no type
             self.require_json()
         if length > 8192:

@@ -2,6 +2,7 @@
 
 It reads the printer's state from the bridge (hub/printer_state.py). Only prints started through started() are watched.
 """
+import sys
 import threading
 
 CHECK_EVERY = 10  # seconds; the app's ticker calls tick() at this pace
@@ -71,7 +72,8 @@ class Watchdog:
                 w["air_since"] = now
             if now - w["air_since"] >= AIR_FOR:
                 self._stop(w)  # pause once, never again for this print
-                self._pause(w)
+                # The bridge call takes up to 60 s; the ticker must go on with the other printers.
+                threading.Thread(target=self._pause, args=(w,), name="druckwerk-pause", daemon=True).start()
         else:
             w["air_since"] = None
 
@@ -84,7 +86,10 @@ class Watchdog:
             outcome = "The print was paused."
         except Exception as e:  # noqa: BLE001 - the person must hear that the pause failed
             outcome = "Pausing FAILED (%s); stop the print yourself." % e
-        self.app.ha.call_service("persistent_notification", "create", {
-            "message": "%s is printing %s without filament: for 120 s no filament was loaded (active tray none, "
-                       "stage printing or idle). %s" % (printer, w["filename"], outcome),
-            "title": "Print without filament", "notification_id": "druckwerk_air_" + serial})
+        try:
+            self.app.ha.call_service("persistent_notification", "create", {
+                "message": "%s is printing %s without filament: for 120 s no filament was loaded (active tray none, "
+                           "stage printing or idle). %s" % (printer, w["filename"], outcome),
+                "title": "Print without filament", "notification_id": "druckwerk_air_" + serial})
+        except Exception as e:  # noqa: BLE001 - this thread has no caller that would log it
+            print("druckwerk: air-print notification for %s failed: %s. %s" % (printer, e, outcome), file=sys.stderr, flush=True)
