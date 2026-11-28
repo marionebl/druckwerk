@@ -5,14 +5,13 @@ while `until` is in the future and its condition entity (any HA helper or binary
 so HA decides schedules and presence, not this app.
 get_user(user_id) -> {"name": str, "is_admin": bool} | None
 """
-import json
 import os
 import secrets
 import threading
 from datetime import datetime, timezone
 
 from queue_engine import QueueError, NotFound
-from queue_registry import write_json
+from queue_registry import read_json, write_json
 
 ROLES = ("user",)  # ownership is a printer property (Registry.set_owner)
 
@@ -52,10 +51,7 @@ class Grants:
         self.registry, self.get_state, self.clock = registry, get_state, clock
         self.path = os.path.join(data_dir, "grants.json")
         self.lock = threading.RLock()
-        self.items = []
-        if os.path.exists(self.path):
-            with open(self.path) as f:
-                self.items = json.load(f)
+        self.items = read_json(self.path, [])
         self.migrate_owners()
 
     def add(self, user_id, printer, role="user", until=None, condition_entity=None, needs_approval=False):
