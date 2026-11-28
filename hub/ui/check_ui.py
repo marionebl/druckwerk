@@ -1228,10 +1228,60 @@ def check_paint_contexts(page, base, ident, go):
     assert not warnings, warnings[:1]
 
 
+# Phone checks: controls a finger can hit (44 px, Apple HIG), inputs iOS does not zoom into (16 px), and the bottom tab bar.
+PHONE = """() => {
+  const vw = innerWidth, vh = innerHeight, out = [];
+  const seen = (e) => { const r = e.getBoundingClientRect(); return r.width > 0 && r.height > 0 && getComputedStyle(e).visibility !== 'hidden'; };
+  const name = (e) => `${e.tagName.toLowerCase()}.${[...e.classList].join('.')}[${(e.getAttribute('aria-label') || e.textContent || e.value || '').trim().slice(0, 20)}]`;
+  const ctl = 'button, a.btn, .tabs a, select, summary, input:not([type=checkbox]):not([type=radio]):not([type=range]):not([type=file]):not([type=color])';
+  for (const e of document.querySelectorAll(ctl)) {
+    if (!seen(e)) continue;
+    const r = e.getBoundingClientRect();
+    if (r.height < 44 || r.width < 44) out.push(`small target ${name(e)} ${Math.round(r.width)}x${Math.round(r.height)}`);
+  }
+  for (const c of document.querySelectorAll('input[type=checkbox], input[type=radio]')) {
+    const l = c.closest('label');
+    if (seen(c) && (!l || l.getBoundingClientRect().height < 44)) out.push(`small checkbox ${name(l || c)}`);
+  }
+  for (const e of document.querySelectorAll('input:not([type=checkbox]):not([type=radio]):not([type=range]):not([type=file]):not([type=color]), select, textarea')) {
+    if (seen(e) && parseFloat(getComputedStyle(e).fontSize) < 16) out.push(`iOS zooms into ${name(e)} (font ${getComputedStyle(e).fontSize})`);
+  }
+  if (document.documentElement.scrollWidth > vw) out.push(`page scrolls sideways: ${document.documentElement.scrollWidth} > ${vw}`);
+  const t = document.querySelector('.tabs').getBoundingClientRect();
+  if (Math.abs(t.bottom - vh) > 1) out.push(`tab bar is not at the bottom: ${Math.round(t.top)}-${Math.round(t.bottom)} of ${vh}`);
+  const top = document.querySelector('.topbar .in').getBoundingClientRect();
+  if (t.top < top.bottom) out.push('tab bar covers the top bar');
+  const fab = document.getElementById('pb-feedback')?.shadowRoot?.querySelector('.fab');
+  if (fab && seen(fab) && fab.getBoundingClientRect().bottom > t.top) out.push('feedback button covers the tab bar');
+  const main = document.querySelector('main'), last = main.lastElementChild;
+  if (last) { scrollTo(0, document.documentElement.scrollHeight); if (last.getBoundingClientRect().bottom > t.top + 1) out.push('tab bar hides the end of the page'); if (fab && seen(fab) && last.getBoundingClientRect().bottom > fab.getBoundingClientRect().top) out.push('feedback button covers the end of the page'); scrollTo(0, 0); }
+  return out;
+}"""
+
+
+def check_phone_layout(page, base, ident, go):
+    """Every screen at 375 and 390 px wide: touch targets, input font size, bottom tab bar, no sideways scroll."""
+    if page.viewport_size["width"] >= 721:
+        return
+    screens = [("#/printers", ".pcard"), ("#/printers/" + H2S, ".cam.big"), ("#/printers/FAKE-P1S-0002", ".cam.big"),
+               ("#/queue", ".job"), ("#/history", ".tl-card"), ("#/new", ".drop"), ("#/filament", ".spool")]
+    if ident == "admin":
+        screens += [("#/access", "table"), ("#/setup", ".wizard .card")]
+    stub_engine(page)
+    found = []
+    for w in (375, 390):
+        page.set_viewport_size({"width": w, "height": 812})
+        for h, sel in screens:
+            go(h, sel)
+            page.wait_for_timeout(300)
+            found += [f"{w}px {h}: {x}" for x in page.evaluate(PHONE)]
+    assert not found, f"{len(found)} phone layout problems: " + "; ".join(dict.fromkeys(found))
+
+
 P9 = {"double": check_double_submit, "usercache": check_user_switch, "leave": check_engine_leave, "fresh": check_fresh_keeps_plate,
       "restart": check_restart_reloads, "offlinetext": check_offline_text, "upload": check_upload_retry, "variant": check_variant_preview,
       "cover": check_cover_same_origin, "stalekey": check_stale_keyboard, "dryfocus": check_dry_focus, "route": check_route_table,
-      "histtimer": check_history_timer, "evict": check_cache_eviction, "stl": check_stl_trailing, "gl": check_paint_contexts}
+      "histtimer": check_history_timer, "evict": check_cache_eviction, "stl": check_stl_trailing, "gl": check_paint_contexts, "phone": check_phone_layout}
 
 
 def walk(page, ident, base, shot, inject):

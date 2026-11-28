@@ -67,7 +67,7 @@ jobs:
       - name: Browser tools for the UI tests
         run: pip install -q playwright && python3 -m playwright install --with-deps chromium
       - name: UI checks against the mock server (the groups that need no engine; the real image runs the rest)
-        run: for g in cache panel download preview printerhistory offline; do python3 hub/ui/check_ui.py --only $g || exit 1; done
+        run: for g in cache panel download preview printerhistory offline phone; do python3 hub/ui/check_ui.py --only $g || exit 1; done
       - name: WebKit check of the phone promotion (iPhone profile, isolation headers, no loop)
         run: python3 -m playwright install --with-deps webkit && python3 hub/tests/webkit_isolation.py
       - name: UI end-to-end (real hub in the image, fake HA and bridge, slicing in the browser)

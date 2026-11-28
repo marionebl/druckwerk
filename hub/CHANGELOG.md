@@ -1,5 +1,12 @@
 # Changelog
 
+## 3.36.0 (unreleased)
+
+- Phones: the tab bar sits at the bottom of the screen again. The top bar's blur made it the containing block of the fixed tab bar, so the tabs covered the top bar and its settings button.
+- Touch screens: buttons, chips, inputs and selects are at least 44 px high; inputs use 16 px text, so iOS does not zoom in on focus.
+- The page bottom leaves room for the tab bar and the feedback button (also for focus scrolling); the feedback button sits above the tab bar. Safe-area insets pad the top bar, the page and the toasts; dialogs use the dynamic viewport height.
+- `check_ui.py --only phone` checks every screen at 375 and 390 px; CI runs it.
+
 ## 3.35.0 (unreleased)
 
 - Housekeeping, no change in behaviour. Documents: `/media` is mapped read-write, the camera tunnel stays open for 90 s, the app has had no slicer since 3.7.0, the IP ban needs `login_attempts_threshold`, the test commands list the system packages. `API.md` gains the two history download routes, the bridge routes, the events `load_requested` and `nozzle_requested`, and a note that `get_queue` does not list a running drying job.

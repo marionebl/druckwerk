@@ -28,7 +28,7 @@ button, input, select, textarea { font: inherit; color: inherit; }
 
 /* Shell */
 .topbar { position: sticky; top: 0; z-index: 20; background: color-mix(in srgb, var(--bg) 88%, transparent); backdrop-filter: blur(10px); border-bottom: 1px solid var(--line); }
-.topbar .in { max-width: 1240px; margin: 0 auto; padding: 10px 16px; display: flex; align-items: center; gap: 16px; }
+.topbar .in { max-width: 1240px; margin: 0 auto; padding: 10px max(16px, env(safe-area-inset-right)) 10px max(16px, env(safe-area-inset-left)); padding-top: max(10px, env(safe-area-inset-top)); display: flex; align-items: center; gap: 16px; }
 .brand { font-weight: 650; font-size: 17px; display: flex; align-items: center; gap: 8px; white-space: nowrap; }
 .brand i { width: 10px; height: 10px; border-radius: 3px; background: var(--accent); display: inline-block; }
 .tabs { display: flex; gap: 4px; flex: 1; min-width: 0; overflow-x: auto; scrollbar-width: none; }
@@ -41,7 +41,7 @@ button, input, select, textarea { font: inherit; color: inherit; }
 .menu .pop { position: absolute; right: 0; top: 42px; min-width: 220px; background: var(--card); border: 1px solid var(--line); border-radius: var(--radius); padding: 6px; box-shadow: 0 8px 24px rgba(0, 0, 0, .18); }
 .menu .pop button, .menu .pop a { display: block; width: 100%; text-align: left; padding: 10px 12px; border: 0; background: none; border-radius: 8px; cursor: pointer; text-decoration: none; color: var(--fg); }
 .menu .pop button:hover, .menu .pop a:hover { background: var(--soft); }
-main { max-width: 1240px; margin: 0 auto; padding: 20px 16px 96px; }
+main { max-width: 1240px; margin: 0 auto; padding: 20px max(16px, env(safe-area-inset-right)) 96px max(16px, env(safe-area-inset-left)); }
 .page-head { display: flex; align-items: center; justify-content: space-between; gap: 12px; margin-bottom: 16px; flex-wrap: wrap; }
 .page-head .sub { color: var(--muted); font-size: 13.5px; }
 .stack { display: grid; gap: var(--gap); }
@@ -52,8 +52,15 @@ main { max-width: 1240px; margin: 0 auto; padding: 20px 16px 96px; }
 @media (min-width: 721px) and (max-width: 1100px) { .who .nm { display: none; } .tabs a { padding: 8px 10px; } }
 @media (min-width: 721px) and (max-width: 860px) { .tabs a span { position: absolute; width: 1px; height: 1px; overflow: hidden; clip-path: inset(50%); } }
 @media (max-width: 720px) {
+  /* backdrop-filter would make the top bar the containing block of the fixed tab bar, and pin the tabs over the top bar. */
+  .topbar { backdrop-filter: none; background: var(--bg); }
+  /* Room for the tab bar and the feedback button above it, also when focus or scrollIntoView moves to a control. */
+  main { padding-bottom: calc(136px + env(safe-area-inset-bottom)); }
+  html { scroll-padding-bottom: calc(136px + env(safe-area-inset-bottom)); }
+  :root { --pb-feedback-bottom: calc(60px + env(safe-area-inset-bottom)); }
   .topbar .tabs { position: fixed; bottom: 0; left: 0; right: 0; z-index: 30; background: var(--card); border-top: 1px solid var(--line); padding: 6px 6px calc(6px + env(safe-area-inset-bottom)); justify-content: space-around; gap: 0; }
-  .tabs a { flex-direction: column; gap: 2px; font-size: 11px; padding: 6px 4px; flex: 1; align-items: center; border-radius: 8px; }
+  .tabs a { flex-direction: column; justify-content: center; gap: 2px; font-size: 11px; padding: 6px 4px; min-width: 0; min-height: 48px; flex: 1; align-items: center; border-radius: 8px; }
+  .tabs a span { max-width: 100%; overflow: hidden; text-overflow: ellipsis; }
   .who .nm { display: none; }
   .topbar .in { justify-content: space-between; }
 }
@@ -116,11 +123,11 @@ input:focus, select:focus { border-color: var(--accent); }
 @media (prefers-reduced-motion: reduce) { .spin { animation-duration: 3s; } }
 
 /* Toast and modal */
-.toasts { position: fixed; z-index: 100; left: 50%; transform: translateX(-50%); bottom: 84px; display: grid; gap: 8px; width: min(92vw, 420px); }
+.toasts { position: fixed; z-index: 100; left: 50%; transform: translateX(-50%); bottom: calc(84px + env(safe-area-inset-bottom)); display: grid; gap: 8px; width: min(92vw, 420px); }
 @media (min-width: 721px) { .toasts { bottom: 24px; } }
 .toast { background: #23262b; color: #fff; padding: 12px 16px; border-radius: 10px; box-shadow: 0 8px 24px rgba(0, 0, 0, .3); border-left: 4px solid #888; }
 .toast.ok { border-color: #34d27b; } .toast.error { border-color: #ff7b72; }
-dialog.modal { border: 1px solid var(--line); border-radius: 16px; background: var(--card); color: var(--fg); padding: 0; width: min(92vw, 520px); max-height: 90vh; }
+dialog.modal { border: 1px solid var(--line); border-radius: 16px; background: var(--card); color: var(--fg); padding: 0; width: min(92vw, 520px); max-height: 90vh; max-height: 90dvh; }
 dialog.modal::backdrop { background: rgba(0, 0, 0, .5); }
 dialog.modal > header { display: flex; justify-content: space-between; align-items: center; padding: 14px 12px 6px 20px; }
 dialog.modal > .body { padding: 8px 20px 20px; display: grid; gap: 14px; }
@@ -342,7 +349,7 @@ details.adv .form { margin-top: 12px; }
 .stale-note { display: none; position: absolute; top: 0; left: 50%; transform: translate(-50%, -50%); z-index: 5; align-items: center; gap: 6px; padding: 3px 12px; font-size: 13px; border: 1px solid var(--line); border-radius: 999px; background: var(--card); pointer-events: none; white-space: nowrap; }
 #view.stale .stale-note { display: flex; }
 .stale-note i { width: 12px; height: 12px; border: 2px solid var(--line); border-top-color: var(--accent); border-radius: 50%; animation: s 1s linear infinite; }
-.cam .ago { position: absolute; right: 56px; top: 10px; padding: 2px 8px; border-radius: 999px; background: rgba(16, 18, 20, .78); color: #fff; font-size: 12px; pointer-events: none; }
+.cam .ago { position: absolute; right: calc(20px + var(--light, 36px)); top: 10px; padding: 2px 8px; border-radius: 999px; background: rgba(16, 18, 20, .78); color: #fff; font-size: 12px; pointer-events: none; }
 #slowbar { position: fixed; top: 0; left: 0; right: 0; height: 3px; z-index: 1000; overflow: hidden; pointer-events: none; }
 #slowbar[hidden] { display: none; }
 #slowbar::after { content: ''; position: absolute; inset: 0 auto 0 0; width: 30%; background: var(--accent); animation: slowbar 1.2s ease-in-out infinite; }
@@ -357,7 +364,7 @@ details.adv .form { margin-top: 12px; }
 .orow .inherited { color: var(--muted); }
 .orow.set label { font-weight: 600; }
 .icon-btn.sm { width: 28px; height: 28px; }
-dialog.paint { border: 0; padding: 0; width: 100vw; height: 100vh; max-width: 100vw; max-height: 100vh; background: var(--card); color: var(--fg); }
+dialog.paint { border: 0; padding: 0; width: 100vw; height: 100vh; height: 100dvh; max-width: 100vw; max-height: 100dvh; background: var(--card); color: var(--fg); }
 dialog.paint[open] { display: flex; flex-direction: column; }
 dialog.paint > header { padding: 12px 16px; display: grid; gap: 2px; }
 .paint-body { flex: 1; display: grid; grid-template-columns: 1fr 300px; min-height: 0; }
@@ -371,6 +378,7 @@ dialog.paint > header { padding: 12px 16px; display: grid; gap: 2px; }
 .nozrow { height: 112px; display: grid; grid-template-rows: 16px 48px 32px; gap: 8px; align-content: start; }
 .nozrow .chips { flex-wrap: nowrap; overflow-x: auto; align-items: flex-start; }
 .nozrow .chip { flex: none; }
+.nozrow .nnote { min-height: 32px; max-width: 220px; }
 .nozrow .nstat { display: flex; align-items: center; gap: 8px; overflow: hidden; white-space: nowrap; }
 
 /* Plate (New print): fixed sizes, so nothing moves while models, presets or the engine load */
@@ -395,3 +403,14 @@ dialog.paint > header { padding: 12px 16px; display: grid; gap: 2px; }
 .os-head { min-height: 28px; }
 .slice-note { min-height: 2.9em; display: block; }
 .warn-text { color: var(--warn); }
+
+/* Touch screens: 44 px targets (Apple HIG) and 16 px inputs, below which iOS zooms the page on focus. */
+@media (pointer: coarse) {
+  :root { --light: 44px; }
+  .btn, .btn.sm, .chip, .tools .chip, .legend .key, .seg button, button.step, .check-inline { min-height: 44px; }
+  .icon-btn, .icon-btn.sm, .light-btn { width: 44px; height: 44px; }
+  input[type=text], input[type=email], input[type=password], input[type=number], input[type=datetime-local], input[type=search], select, textarea { min-height: 44px; font-size: 16px; }
+  .nozrow { height: 124px; grid-template-rows: 16px 48px 44px; }
+  .nozrow .nnote { min-height: 44px; }
+  .menu .pop { top: 48px; }
+}

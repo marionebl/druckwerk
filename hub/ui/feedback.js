@@ -217,7 +217,7 @@
   var side = "right";
   root.innerHTML = '<style>' +
     ':host{all:initial;--bg:#fff;--fg:#111;--mut:#555;--bd:#bbb;--bd2:#ddd;--ph:#eee;--bar:#222;--barfg:#fff;--err:#c62828;--veil:#0008}:host(.dark){--bg:#1e1e22;--fg:#eee;--mut:#aaa;--bd:#555;--bd2:#444;--ph:#111;--bar:#38383e;--barfg:#fff;--err:#ef9a9a;--veil:#000a}*{box-sizing:border-box;font:14px/1.4 -apple-system,system-ui,Roboto,sans-serif}' +
-    '.fab{position:fixed;bottom:16px;' + side + ':16px;width:44px;height:44px;border-radius:50%;border:0;background:#8e24aa;color:#fff;' +
+    '.fab{position:fixed;bottom:calc(16px + var(--pb-feedback-bottom, 0px));' + side + ':16px;width:44px;height:44px;border-radius:50%;border:0;background:#8e24aa;color:#fff;' +
     'box-shadow:0 2px 8px #0006;pointer-events:auto;opacity:.75;display:flex;align-items:center;justify-content:center;padding:0}' +
     '.fab:hover,.fab:focus{opacity:1}.fab svg{width:24px;height:24px;fill:currentColor}' +
     '.bar{position:fixed;top:12px;left:50%;transform:translateX(-50%);width:max-content;max-width:calc(100vw - 24px);display:none;align-items:center;gap:12px;padding:8px 8px 8px 16px;' +
@@ -233,7 +233,7 @@
     'button.b{border:1px solid var(--bd);background:var(--bg);color:var(--fg);border-radius:8px;padding:8px 16px}' +
     'textarea:focus,button:focus-visible{outline:2px solid #8e24aa;outline-offset:0}textarea:focus{border-color:#8e24aa}' +
     'button.p{background:#8e24aa;border-color:#8e24aa;color:#fff}button:disabled{opacity:.5}' +
-    '.toast{position:fixed;bottom:72px;' + side + ':16px;display:none;background:var(--bar);color:var(--barfg);padding:8px 14px;border-radius:10px;pointer-events:none}' +
+    '.toast{position:fixed;bottom:calc(72px + var(--pb-feedback-bottom, 0px));' + side + ':16px;display:none;background:var(--bar);color:var(--barfg);padding:8px 14px;border-radius:10px;pointer-events:none}' +
     '</style>' +
     '<button class="fab" title="Send feedback (F)" aria-label="Send feedback"><svg viewBox="0 0 24 24"><path d="M12,2A7,7 0 0,0 5,9C5,11.38 6.19,13.47 8,14.74V17A1,1 0 0,0 9,18H15A1,1 0 0,0 16,17V14.74C17.81,13.47 19,11.38 19,9A7,7 0 0,0 12,2M9,21A1,1 0 0,0 10,22H14A1,1 0 0,0 15,21V20H9V21Z"/></svg></button>' +
     '<div class="hl"></div><div class="veil"></div>' +
