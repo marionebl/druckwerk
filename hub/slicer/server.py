@@ -21,11 +21,12 @@ from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from urllib.parse import parse_qs, urlsplit
 
 HERE = os.path.dirname(os.path.abspath(__file__))
-for _d in (HERE, os.path.dirname(HERE)):  # python -I drops the script dir; the repo keeps externals.py one level up
+for _d in (HERE, os.path.dirname(HERE), os.path.join(os.path.dirname(HERE), "queue")):  # python -I drops the script dir; the repo keeps externals.py one level up
     sys.path.insert(0, _d)
 import externals  # noqa: E402
 from httplen import content_length  # noqa: E402
 import pack  # noqa: E402
+from queue_registry import write_json  # noqa: E402
 
 env = os.environ.get
 JOBS = env("SLICER_JOBS", "/data/jobs")
@@ -110,8 +111,7 @@ def job_dir(jid):
 
 
 def save_job(job):
-    with open(os.path.join(job_dir(job["id"]), "job.json"), "w") as f:
-        json.dump(job, f)
+    write_json(os.path.join(job_dir(job["id"]), "job.json"), job)
 
 
 def load_jobs():

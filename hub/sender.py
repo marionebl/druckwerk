@@ -1,6 +1,5 @@
 """Send a print file to a printer through the bridge, and remember the result per printer."""
 import base64
-import json
 import os
 import threading
 from datetime import datetime, timezone
@@ -8,7 +7,7 @@ from datetime import datetime, timezone
 import files
 from actions import ActionError
 from gcode_guard import check_gcode_3mf
-from queue_registry import write_json
+from queue_registry import read_json, write_json
 
 BUSY = {"RUNNING", "PAUSE", "PREPARE"}
 OK_RESULTS = {"sent", "success"}
@@ -35,12 +34,9 @@ class Sender:
         self.app = app
         self.path = os.path.join(app.data_dir, "sender.json")
         self.lock = threading.Lock()
-        self.results = {}
+        self.results = read_json(self.path, {})
         self.sending = {}  # serial -> file name while the bridge call runs, for the progress steps
         self.printer_locks = {}  # serial -> held from the busy check to the bridge's answer: one send per printer
-        if os.path.exists(self.path):
-            with open(self.path) as f:
-                self.results = json.load(f)
 
     def result(self, serial):
         """What the cloud sender sensor shows for a printer."""

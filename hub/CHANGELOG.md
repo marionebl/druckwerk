@@ -1,5 +1,13 @@
 # Changelog
 
+## 3.28.0 (unreleased)
+
+- A damaged or empty data file (`queue.json`, `printers.json`, `grants.json`, the sender, notification, price and request files) no longer stops the app at start: it is renamed to `<name>.corrupt-<time>`, one line goes to the log and the app starts with that file empty.
+- Data files are written with `fsync` before the rename, so a power loss cannot leave an empty file; a failed write removes its temp file. The saved settings of a queued file and the slicer's `job.json` use the same write.
+- A torn saved-settings file no longer gives a 400 on `GET /api/history/<id>/settings` for ever: it counts as not saved and the next source answers.
+- A running job no longer rewrites `queue.json` at every tick (360 writes per hour); it is written when the state, error or end time of a job changes.
+- Two requests for one cloud file no longer share one `.part` file: the download uses a unique temp file in the target directory and a second request waits for the first.
+
 ## 3.26.0 (unreleased)
 
 - A print start uses a printer status of at most 60 s. The app reads the bridge's `X-Status-Age` and keeps the real observation time, so a cached status of the bridge no longer looks fresh (before: up to 10 min of the bridge plus the app's own cache). The tolerance of 10 min stays for the display and the ticks. A start with an older status is refused with 409 and the job stays queued.

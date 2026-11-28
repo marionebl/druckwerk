@@ -13,6 +13,7 @@ import os
 import re
 import secrets
 import sys
+import tempfile
 import threading
 import time
 import urllib.request
@@ -33,7 +34,7 @@ from gcode_guard import file_nozzle
 from ha import HAError, HAUnavailable
 from queue_access import Access, Caller, Forbidden, Grants, Unauthorized, caller_from_headers
 from queue_engine import START_STATUS_AGE, WAITING, NotFound, Queue, QueueError
-from queue_registry import Registry, check_nozzles
+from queue_registry import Registry, check_nozzles, write_json
 from integration import JPEG_PRODUCTS, Integration
 from notify import Notifier
 from sender import Sender
@@ -105,10 +106,10 @@ def fetch_file(url, dest):
     """Download an http(s) URL to dest; a failure or a file over FILE_MAX is a 502 and leaves nothing."""
     if urlsplit(url).scheme not in ("http", "https"):
         raise HttpError(502, "cloud file: not a web address")
-    part = dest + ".part"
     os.makedirs(os.path.dirname(dest), exist_ok=True)
+    fd, part = tempfile.mkstemp(dir=os.path.dirname(dest), suffix=".part")
     try:
-        with urllib.request.urlopen(url, timeout=60) as r, open(part, "wb") as out:
+        with os.fdopen(fd, "wb") as out, urllib.request.urlopen(url, timeout=60) as r:
             size = 0
             while True:
                 chunk = r.read(1 << 20)
@@ -183,6 +184,7 @@ class App:
         self.secret = self._load_secret()
         self._auto_at = None
         self._cache = {}
+        self.cloud_locks = {}  # task id -> lock, one download per cloud file
         self.cloud_miss = {}  # task id -> (time, reason) of a failed cloud file fetch
         self._cache_lock = threading.Lock()
         self._cloud_false = {}  # serial -> (first, latest) reading time of an unbroken run of offline readings
@@ -952,13 +954,16 @@ class App:
         parsed = slice_settings.read(path)
         if parsed:
             os.makedirs(os.path.join(self.data_dir, "settings"), exist_ok=True)
-            with open(self.saved_settings_path(job_id), "w") as f:
-                json.dump(parsed, f)
+            write_json(self.saved_settings_path(job_id), parsed)
 
     def cloud_file(self, it):
         """Path of the item's sliced 3MF from the Bambu cloud (fetched once, kept in data/cloud); ValueError says why not."""
         if it["source"] == "job" or not re.fullmatch(r"\d{1,19}", str(it["id"])):
             raise ValueError("This print has no Bambu cloud task.")
+        with self.cloud_locks.setdefault(it["id"], threading.Lock()):  # a second request waits for the first download
+            return self._cloud_file(it)
+
+    def _cloud_file(self, it):
         dest = os.path.join(self.data_dir, "cloud", "%s.gcode.3mf" % it["id"])
         if os.path.isfile(dest):
             return dest
@@ -1030,19 +1035,22 @@ class App:
         keep = ("title", "design_title", "status_code", "plate", "seconds", "grams", "started_at", "ended_at", "model_id", "profile_id", "design_id")
         out = {"available": False, "source": None, "reason": "", "can_reprint": False,
                "task": {k: it[k] for k in keep if it.get(k) not in (None, "")}, "groups": [], "all": [], "plate": {}, "slicer": None}
-        path, source, sj = None, None, self.kept_slice(it)
+        path, source, sj, saved = None, None, self.kept_slice(it), None
         if sj:
             path, source = sj["result"], "slice"
         elif job and os.path.isfile(self.saved_settings_path(job["id"])):
-            source = "saved"
+            try:
+                with open(self.saved_settings_path(job["id"])) as f:
+                    saved, source = json.load(f), "saved"
+            except (OSError, ValueError):
+                pass  # a torn file counts as not saved: the next source answers
         if not source:
             try:
                 path, source = self.cloud_file(it), "cloud"
             except ValueError as e:
                 out["reason"] = str(e)
         if source == "saved":
-            with open(self.saved_settings_path(job["id"])) as f:
-                parsed = json.load(f)
+            parsed = saved
         else:
             parsed = path and slice_settings.read(path)
         if parsed:
