@@ -1424,7 +1424,8 @@ def walk(page, ident, base, shot, inject):
         check_library_pick(page, go, shot)
     go("#/filament", ".spool")
     shot("filament")
-    assert page.locator(".spool").count() == 6, "the cloud library lists six spools: %d" % page.locator(".spool").count()
+    want = 6 if MOCKED else 5  # the mock has a long-named sixth spool; the image e2e fakes keep five
+    assert page.locator(".spool").count() == want, "the cloud library lists %d spools: %d" % (want, page.locator(".spool").count())
     assert page.locator("h3", has_text="Not loaded").count() == 1 and page.get_by_text("printer cloud filament library").count() == 1, "not-loaded group and the subtitle"
     if MOCKED:
         assert "unknown" in page.locator(".spool", has_text="Matte Charcoal").text_content(), "a spool without grams says unknown"
