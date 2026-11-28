@@ -411,6 +411,25 @@ class FlowVariantsTest(unittest.TestCase):
             s.close()
 
 
+class PrintTimeoutTest(unittest.TestCase):
+    """A daemon that does not answer a print in time gives 504, not 503: the file may be on the printer."""
+
+    def test_a_slow_daemon_gives_504_and_the_default_waits_less_than_the_app(self):
+        cloud = mock_cloud.start()
+        s = Server(cloud, extra_env={"MOCK_SLOW": "3", "DW_PRINT_TIMEOUT": "1"})
+        try:
+            s.json("POST", "/api/login/start", {"email": "a@example.com", "password": "pw"})
+            s.json("POST", "/api/login/code", {"code": "123456"})
+            st, d = s.json("POST", "/api/print", {"serial": "SERIAL001", "filename": "slow.gcode.3mf",
+                                                  "file_b64": base64.b64encode(b"x").decode()})
+            self.assertEqual(st, 504)
+            self.assertIn("may have started", d["error"])
+        finally:
+            s.close()
+        src = open(SERVER_PY).read()
+        self.assertIn('env("DW_PRINT_TIMEOUT", "280")', src)  # the app's own timeout is 300 s
+
+
 class LoginLockTest(unittest.TestCase):
     """A slow cloud login must not hold up the endpoints that only read the account list."""
 

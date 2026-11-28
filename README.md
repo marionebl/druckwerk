@@ -87,7 +87,7 @@ Before anything is sent, `druckwerk.print_file` and the Start button check the f
 - Todo list `Queue` per printer: queued and pending jobs (the title is the print's name, the description has the file and the owner). Deleting an item cancels the job, moving it reorders; adding is not supported (a job needs a sliced file).
 - The integration holds no logic. It shows what the app describes and forwards, so an app update changes entities, actions and tools without a Home Assistant restart. It polls the app's state every 5 s.
 - Events: the app fires `druckwerk_job_done`, `_job_failed`, `_job_started`, `_approval_needed`, `_queue_changed` with its payload.
-- Notifications come from the app. The integration passes it the recipients from its options. They go to the printer's admins, and only to people whose `person` is `home`. After `job_done` with a next job queued they get "Plate clear? Start next: <job>"; the action starts it (`start-next` with `plate_clear`). `approval_needed` notifies the admins.
+- Notifications come from the app. The integration passes it the recipients from its options. They go to the printer's admins, and only to people whose `person` is `home`. After `job_done` with a next job queued they get "Plate clear? Start next: <job>"; the action starts exactly that job (only within 30 minutes, while it is still first in the queue, and only for an admin of the printer). `approval_needed` notifies the admins.
 
 ## Tests
 

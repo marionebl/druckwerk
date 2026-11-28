@@ -77,6 +77,10 @@ def make_routes(q, access=None, is_internal=lambda h: False, caller_of=None):
         b = h.json()
         return api.grants_add(**{k: b[k] for k in GRANT_FIELDS if k in b})
 
+    def cancel(h, m, api):
+        b = h.json()
+        return api.cancel(m.group(1), force=b.get("force") is True)
+
     def one(name):
         return lambda h, m, api: getattr(api, name)(m.group(1))
 
@@ -86,7 +90,7 @@ def make_routes(q, access=None, is_internal=lambda h: False, caller_of=None):
         ("POST", r"/api/queue/" + ID + r"/reorder", guarded(reorder)),
         ("POST", r"/api/queue/" + ID + r"/move", guarded(move)),
         ("POST", r"/api/queue/" + ID + r"/edit", guarded(edit)),
-        ("POST", r"/api/queue/" + ID + r"/cancel", guarded(one("cancel"))),
+        ("POST", r"/api/queue/" + ID + r"/cancel", guarded(cancel)),
         ("POST", r"/api/queue/" + ID + r"/retry", guarded(one("retry"))),
         ("POST", r"/api/queue/" + ID + r"/approve", guarded(one("approve"))),
         ("POST", r"/api/queue/" + ID + r"/reject", guarded(one("reject"))),
