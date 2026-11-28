@@ -103,7 +103,7 @@ def job_result(tmp, jid):
 
 def test_browser_gcode_rejects_bad_requests(app):
     base = app[0]
-    jid = json.loads(call(base, "POST", "/api/jobs?name=a.stl", raw=b"x")[1])["id"]
+    jid = json.loads(call(base, "POST", "/api/jobs?name=steps.stl", raw=b"x")[1])["id"]
     assert call(base, "POST", "/api/jobs/%s/gcode?%s" % (jid, gcode_query(tray="0:2")), raw=b"G1")[0] == 400
     assert call(base, "POST", "/api/jobs/%s/gcode?%s" % (jid, gcode_query(quality="ultra")), raw=b"G1")[0] == 400
     assert call(base, "POST", "/api/jobs/%s/gcode?%s" % (jid, gcode_query(filament="Nope")), raw=b"G1")[0] == 400

@@ -340,6 +340,25 @@ class FlowTest(unittest.TestCase):
             "device_id": "SERIAL001", "filename": "cube.gcode.3mf", "project_name": "cube", "bed_leveling": True,
             "flow_cali": True, "vibration_cali": True, "timelapse": True, "use_ams": True})
 
+    def test_06b_print_progress_follows_the_daemon_log(self):
+        import threading
+        body = {"serial": "SERIAL001", "filename": "progress.gcode.3mf", "file_b64": base64.b64encode(b"x").decode()}
+        t = threading.Thread(target=lambda: self.s.json("POST", "/api/print", body))
+        self.assertEqual(self.s.json("GET", "/api/print-progress/SERIAL001")[1], {})  # nothing is being sent
+        t.start()
+        try:
+            end = time.time() + 5
+            while time.time() < end:
+                st, d = self.s.json("GET", "/api/print-progress/SERIAL001")
+                if d.get("percent") == 45:
+                    break
+                time.sleep(0.1)
+            self.assertEqual(d, {"stage": "upload", "percent": 45})
+            self.assertEqual(self.s.json("GET", "/api/print-progress/SERIAL002")[1], {})  # another printer
+        finally:
+            t.join()
+        self.assertEqual(self.s.json("GET", "/api/print-progress/SERIAL001")[1], {})  # done: cleared
+
     def test_07_print_error_status_passes_through(self):
         st, d = self.s.json("POST", "/api/print", {"serial": "SERIAL001", "filename": "fail.gcode.3mf",
                                                    "file_b64": base64.b64encode(b"x").decode()})

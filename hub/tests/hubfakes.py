@@ -127,6 +127,7 @@ class FakeBridge(BaseHTTPRequestHandler):
     printer_extra = {}  # serial -> fields merged into GET /api/printers (print_status, live)
     status = {}  # serial -> the `print` object GET /api/status/<serial> answers (default: DEFAULT_PRINT)
     status_fail = set()  # serials whose status answers 503
+    upload = {}  # serial -> what GET /api/print-progress/<serial> answers
     post_answer = {}  # path -> (status, body) instead of the usual answer
     library = {}  # account -> spools as the bridge's /api/filament lists them
     library_fail = None  # (status, error) that every /api/filament call answers
@@ -161,6 +162,8 @@ class FakeBridge(BaseHTTPRequestHandler):
             if serial in FakeBridge.status_fail:
                 return self.reply(503, {"error": "no status from the printer"})
             return self.reply(200, {"print": FakeBridge.status.get(serial, DEFAULT_PRINT.get(serial, {}))})
+        if self.path.startswith("/api/print-progress/"):
+            return self.reply(200, FakeBridge.upload.get(self.path.rsplit("/", 1)[1], {}))
         if self.path.startswith("/api/drying/"):
             return self.reply(200, FakeBridge.drying)
         if self.path.startswith("/api/camera/"):
@@ -235,7 +238,7 @@ class Hub:
         FakeBridge.log, FakeBridge.tasks, FakeBridge.task_fail, FakeBridge.task_calls = [], {}, set(), []
         FakeBridge.drying, FakeBridge.drying_fail = [], {}
         FakeBridge.printer_extra, FakeBridge.post_answer = {}, {}
-        FakeBridge.status, FakeBridge.status_fail = {}, set()
+        FakeBridge.status, FakeBridge.status_fail, FakeBridge.upload = {}, set(), {}
         FakeBridge.library, FakeBridge.library_fail, FakeBridge.library_calls = {}, None, []
         self.bridge = ThreadingHTTPServer(("127.0.0.1", 0), FakeBridge)
         threading.Thread(target=self.bridge.serve_forever, kwargs={"poll_interval": 0.02}, daemon=True).start()

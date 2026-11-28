@@ -4,6 +4,7 @@ import { h, clear, icon, btn, pill, field, swatch, empty, attempt, toast, fail, 
 import { gcodePreview } from './preview.js';
 import { warm, sliceVariant } from './browserslice.js';
 import { promote } from './promote.js';
+import { sliceProgress } from './progress.js';
 
 const QUALITIES = [['good', 'Good', 'Fastest, visible layers'], ['better', 'Better', 'Balanced'], ['best', 'Best', 'Finest detail, slowest']];
 const BEDS = ['Textured PEI Plate', 'Cool Plate', 'Engineering Plate', 'High Temp Plate', 'Supertack Plate'];
@@ -136,7 +137,8 @@ export async function mount(ctx, root) {
       for (const v of S.variants) {
         v.state = 'slicing'; v.elapsed = 0;
         const t0 = performance.now(), ticker = setInterval(() => { v.elapsed = Math.round((performance.now() - t0) / 1000); draw(); }, 1000);
-        const opts = { file: S.file, jobId: v.id, model: ref.model, serial: ref.serial, fil: filChoice(), bed: S.bed, quality: v.q };
+        const opts = { file: S.file, jobId: v.id, model: ref.model, serial: ref.serial, fil: filChoice(), bed: S.bed, quality: v.q,
+          onProgress: (p) => (v.progress = { percent: p.percent, message: p.message || p.stage || '' }) };  // drawn by the 1 s ticker
         try {
           let r;
           for (let attempt = 0; ; attempt++) {  // a fresh engine after an error: its memory may be spent
@@ -167,7 +169,7 @@ export async function mount(ctx, root) {
     const cards = S.variants.map((v) => {
       const [, name, sub] = QUALITIES.find((x) => x[0] === v.q);
       if (v.state === 'failed') return h('div', { class: 'variant' }, h('b', null, name), h('small', { style: 'color:var(--err)' }, v.error || 'Slicing failed'));
-      if (v.state !== 'done') return h('div', { class: 'variant' }, h('b', null, name), h('small', null, h('span', { class: 'spin' }), ' ', v.state === 'slicing' ? `Slicing… ${v.elapsed || 0} s` : 'Waiting for the slicer'));
+      if (v.state !== 'done') return h('div', { class: 'variant' }, h('b', null, name), v.state === 'slicing' ? sliceProgress(v) : h('small', null, h('span', { class: 'spin' }), ' ', 'Waiting for the slicer'));
       const [cost, est] = costOf(v);
       return h('button', { class: 'variant', 'aria-pressed': String(S.pick === v.q), onclick: () => { S.pick = v.q; draw(); } },
         h('div', { class: 'row between' }, h('b', null, name), fastest === v.q ? pill('fastest', 'ok') : null),

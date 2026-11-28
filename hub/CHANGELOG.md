@@ -1,6 +1,6 @@
 # Changelog
 
-## 3.3.0 (unreleased)
+## 3.7.0 (unreleased)
 
 - The "Slice on the Pi" choice is gone. New print slices in the browser only.
 - On iPhone and iPad, New print opens the app as a top-level page by itself, so the fast multi-thread slicer can run. Without isolation the single-thread engine runs, which is slower.
@@ -13,6 +13,21 @@
 - A job that an older version left in state `queued` or `slicing` is marked `failed` at start ("Slice again in the browser").
 - Models that are not STL (3MF, STEP, OBJ) can no longer be sliced in the app. Slice them elsewhere and add the `.gcode.3mf` to the share.
 - The CI image test checks that the image is at most 450 MB and that `/slice` answers 404. It stores a real Bambu Studio G-code through `/gcode` instead of slicing on the server.
+- The Pi half of the slicing progress from 3.6.0 (step lines from the slicer log, `progress` on `GET /api/jobs/{id}` while the Pi slices) is gone with the Pi slicer. Browser slicing progress and the print start steps stay.
+
+## 3.6.0 (unreleased)
+
+- Progress from Start to the first layer. Slicing shows its percent and the slicer's step text, in the browser (the engine's progress messages) and on the Pi (step lines from the slicer log, `GET /api/jobs/{id}` has `progress` `{percent, message}`). After Start, a list of steps shows where the print is: upload to the Bambu cloud (percent), the printer downloads the plate (percent from `gcode_file_prepare_percent`), the printer prepares (stage name, such as heating the bed), then printing. The steps are on the printer card, the printer page, the queue row and the job page, and in the Start dialogs while the request runs. `GET /api/printers` adds `start` (the steps, or null) and `start_job` (the job being started, or null).
+- The bridge reads the upload percent from the daemon's `print progress` log lines, so the daemon patch and the base image stay as they are. `GET /api/print-progress/<serial>` on the bridge answers `{stage, percent}` while a print is being sent, else `{}`.
+## 3.5.0 (unreleased)
+
+- Plates inbox. A cloud agent that cannot reach Home Assistant pushes a sliced plate to a private GitHub repo, and the app adds it to the print queue. Two new app options: `plates_repo` (default `marionebl/druckwerk-plates`) and `plates_token` (a GitHub token with Contents read and write on that repo). Without a token the feature is off and the app makes no request.
+- Every 60 s the app lists `plates/` in the repo. Each `plates/<id>/<name>.gcode.3mf` goes through the same path as a plate queued from the web UI (sliced check, grams and print time, plate image) and also through the G-code guard and the printer model check, which now run at queue time. The job waits in the queue like any other. Nothing starts a print by itself.
+- Target printer: `job.json` `printer` (serial), else `job.json` `model`, else the model in the G-code header, queued for any printer of that model. Owner: `job.json` `owner` (an HA user id or name) if that user may add jobs for the printer, else the printer's owner, else nobody (an admin job named "Plates inbox").
+- After the job is queued the app deletes the files of the folder in the repo (one contents API DELETE per file). The taken ids are kept in `/data/plates_taken.json`, so a failed delete never makes a second job; the delete is tried again at the next poll.
+- Files over 100 MB, files that are not sliced, and plates that fail the guard or the model check are logged, skipped and left in the repo. They are not downloaded again until the file changes. The token is never logged.
+- Setup view: the last step shows the repo, the last poll time and the last error. `GET /api/setup` has `plates_inbox: {enabled, repo, last_poll, last_error, taken}`.
+- How an agent pushes a plate is in API.md.
 
 ## 3.2.3 (unreleased)
 

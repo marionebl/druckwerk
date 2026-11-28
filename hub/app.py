@@ -25,6 +25,7 @@ import files
 import filament
 import history
 import printer_state
+import progress
 from ha import HAError, HAUnavailable
 from queue_access import Access, Caller, Forbidden, Grants, Unauthorized, caller_from_headers
 from queue_engine import WAITING, NotFound, Queue, QueueError
@@ -136,6 +137,7 @@ class App:
         self.access = Access(self.registry, self.grants, self.get_user)
         self.queue = Queue(self.registry, data_dir, self.state, self._call_service, self.get_trays, clock=clock,
                            job_allowed=self.access.job_allowed, dry=Drying(self), send_print=self.send_print)
+        self.plates_inbox = None  # set by hub.py when the app has a plates token
         self.media_roots = list(MEDIA_ROOTS)
         self.media_dir = MEDIA_DIR
         self.sender, self.watchdog, self.notifier, self.integration = Sender(self), Watchdog(self), Notifier(self), Integration(self)
@@ -201,6 +203,17 @@ class App:
         if not u or not u.get("is_active", True):
             return None
         return {"name": u.get("name") or "", "is_admin": bool(u.get("is_owner") or "system-admin" in u.get("group_ids", []))}
+
+    def find_user(self, ref):
+        """(id, name) of the active, non-system HA user whose id or name is `ref` (name: any case), or None."""
+        ref = str(ref or "").strip().lower()
+        try:
+            users = self._cached("users", 30, lambda: self.ha.command("config/auth/list"))
+        except HAError:
+            return None
+        u = next((u for u in users if u.get("is_active", True) and not u.get("system_generated")
+                  and ref in (u["id"].lower(), (u.get("name") or "").lower())), None) if ref else None
+        return (u["id"], u.get("name") or "") if u else None
 
     def _grant_state(self, entity_id):
         try:
@@ -361,12 +374,28 @@ class App:
         except HttpError:
             return None
 
+    def start_steps(self, serial, v, job):
+        """(steps, job id) of a print start under way (hub/progress.py); the id is None when nobody started it here."""
+        sending = self.sender.sending.get(serial)
+        upload = None
+        if sending:
+            try:
+                status, data = self.bridge_json("GET", "/api/print-progress/" + serial, timeout=3)
+                upload = data if status == 200 and isinstance(data, dict) else None
+            except HttpError:
+                pass
+            if not job:  # the job is still queued until the bridge answers
+                job = next((j for j in self.queue.jobs if j["state"] == "queued" and os.path.basename(j.get("file") or "") == sending), None)
+        steps = progress.steps(sending, upload, v)
+        return steps, job["id"] if steps and job else None
+
     def printer_view(self, p, role):
         serial = p["serial"]
         v = self.printer_status(serial)
         b = v or {}
         tray = b.get("active_tray")
         job = next((j for j in self.queue.jobs if j.get("printer") == serial and j["state"] in ("starting", "printing")), None)
+        start, start_job = self.start_steps(serial, v, job)
         return {
             "serial": serial, "name": p["name"], "model": p["model"], "role": role,
             "online": v is not None and b["status"] != "offline",
@@ -383,6 +412,7 @@ class App:
             "drying": self.drying(serial) or [],
             "ams": self.ams(serial, status=v), "external": b.get("external"), "hms": b.get("hms", []),
             "current_job": dict(job) if job else None,
+            "start": start, "start_job": start_job,
             "queue_length": sum(1 for j in self.queue.jobs if j["state"] in WAITING and serial in self.access.serials_of(j)),
         }
 
@@ -599,7 +629,8 @@ class App:
                              "config": self.config_view(cfg) if cfg else None})
         return {"accounts": [{"id": a["id"], "email": a["email"], "logged_in": a.get("logged_in", True),
                               "daemon_running": bool((a.get("daemon") or {}).get("running"))} for a in health["accounts"]],
-                "printers": printers}
+                "printers": printers,
+                "plates_inbox": self.plates_inbox.status() if self.plates_inbox else {"enabled": False}}
 
     @staticmethod
     def config_view(p):
@@ -892,6 +923,10 @@ class App:
             raise ValueError("the file must be under /media or /share")
         if not real.endswith(".gcode.3mf") or not os.path.isfile(real):
             raise ValueError("no such .gcode.3mf file")
+        return self.check_sliced(real)
+
+    @staticmethod
+    def check_sliced(real):
         try:
             with zipfile.ZipFile(real) as z:
                 if not any(SLICED.fullmatch(n) for n in z.namelist()):
@@ -908,7 +943,10 @@ class App:
         api = self.access.bind(self.queue, c)
         if b.get("kind") == "dry" or not (isinstance(f, str) and f.startswith("/")):
             return self.queue_routes_add(api, b)
-        real = self.resolve_media(f)
+        return self.queue_sliced(api, self.resolve_media(f), b)
+
+    def queue_sliced(self, api, real, b):
+        """Add a sliced .gcode.3mf at `real` to the queue (copied into the share) and return the job; b is the POST body."""
         use = filament.slice_usage(real)
         base = os.path.basename(real)[:-len(".gcode.3mf")].replace("..", "_")
         name = base + "_" + secrets.token_hex(3) + ".gcode.3mf"

@@ -92,6 +92,8 @@ export async function mount(ctx, root) {
               open = !open; shown.textContent = open ? i.secret : '•'.repeat(16); e.target.textContent = open ? 'Hide' : 'Show';
             }, 'sm'), btn('Copy', () => navigator.clipboard?.writeText(i.secret).then(() => toast('Copied', 'ok'), () => toast('Copy failed', 'error')), 'sm')))))));
     } catch (e) { sec.append(h('small', null, 'Integration secret unavailable: ' + e.message)); }
+    const pi = data.plates_inbox;
+    if (pi?.enabled) sec.append(h('small', { class: 'muted' }, `Plates inbox ${pi.repo}: ${pi.last_poll ? 'last poll ' + new Date(pi.last_poll * 1000).toLocaleTimeString() : 'not polled yet'}${pi.last_error ? ', last error: ' + pi.last_error : ', no error'}`));
     sec.append(h('div', null, btn('Go to printers', () => ctx.go('#/printers'), 'primary')));
     return sec;
   }

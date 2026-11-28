@@ -2,6 +2,7 @@
 import { api } from '../api.js';
 import { h, clear, icon, ring, btn, empty, dur, clock, attempt, pill, swatch, modal, field, toast } from '../util.js';
 import { statusPill, isPrinting, hmsBanners, amsBlock, temps, timeLeft, finishAt } from './common.js';
+import { stepsView, watchStart } from './progress.js';
 
 export async function mount(ctx, root, [serial]) {
   if (!ctx.me.setup_done && !ctx.isAdmin()) {
@@ -86,6 +87,7 @@ function card(p) {
       h('div', { class: 'row between' }, h('div', null, h('h2', { style: 'margin:0' }, p.name), h('small', null, p.model)),
         p.queue_length ? pill(`${p.queue_length} queued`) : null),
       p.hms?.length > 0 && h('div', { class: 'hms', role: 'alert' }, icon('alert', 18), h('div', { class: 'txt' }, h('span', null, h('code', null, p.hms[0].code), ' ', p.hms[0].text))),
+      p.start && stepsView(p.start),
       printing && h('div', { class: 'pbar' },
         h('div', { class: 'top' }, h('b', null, Math.round(p.progress) + '%'), h('small', null, [timeLeft(p), finishAt(p)].filter(Boolean).join(' · '))),
         h('div', { class: 'bar' }, h('i', { style: `width:${p.progress}%` })),
@@ -134,6 +136,7 @@ async function detail(ctx, root, serial) {
 
 function jobCard(p) {
   const j = p.current_job;
+  if (p.start) return h('section', { class: 'card' }, h('h2', null, 'Starting the print'), stepsView(p.start));
   if (!isPrinting(p)) {
     return h('section', { class: 'card' }, h('h2', null, 'Current job'),
       p.online ? h('p', { class: 'muted' }, p.status === 'finish' ? 'The last print is finished. Clear the plate before starting the next one.' : 'Nothing is printing.') : h('p', { class: 'muted' }, 'The printer is offline.'));
@@ -205,9 +208,13 @@ function startNext(ctx, p, mine, refresh) {
       }, 'primary', { disabled: isPrinting(p) }));
   }
   const sure = h('input', { type: 'checkbox', id: 'plate-clear', checked: plateOk.has(p.serial) });
+  const steps = h('div');  // the steps of the start while the request runs
   const go = btn([icon('check', 18), `Start “${next.name || next.source}”`], async () => {
     if (!sure.checked) return;
-    if (await attempt(() => api.startNext(p.serial), 'Starting the next job')) { sure.checked = false; plateOk.delete(p.serial); refresh(); }
+    const stop = watchStart(p.serial, steps);
+    const done = await attempt(() => api.startNext(p.serial), 'Starting the next job');
+    stop();
+    if (done) { sure.checked = false; plateOk.delete(p.serial); refresh(); }
   }, 'primary', { disabled: !sure.checked || isPrinting(p) });
   sure.addEventListener('change', () => {
     sure.checked ? plateOk.add(p.serial) : plateOk.delete(p.serial);
@@ -217,7 +224,7 @@ function startNext(ctx, p, mine, refresh) {
     h('p', { class: 'muted', style: 'margin-top:0' }, `Next in line: ${next.name || next.source} (${next.owner_name})`),
     h('div', { class: 'form' },
       h('label', { class: 'check' }, sure, h('span', null, h('b', null, 'Plate is clear'), h('br'), h('small', null, 'I removed the last print and the right filament is loaded.'))),
-      go,
+      go, steps,
       isPrinting(p) && h('small', null, 'The printer is busy.')));
 }
 
