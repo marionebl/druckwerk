@@ -47,8 +47,7 @@ class AppTodo(AppEntity, TodoListEntity):
         await self.hub.async_request_refresh()
 
     async def _post(self, path: str, body: dict) -> None:
-        # No act-as: the todo list is for HA users who can see it.
         try:
-            await self.hub.request("POST", path, body)
+            await self.hub.request("POST", path, body, self.user_id)
         except HomeAssistantError as err:
             raise HomeAssistantError(f"Druckwerk: {err}") from err
