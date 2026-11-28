@@ -38,7 +38,7 @@ RUN . /externals.env && mkdir /out && curl -fsSL -o /out/slicer_base64.cer "$CER
 
 # OrcaSlicer compiled to WebAssembly (Muon3D Slicer Engine, AGPL-3.0) for slicing in the browser, with the presets flattened
 # at build time. The output is the same on every arch, so it is built natively on the builder. Only /out/engine is used.
-FROM --platform=$BUILDPLATFORM node:22-bookworm AS engine
+FROM --platform=$BUILDPLATFORM node:26-bookworm AS engine
 COPY hub/slicer/engine/ /w/hub/slicer/engine/
 COPY hub/externals.py hub/externals.env /w/hub/
 RUN /w/hub/slicer/engine/build.sh /out
