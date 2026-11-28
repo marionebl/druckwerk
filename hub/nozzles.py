@@ -1,9 +1,8 @@
 """Nozzles: what is installed (read live from the vendor integration's sensors) and requests to change it."""
-import json
 import os
 import threading
 
-from queue_registry import write_json
+from queue_registry import read_json, write_json
 
 
 def installed(states, prefix):
@@ -37,10 +36,7 @@ class NozzleRequests:
     def __init__(self, data_dir):
         self.path = os.path.join(data_dir, "nozzle_requests.json")
         self.lock = threading.RLock()
-        self.items = []
-        if os.path.exists(self.path):
-            with open(self.path) as f:
-                self.items = json.load(f)
+        self.items = read_json(self.path, [])
 
     def add(self, req):
         """(request, created); the job's open request is returned as it is."""

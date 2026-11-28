@@ -21,11 +21,12 @@ from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from urllib.parse import parse_qs, urlsplit
 
 HERE = os.path.dirname(os.path.abspath(__file__))
-for _d in (HERE, os.path.dirname(HERE)):  # python -I drops the script dir; the repo keeps externals.py one level up
+for _d in (HERE, os.path.dirname(HERE), os.path.join(os.path.dirname(HERE), "queue")):  # python -I drops the script dir; the repo keeps externals.py one level up
     sys.path.insert(0, _d)
 import externals  # noqa: E402
 from httplen import content_length  # noqa: E402
 import pack  # noqa: E402
+from queue_registry import write_json  # noqa: E402
 
 env = os.environ.get
 JOBS = env("SLICER_JOBS", "/data/jobs")
@@ -110,8 +111,9 @@ def job_dir(jid):
 
 
 def save_job(job):
-    with open(os.path.join(job_dir(job["id"]), "job.json"), "w") as f:
-        json.dump(job, f)
+    path = os.path.join(job_dir(job["id"]), "job.json")
+    write_json(path, job)
+    os.chmod(path, 0o644)  # mkstemp makes 0600; the jobs folder is shared with tests that run as another user
 
 
 def load_jobs():
@@ -519,8 +521,12 @@ class Handler(BaseHTTPRequestHandler):
 
     def send(self, status, body, ctype="application/json"):
         data = body if isinstance(body, bytes) else json.dumps(body).encode()
-        self.head(status, ctype, len(data), "no-store")
-        self.wfile.write(data)
+        try:
+            self.head(status, ctype, len(data), "no-store")
+            self.wfile.write(data)
+        except (BrokenPipeError, ConnectionResetError):  # the client gave up before the answer
+            self.close_connection = True
+            log("client went away: %s %s" % (self.command, urlsplit(self.path).path))
 
     def send_file(self, path, ctype, cache):
         with open(path, "rb") as f:

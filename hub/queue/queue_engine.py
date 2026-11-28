@@ -9,14 +9,16 @@ get_nozzle(serial) -> "0.4" | None (optional)   installed nozzle diameter in mm;
 dry (optional): start(serial, {"ams_id", "temp", "hours", "filament"}) and stop(serial, ams_id) raise on refusal;
     state(serial, ams_id) -> {"active": bool, "left_min": int} | None (None: unknown)
 """
+import logging
 import re
 import secrets
 import threading
 import time
 
-from queue_registry import write_json
-import json
+from queue_registry import read_json, write_json
 import os
+
+log = logging.getLogger(__name__)
 
 HISTORY = 200
 STARTABLE = {"idle", "finish", "failed"}  # print status values that allow a new job
@@ -96,16 +98,14 @@ class Queue:
         # changing_filament lasts ~1 s, shorter than a poll; observe() latches it per serial.
         self.seen_change = {}
         os.makedirs(data_dir, exist_ok=True)
-        if os.path.exists(self.path):
-            with open(self.path) as f:
-                saved = json.load(f)
-            self.jobs, self.history = saved["jobs"], saved["history"]
-            for j in list(self.jobs):  # the hub stopped during a send: the print may or may not have begun
-                if j.get("state") == "sending":
-                    self._finish(j, "failed", "the app restarted while the file was sent; check the printer before a retry")
-            for j in self.jobs + self.history:  # jobs saved before kinds and names existed
-                j.setdefault("kind", "print")
-                j.setdefault("name", str(j.get("file", ""))[:-len(".gcode.3mf")] if str(j.get("file", "")).endswith(".gcode.3mf") else j.get("file", ""))
+        saved = read_json(self.path, {})
+        self.jobs, self.history = saved.get("jobs", []), saved.get("history", [])
+        for j in list(self.jobs):  # the hub stopped during a send: the print may or may not have begun
+            if j.get("state") == "sending":
+                self._finish(j, "failed", "the app restarted while the file was sent; check the printer before a retry")
+        for j in self.jobs + self.history:  # jobs saved before kinds and names existed
+            j.setdefault("kind", "print")
+            j.setdefault("name", str(j.get("file", ""))[:-len(".gcode.3mf")] if str(j.get("file", "")).endswith(".gcode.3mf") else j.get("file", ""))
 
     # -- storage --
     def _save(self):
@@ -424,6 +424,7 @@ class Queue:
     def _send(self, printer, serial, job):
         """Returns (error text or None, unsure). unsure: the send ended in a timeout. Paused entities come back either way."""
         paused = [e for e in printer["pause_entities"] if self.get_state(e) == "on"]
+        err, unsure = None, False
         try:
             for e in paused:
                 self.call_service("homeassistant", "turn_off", {"entity_id": e})
@@ -436,15 +437,19 @@ class Queue:
                 if k not in data and o.get(k, OPTIONS[k]) != OPTIONS[k]:
                     data[k] = o[k]
             self.send_print(data)
-            return None, False
         except Exception as e:  # the guard's refusal text is the useful part
-            return str(e) or e.__class__.__name__, bool(getattr(e, "unsure", False))
+            err, unsure = str(e) or e.__class__.__name__, bool(getattr(e, "unsure", False))
         finally:
+            stuck = []
             for e in paused:
                 try:
                     self.call_service("homeassistant", "turn_on", {"entity_id": e})
-                except Exception:
-                    pass
+                except Exception as x:
+                    log.warning("could not switch %s on again: %s", e, str(x) or x.__class__.__name__)
+                    stuck.append(e)
+        if err and stuck:  # after a sent file the job runs on; only a refusal gets the hint
+            err += " (still off: %s)" % ", ".join(stuck)
+        return err, unsure
 
     # -- progress --
     def observe(self, serial, stage):
@@ -475,13 +480,15 @@ class Queue:
             job = self._busy(serial)
             if not job or job["id"] != job_id or job["state"] != state:  # changed while we read
                 return job
+            before = (job["state"], job.get("error"), job.get("finished_at"))
             if state == "drying":
                 self._tick_drying(job, dry_state)
             elif state == "starting":
                 self._tick_starting(job, serial, status, stage, tray, progress)
             else:
                 self._tick_printing(job, status)
-            self._save()
+            if (job["state"], job.get("error"), job.get("finished_at")) != before:  # a running job would rewrite the file every tick
+                self._save()
             return job
 
     def _tick_drying(self, job, state):

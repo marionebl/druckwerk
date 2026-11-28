@@ -13,8 +13,10 @@ import os
 import re
 import secrets
 import sys
+import tempfile
 import threading
 import time
+import traceback
 import urllib.request
 import zipfile
 from urllib.parse import parse_qs, quote, unquote, urlsplit
@@ -33,7 +35,7 @@ from gcode_guard import file_nozzle
 from ha import HAError, HAUnavailable
 from queue_access import Access, Caller, Forbidden, Grants, Unauthorized, caller_from_headers
 from queue_engine import START_STATUS_AGE, WAITING, NotFound, Queue, QueueError
-from queue_registry import Registry, check_nozzles
+from queue_registry import Registry, check_nozzles, write_json
 from integration import JPEG_PRODUCTS, Integration
 from notify import Notifier
 from sender import Sender
@@ -105,10 +107,10 @@ def fetch_file(url, dest):
     """Download an http(s) URL to dest; a failure or a file over FILE_MAX is a 502 and leaves nothing."""
     if urlsplit(url).scheme not in ("http", "https"):
         raise HttpError(502, "cloud file: not a web address")
-    part = dest + ".part"
     os.makedirs(os.path.dirname(dest), exist_ok=True)
+    fd, part = tempfile.mkstemp(dir=os.path.dirname(dest), suffix=".part")
     try:
-        with urllib.request.urlopen(url, timeout=60) as r, open(part, "wb") as out:
+        with os.fdopen(fd, "wb") as out, urllib.request.urlopen(url, timeout=60) as r:
             size = 0
             while True:
                 chunk = r.read(1 << 20)
@@ -183,6 +185,7 @@ class App:
         self.secret = self._load_secret()
         self._auto_at = None
         self._cache = {}
+        self.cloud_locks = {}  # task id -> lock, one download per cloud file
         self.cloud_miss = {}  # task id -> (time, reason) of a failed cloud file fetch
         self._cache_lock = threading.Lock()
         self._cloud_false = {}  # serial -> (first, latest) reading time of an unbroken run of offline readings
@@ -729,6 +732,9 @@ class App:
                 return h.send(502, {"error": str(e)})
             except ValueError as e:
                 return h.send(400, {"error": str(e)})
+            except Exception:  # noqa: BLE001 - answer instead of dropping the connection
+                log("%s %s failed:\n%s" % (method, u.path, traceback.format_exc().rstrip()))
+                return h.send(500, {"error": "internal error"})
             if out is not h:
                 try:
                     self.sync()
@@ -952,13 +958,16 @@ class App:
         parsed = slice_settings.read(path)
         if parsed:
             os.makedirs(os.path.join(self.data_dir, "settings"), exist_ok=True)
-            with open(self.saved_settings_path(job_id), "w") as f:
-                json.dump(parsed, f)
+            write_json(self.saved_settings_path(job_id), parsed)
 
     def cloud_file(self, it):
         """Path of the item's sliced 3MF from the Bambu cloud (fetched once, kept in data/cloud); ValueError says why not."""
         if it["source"] == "job" or not re.fullmatch(r"\d{1,19}", str(it["id"])):
             raise ValueError("This print has no Bambu cloud task.")
+        with self.cloud_locks.setdefault(it["id"], threading.Lock()):  # a second request waits for the first download
+            return self._cloud_file(it)
+
+    def _cloud_file(self, it):
         dest = os.path.join(self.data_dir, "cloud", "%s.gcode.3mf" % it["id"])
         if os.path.isfile(dest):
             return dest
@@ -1030,19 +1039,22 @@ class App:
         keep = ("title", "design_title", "status_code", "plate", "seconds", "grams", "started_at", "ended_at", "model_id", "profile_id", "design_id")
         out = {"available": False, "source": None, "reason": "", "can_reprint": False,
                "task": {k: it[k] for k in keep if it.get(k) not in (None, "")}, "groups": [], "all": [], "plate": {}, "slicer": None}
-        path, source, sj = None, None, self.kept_slice(it)
+        path, source, sj, saved = None, None, self.kept_slice(it), None
         if sj:
             path, source = sj["result"], "slice"
         elif job and os.path.isfile(self.saved_settings_path(job["id"])):
-            source = "saved"
+            try:
+                with open(self.saved_settings_path(job["id"])) as f:
+                    saved, source = json.load(f), "saved"
+            except (OSError, ValueError):
+                pass  # a torn file counts as not saved: the next source answers
         if not source:
             try:
                 path, source = self.cloud_file(it), "cloud"
             except ValueError as e:
                 out["reason"] = str(e)
         if source == "saved":
-            with open(self.saved_settings_path(job["id"])) as f:
-                parsed = json.load(f)
+            parsed = saved
         else:
             parsed = path and slice_settings.read(path)
         if parsed:
@@ -1186,28 +1198,45 @@ class App:
             name, job["filename"], target, model,
             [{"type": f["type"], "colour": f["colour"]} for f in use["filaments"]], b.get("options"),
             name=b.get("name") or job["filename"].rsplit(".", 1)[0])
-        os.makedirs(self.share, exist_ok=True)
-        with open(job["result"], "rb") as src:
-            # Written after the job passed the access check, so a refused request leaves nothing in the share.
-            with open(os.path.join(self.share, name), "wb") as dst:
-                dst.write(src.read())
-        png = None
-        with zipfile.ZipFile(job["result"]) as z:
-            if "Metadata/plate_1.png" in z.namelist():
-                with open(os.path.join(self.data_dir, "plates", added["id"] + ".png"), "wb") as f:
-                    f.write(z.read("Metadata/plate_1.png"))
-                png = "api/queue/%s/plate.png" % added["id"]
-        self.save_settings(added["id"], job["result"])
-        tray = (job.get("settings") or {}).get("tray")
-        with self.queue.lock:
-            added.update(nozzle=job.get("nozzle") or file_nozzle(job["result"]), grams=use["grams"], filament_grams=[f["grams"] for f in use["filaments"]],
-                         print_seconds=use["seconds"], plate_png=png,
-                         slice_tray=[int(tray["ams"]), int(tray["id"])] if tray and tray.get("ams") is not None else None,
-                         slice_spool={k: tray.get(k) for k in ("spool_id", "brand", "type", "name", "colour")}
-                         if tray and tray.get("ams") is None else None,
-                         slice_job=job["id"], slice=self.slice_view(job, use))
-            self.queue._save()
+        files = [os.path.join(self.share, name), os.path.join(self.data_dir, "plates", added["id"] + ".png")]
+        try:
+            os.makedirs(self.share, exist_ok=True)
+            with open(job["result"], "rb") as src:
+                # Written after the job passed the access check, so a refused request leaves nothing in the share.
+                with open(files[0], "wb") as dst:
+                    dst.write(src.read())
+            png = None
+            with zipfile.ZipFile(job["result"]) as z:
+                if "Metadata/plate_1.png" in z.namelist():
+                    with open(files[1], "wb") as f:
+                        f.write(z.read("Metadata/plate_1.png"))
+                    png = "api/queue/%s/plate.png" % added["id"]
+            self.save_settings(added["id"], job["result"])
+            tray = (job.get("settings") or {}).get("tray")
+            with self.queue.lock:
+                added.update(nozzle=job.get("nozzle") or file_nozzle(job["result"]), grams=use["grams"], filament_grams=[f["grams"] for f in use["filaments"]],
+                             print_seconds=use["seconds"], plate_png=png,
+                             slice_tray=[int(tray["ams"]), int(tray["id"])] if tray and tray.get("ams") is not None else None,
+                             slice_spool={k: tray.get(k) for k in ("spool_id", "brand", "type", "name", "colour")}
+                             if tray and tray.get("ams") is None else None,
+                             slice_job=job["id"], slice=self.slice_view(job, use))
+                self.queue._save()
+        except BaseException:
+            self.drop_new_job(added, files)
+            raise
         return added
+
+    def drop_new_job(self, job, files):
+        """A failed step after `add` leaves no job and no file behind, as a refused start does in post_drying."""
+        with self.queue.lock:
+            if job in self.queue.jobs:
+                self.queue.jobs.remove(job)
+            self.queue._save()
+        for f in files:
+            try:
+                os.remove(f)
+            except OSError:
+                pass
 
     @staticmethod
     def slice_view(job, use):
@@ -1241,6 +1270,11 @@ class App:
     def post_queue(self, h, m, q, c):
         """POST /api/queue: the queue's own add, plus a file named by absolute path, which is copied into the share."""
         b = h.json()
+        fils, opts = b.get("filaments"), b.get("options")
+        if fils is not None and not (isinstance(fils, list) and all(isinstance(x, dict) for x in fils)):
+            raise ValueError("filaments must be a list of {type, colour}")
+        if opts is not None and not isinstance(opts, dict):
+            raise ValueError("options must be an object")
         f = b.get("file")
         api = self.access.bind(self.queue, c)
         if b.get("kind") == "dry" or not (isinstance(f, str) and f.startswith("/")):
@@ -1259,21 +1293,26 @@ class App:
         fils = b.get("filaments") or [{"type": x["type"], "colour": x["colour"]} for x in use["filaments"]]
         added = api.add(name, shown, b.get("target", "any"), b.get("model", ""), fils, b.get("options"),
                         name=b.get("name") or base)
-        self.stamp_nozzle(added, real)
-        os.makedirs(self.share, exist_ok=True)
-        with open(real, "rb") as src, open(os.path.join(self.share, name), "wb") as dst:  # after the access check
-            dst.write(src.read())
-        png = None
-        with zipfile.ZipFile(real) as z:
-            if "Metadata/plate_1.png" in z.namelist():
-                with open(os.path.join(self.data_dir, "plates", added["id"] + ".png"), "wb") as out:
-                    out.write(z.read("Metadata/plate_1.png"))
-                png = "api/queue/%s/plate.png" % added["id"]
-        self.save_settings(added["id"], real)
-        with self.queue.lock:
-            added.update(grams=use["grams"], filament_grams=[x["grams"] for x in use["filaments"]],
-                         print_seconds=use["seconds"], plate_png=png)
-            self.queue._save()
+        files = [os.path.join(self.share, name), os.path.join(self.data_dir, "plates", added["id"] + ".png")]
+        try:
+            self.stamp_nozzle(added, real)
+            os.makedirs(self.share, exist_ok=True)
+            with open(real, "rb") as src, open(files[0], "wb") as dst:  # after the access check
+                dst.write(src.read())
+            png = None
+            with zipfile.ZipFile(real) as z:
+                if "Metadata/plate_1.png" in z.namelist():
+                    with open(files[1], "wb") as out:
+                        out.write(z.read("Metadata/plate_1.png"))
+                    png = "api/queue/%s/plate.png" % added["id"]
+            self.save_settings(added["id"], real)
+            with self.queue.lock:
+                added.update(grams=use["grams"], filament_grams=[x["grams"] for x in use["filaments"]],
+                             print_seconds=use["seconds"], plate_png=png)
+                self.queue._save()
+        except BaseException:
+            self.drop_new_job(added, files)
+            raise
         return added
 
     def queue_routes_add(self, api, b):

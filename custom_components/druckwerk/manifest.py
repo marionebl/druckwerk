@@ -29,6 +29,8 @@ _LOGGER = logging.getLogger(__name__)
 RESPONSES = {"none": SupportsResponse.NONE, "optional": SupportsResponse.OPTIONAL, "only": SupportsResponse.ONLY}
 ISSUE_TOO_NEW = "integration_too_old"
 ISSUE_NO_MANIFEST = "app_too_old"
+ISSUE_BAD_MANIFEST = "bad_manifest"
+ISSUE_BAD_SECRET = "hub_secret_rejected"
 
 
 class Manifest:
@@ -73,7 +75,13 @@ class Manifest:
             return
         self._issue(ISSUE_TOO_NEW, False)
         if doc.get("revision") != self.revision or not self._cached:
-            self._apply(doc)
+            try:
+                self._apply(doc)
+            except (KeyError, TypeError, ValueError) as err:  # the revision stays unset, so the next poll tries again
+                _LOGGER.warning("The Druckwerk app sent a manifest this integration cannot apply (%r); keeping the actions it has", err)
+                self._issue(ISSUE_BAD_MANIFEST, True)
+                return
+            self._issue(ISSUE_BAD_MANIFEST, False)
             await self._store.async_save(doc)
             self._cached = True
 
@@ -94,17 +102,19 @@ class Manifest:
             ir.async_delete_issue(self.hass, DOMAIN, issue_id)
 
     def _apply(self, doc: dict[str, Any]) -> None:
-        self.revision = doc.get("revision")
-        self.entities = doc.get("entities", [])
         actions = {a["name"]: a for a in doc.get("actions", [])}
-        for name in self._actions - actions.keys():
-            self.hass.services.async_remove(DOMAIN, name)
         for name, action in actions.items():
             self._register(action)
-        self._actions = set(actions)
+            self._actions.add(name)  # tracked at once, so an unload removes it even when a later one fails
+        for name in self._actions - actions.keys():
+            self.hass.services.async_remove(DOMAIN, name)
+        self._actions = {n for n in self._actions if n in actions}
+        api = DruckwerkAPI(self.hass, self.hub, doc.get("llm", {}))
         if self._unregister_llm:
             self._unregister_llm()
-        self._unregister_llm = llm.async_register_api(self.hass, DruckwerkAPI(self.hass, self.hub, doc.get("llm", {})))
+        self._unregister_llm = llm.async_register_api(self.hass, api)
+        self.entities = doc.get("entities", [])
+        self.revision = doc.get("revision")
 
     def _register(self, action: dict[str, Any]) -> None:
         name, serial_fields = action["name"], action.get("serial_fields", [])

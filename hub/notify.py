@@ -2,13 +2,12 @@
 
 App.emit() queues an event; run() sends it from its own thread so a slow Home Assistant never holds up a request.
 """
-import json
 import os
 import queue
 import sys
 import threading
 
-from queue_registry import write_json
+from queue_registry import read_json, write_json
 
 EVENT_PREFIX = "druckwerk_"  # bus event type: druckwerk_<event type>
 ACTION_PREFIX = "DRUCKWERK_START_"  # notification button action: DRUCKWERK_START_<serial>_<job id>
@@ -27,9 +26,7 @@ class Notifier:
         self.todo = queue.SimpleQueue()
         self.pushed = {}  # (serial, job id) -> time of the notification; a button works only for a notification made here
         self.options = {"recipients": {}}
-        if os.path.exists(self.path):
-            with open(self.path) as f:
-                self.options.update(json.load(f))
+        self.options.update(read_json(self.path, {}))
 
     # -- options the integration pushes
     def set_options(self, body):

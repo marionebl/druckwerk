@@ -1,12 +1,11 @@
 """Filament grams from a slice, cost arithmetic, spool matching and the price store."""
-import json
 import os
 import re
 import threading
 import xml.etree.ElementTree as ET
 import zipfile
 
-from queue_registry import write_json
+from queue_registry import read_json, write_json
 
 # Average printing watts, PLA column of the vendor wiki's "Supply voltage" page;
 # H2S has no published figure, 150 is our assumption between A1 (95) and H2D (197).
@@ -47,10 +46,7 @@ class Prices:
     def __init__(self, data_dir):
         self.path = os.path.join(data_dir, "spool_prices.json")
         self.lock = threading.RLock()
-        self.items = {}
-        if os.path.exists(self.path):
-            with open(self.path) as f:
-                self.items = json.load(f)
+        self.items = read_json(self.path, {})
 
     def get(self, spool_id):
         return self.items.get(spool_id)
@@ -71,10 +67,7 @@ class LoadRequests:
     def __init__(self, data_dir):
         self.path = os.path.join(data_dir, "load_requests.json")
         self.lock = threading.RLock()
-        self.items = []
-        if os.path.exists(self.path):
-            with open(self.path) as f:
-                self.items = json.load(f)
+        self.items = read_json(self.path, [])
 
     def add(self, req):
         """(request, created); the job's open request is returned as it is."""
