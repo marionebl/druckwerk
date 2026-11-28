@@ -1,5 +1,5 @@
 // Shell: identity, hash router, tabs, polling.
-import { api, RESTARTING, setUser, newRoute, stale, cachedMe } from './api.js';
+import { api, RESTARTING, setUser, newRoute, stale, uploading } from './api.js';
 import { h, clear, icon, fail, empty, loading } from './util.js';
 import { settle } from './views/promote.js';
 
@@ -13,14 +13,32 @@ const VIEWS = {
   setup: () => import('./views/setup.js'),
 };
 
-const ctx = { me: null, timers: [] };
+const ctx = { me: null, timers: [], leave: [] };
 ctx.isAdmin = () => !!ctx.me?.is_admin;
 ctx.role = (serial) => (ctx.me.is_admin ? 'admin' : ctx.me.printers.find((p) => p.serial === serial)?.role || null);
 ctx.canManage = (serial) => ctx.role(serial) === 'admin';
 ctx.managesAny = () => ctx.me.is_admin || ctx.me.printers.some((p) => p.role === 'admin');
-// Run fn now and every ms until the route changes.
-ctx.every = (ms, fn) => { fn(); ctx.timers.push(setInterval(fn, ms)); };
+// Run fn now and every ms until the route changes. A hidden tab does not poll (it runs once when the tab shows again),
+// and a tick is skipped while the last call is still pending.
+ctx.every = (ms, fn) => {
+  let busy = false;
+  const run = async () => {
+    if (document.hidden || busy) return;
+    busy = true;
+    try { await fn(); } finally { busy = false; }
+  };
+  const id = setInterval(run, ms);
+  ctx.timers.push(id);
+  const onShow = () => {
+    if (!ctx.timers.includes(id)) document.removeEventListener('visibilitychange', onShow);  // the route changed
+    else run();
+  };
+  document.addEventListener('visibilitychange', onShow);
+  run();
+};
 ctx.go = (hash) => { location.hash = hash; };
+// Run fn when the route changes: release what the view holds outside its own DOM (workers, GL contexts).
+ctx.onLeave = (fn) => { ctx.leave.push(fn); };
 // Reslice hands the next New print screen what to start from ({slice_job, model, name, options, target, quality, tray, bed});
 // New print reads it once on mount and clears it.
 ctx.reslice = null;
@@ -49,13 +67,14 @@ if (inPanel) {
 const app = document.getElementById('app');
 let main, tabs, menuPop;
 
-function shell() {
+// skeleton: the frame before api/me has answered (no name, the admin tabs come with the answer).
+function shell(skeleton) {
   const nav = [['printers', 'Printers', 'printer'], ['queue', 'Queue', 'queue'], ['history', 'History', 'clock'], ['new', 'New print', 'plus'], ['filament', 'Filament', 'spool']];
-  if (ctx.isAdmin()) nav.push(['access', 'Access', 'key']);
+  if (!skeleton && ctx.isAdmin()) nav.push(['access', 'Access', 'key']);
   tabs = h('nav', { class: 'tabs', 'aria-label': 'Sections' },
     nav.map(([id, label, ic]) => h('a', { href: '#/' + id, 'data-id': id }, icon(ic), h('span', null, label))));
   menuPop = h('div', { class: 'pop', hidden: true },
-    ctx.isAdmin() && h('a', { href: '#/setup', onclick: () => (menuPop.hidden = true) }, 'Setup wizard'),
+    !skeleton && ctx.isAdmin() && h('a', { href: '#/setup', onclick: () => (menuPop.hidden = true) }, 'Setup wizard'),
     h('button', { onclick: () => location.reload() }, 'Reload'));
   const menu = h('div', { class: 'menu' },
     h('button', { class: 'icon-btn', 'aria-label': 'Settings', 'aria-haspopup': 'true', onclick: () => (menuPop.hidden = !menuPop.hidden) }, icon('gear')), menuPop);
@@ -64,23 +83,24 @@ function shell() {
   clear(app,
     h('header', { class: 'topbar' }, h('div', { class: 'in' },
       h('div', { class: 'brand' }, h('i'), 'Druckwerk'), tabs,
-      h('div', { class: 'who' }, h('span', { class: 'nm' }, ctx.me.name, ctx.isAdmin() ? ' · admin' : ''), ctx.isAdmin() && menu))),
+      h('div', { class: 'who' }, h('span', { class: 'nm' }, skeleton ? '' : ctx.me.name, !skeleton && ctx.isAdmin() ? ' · admin' : ''), !skeleton && ctx.isAdmin() && menu))),
     main);
+  if (skeleton) clear(main, loading());
 }
 
-// Home Assistant restarts: say so once, probe with backoff, then draw the view again.
+// Home Assistant restarts: say so once, probe with backoff, then reload (an update may have changed the view files; the loaded api.js is old).
 let banner = null;
-addEventListener('druckwerk:restarting', () => {
+addEventListener('druckwerk:restarting', (e) => {
   if (banner) return;
-  banner = h('div', { class: 'restart', role: 'status', 'aria-live': 'polite' }, h('span', { class: 'spin' }), ' ', RESTARTING);
+  banner = h('div', { class: 'restart', role: 'status', 'aria-live': 'polite' }, h('span', { class: 'spin' }), ' ', e.detail || RESTARTING);
   document.body.prepend(banner);
   let wait = 2000;
   const probe = async () => {
     try { await api.me(); } catch (e) {
       if (e.retry || e.status === 0) { wait = Math.min(wait * 1.6, 20000); setTimeout(probe, wait); return; }
     }
-    banner.remove(); banner = null;
-    if (ctx.me) route(); else start();
+    if (uploading()) { setTimeout(probe, 1000); return; }
+    location.reload();
   };
   setTimeout(probe, wait);
 });
@@ -90,11 +110,12 @@ let seq = 0;
 async function route(keep) {
   newRoute();
   ctx.timers.splice(0).forEach(clearInterval);
+  ctx.leave.splice(0).forEach((fn) => { try { fn(); } catch { /* a view's cleanup must not stop the next route */ } });
   const [path, search] = location.hash.replace(/^#\/?/, '').split('?');
   ctx.query = new URLSearchParams(search || '');  // #/history?printer=<serial>
   const parts = path.split('/').filter(Boolean);
   let id = parts[0] || 'printers';
-  if (!VIEWS[id] || (id === 'access' || id === 'setup') && !ctx.isAdmin()) id = 'printers';
+  if (!Object.hasOwn(VIEWS, id) || (id === 'access' || id === 'setup') && !ctx.isAdmin()) id = 'printers';
   const mine = ++seq;
   tabs.querySelectorAll('a').forEach((a) => (a.getAttribute('data-id') === id ? a.setAttribute('aria-current', 'page') : a.removeAttribute('aria-current')));
   const y = scrollY;
@@ -112,7 +133,7 @@ async function route(keep) {
   } catch (e) {
     if (mine !== seq) return;
     main.style.minHeight = '';
-    clear(main, e.retry ? h('p', { class: 'muted' }, h('span', { class: 'spin' }), ' ', RESTARTING) : empty('Could not load this screen: ' + e.message));
+    clear(main, e.retry ? h('p', { class: 'muted' }, h('span', { class: 'spin' }), ' ', e.message) : empty('Could not load this screen: ' + e.message));
     fail(e);
   }
 }
@@ -125,19 +146,26 @@ function draw() {
     started = true;
     addEventListener('hashchange', () => route());
     // A cached list was shown and the network answered differently: draw the view again, unless the person is in a dialog.
-    addEventListener('druckwerk:fresh', () => { if (!document.querySelector('dialog[open]')) route(true); });
+    // New print keeps the plate in memory: a redraw would remove the models. Then the page only stops being stale.
+    addEventListener('druckwerk:fresh', () => {
+      if (document.querySelector('dialog[open]') || location.hash.startsWith('#/new')) { if (!stale()) main.classList.remove('stale'); return; }
+      route(true);
+    });
+    // Cached lists keep buttons from acting; the pointer is blocked in CSS, a key press still clicks a focused button.
+    app.addEventListener('click', (e) => {
+      if (main.classList.contains('stale') && main.contains(e.target) && e.target.closest('button, .btn:not(a)')) { e.preventDefault(); e.stopImmediatePropagation(); }
+    }, true);
     addEventListener('druckwerk:settled', () => { if (!stale()) main.classList.remove('stale'); });
   }
   route();
 }
 async function start() {
-  // With a cached identity the shell and the cached lists draw at once; the network answer redraws only when it differs.
-  const cached = cachedMe();
-  if (cached && !ctx.me) { ctx.me = cached; setUser(cached.user_id); draw(); }
+  // The cached lists are per user, so they draw only after api/me has said who this is; the frame stands meanwhile.
+  if (!ctx.me) shell(true);
   let me;
   try { me = await api.me(); } catch (e) {
     if (ctx.me) return;
-    clear(app, h('main', null, e.retry ? h('p', { class: 'muted' }, h('span', { class: 'spin' }), ' ', RESTARTING) : empty('Cannot reach the hub: ' + e.message)));
+    clear(app, h('main', null, e.retry ? h('p', { class: 'muted' }, h('span', { class: 'spin' }), ' ', e.message) : empty('Cannot reach the hub: ' + e.message)));
     return;
   }
   if (ctx.me && JSON.stringify(me) === JSON.stringify(ctx.me)) return;

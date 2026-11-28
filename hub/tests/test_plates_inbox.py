@@ -4,6 +4,7 @@ import json
 import os
 import threading
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
+from urllib.parse import unquote
 
 import pytest
 
@@ -26,6 +27,11 @@ class FakeGitHub(BaseHTTPRequestHandler):
         self.end_headers()
         self.wfile.write(data)
 
+    @classmethod
+    def tree_sha(cls, id):
+        """Changes when a file of the folder is added, removed or changed, as GitHub's tree id does."""
+        return hashlib.sha1(b"".join(hashlib.sha1(d).digest() + p.encode() for p, d in sorted(cls.tree.items()) if p.startswith("plates/%s/" % id))).hexdigest()
+
     def blob(self, sha):
         return next((d for d in self.tree.values() if hashlib.sha1(d).hexdigest() == sha), None)
 
@@ -35,14 +41,14 @@ class FakeGitHub(BaseHTTPRequestHandler):
         if self.headers.get("Authorization") != "Bearer " + TOKEN:
             return self.reply(401, {"message": "Bad credentials"})
         base = "/repos/%s/" % REPO
-        path = self.path[len(base):]
+        path = unquote(self.path[len(base):])
         if path.startswith("git/blobs/"):
             data = self.blob(path.rsplit("/", 1)[1])
             return self.reply(200, data, raw=True) if data is not None else self.reply(404, {})
         path = path[len("contents/"):]
         if path == "plates":
             ids = sorted({p.split("/")[1] for p in t.tree})
-            return self.reply(200, [{"type": "dir", "name": i, "path": "plates/" + i} for i in ids]) if ids else self.reply(404, {})
+            return self.reply(200, [{"type": "dir", "name": i, "path": "plates/" + i, "sha": t.tree_sha(i)} for i in ids]) if ids else self.reply(404, {})
         files = [(p, d) for p, d in sorted(t.tree.items()) if p.startswith(path + "/")]
         if not files:
             return self.reply(404, {})
@@ -53,7 +59,7 @@ class FakeGitHub(BaseHTTPRequestHandler):
         t = FakeGitHub
         t.requests.append(("DELETE", self.path, self.headers.get("Authorization")))
         body = json.loads(self.rfile.read(int(self.headers.get("Content-Length") or 0)) or b"{}")
-        path = self.path[len("/repos/%s/contents/" % REPO):]
+        path = unquote(self.path[len("/repos/%s/contents/" % REPO):])
         if t.delete_fail:
             return self.reply(500, {"message": "boom"})
         if path not in t.tree or not body.get("sha") or not body.get("message"):
@@ -150,7 +156,7 @@ def test_file_over_the_limit_is_skipped_without_download(hub, gh, tmp_path):
     assert not any("git/blobs" in p for _, p, _ in FakeGitHub.requests if "big" in p)
     assert "too large" in box.status()["last_error"]
     n = len(FakeGitHub.requests)
-    assert box.poll() == 0 and len(FakeGitHub.requests) == n + 2  # listing only: the bad file is not fetched again
+    assert box.poll() == 0 and len(FakeGitHub.requests) == n + 1  # the folder is not listed again: its id is the same
 
 
 @pytest.mark.parametrize("data,meta,text", [
@@ -202,3 +208,23 @@ def test_setup_shows_inbox_status(hub, gh):
     hub.app.plates_inbox = inbox(hub, gh)
     st, body = hub.req("GET", "/api/setup", user="u-admin")
     assert body["plates_inbox"]["enabled"] is True and "token" not in json.dumps(body["plates_inbox"])
+
+
+def test_a_rejected_folder_costs_no_call_until_its_commit_id_changes(hub, gh, tmp_path):
+    push(tmp_path, data=b"not a zip", meta={"name": "x"})
+    box = inbox(hub, gh)
+    assert box.poll() == 0
+    n = len(FakeGitHub.requests)
+    assert box.poll() == 0 and box.poll() == 0
+    assert [p for _, p, _ in FakeGitHub.requests[n:]].count("/repos/%s/contents/plates" % REPO) == 2
+    assert len(FakeGitHub.requests) == n + 2  # the list of plates/ only: no folder listing, no job.json
+    push(tmp_path, data=plate_bytes(tmp_path))  # the sender fixed the file: another id
+    assert box.poll() == 1 and FakeGitHub.tree == {}
+
+
+def test_a_name_with_a_space_does_not_break_the_delete(hub, gh, tmp_path):
+    push(tmp_path)
+    FakeGitHub.tree["plates/p1/read me.txt"] = b"hi"
+    box = inbox(hub, gh)
+    assert box.poll() == 1
+    assert box.status()["last_error"] is None and FakeGitHub.tree == {}

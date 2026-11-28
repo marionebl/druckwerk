@@ -9,6 +9,15 @@ SUFFIX = ".gcode.3mf"
 MAX_UPLOAD = 64 * 1024 * 1024
 NAME = re.compile(r"[A-Za-z0-9][A-Za-z0-9._ -]{0,118}\.gcode\.3mf")
 PLATE = re.compile(r"Metadata/plate_\d+\.gcode")
+CONFIG_MAX, PNG_MAX, GCODE_MAX = 1 << 20, 10 << 20, 150 << 20  # bytes of one zip member, by kind
+
+
+def read_member(z, name, limit):
+    """The bytes of a zip member; ValueError before the read when it is over limit (a small zip can unpack to gigabytes)."""
+    size = z.getinfo(name).file_size
+    if size > limit:
+        raise ValueError("%s is too big (%d bytes, limit %d)" % (name, size, limit))
+    return z.read(name)
 
 
 def scan(base):

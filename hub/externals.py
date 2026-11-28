@@ -14,7 +14,8 @@ PLUGIN_HOST_LINKED = PLUGIN_LIBS[:2]  # the bridge's existence check runs outsid
 PLUGIN_FIND_PATTERNS = ("libbambu*", "libBambuSource*", "libagora*", "liblive555*")  # image check: none may exist
 BRIDGE_LIB_ENV = "BAMBU_LIB_PATH"  # the bridge reads the plugin path from this variable
 PLUGIN_AGENT_DIR = "/tmp/bambu_agent"  # hardcoded working dir of the plugin
-CERT_URL = "https://raw.githubusercontent.com/bambulab/BambuStudio/master/resources/cert/slicer_base64.cer"  # AGPL repo, the bridge's signing cert
+CERT_URL = "https://raw.githubusercontent.com/bambulab/BambuStudio/23a33758933e712c6041e1f8f135f7d6b50004aa/resources/cert/slicer_base64.cer"  # AGPL repo at a commit, the bridge's signing cert
+CERT_SHA256 = "f504dc1c37bc9741b7a95198914e67f3f6f1d917b1e45eaa14b9e84eb7b51ec8"  # of the file above
 
 # -- cloud API, as the vendor's own slicer calls it (the cloud checks the client name)
 CLOUD_API_BASE = "https://api.bambulab.com"

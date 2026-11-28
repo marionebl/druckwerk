@@ -1,6 +1,7 @@
 """The 3D preview's G-code parser (hub/ui/views/gcodeparse.js), run with node on real slicer output and on small hand-made files.
 Fixtures are the header and first layer cut from real vendor slicer and OrcaSlicer files."""
 import json
+import os
 import math
 import re
 import shutil
@@ -11,7 +12,8 @@ import pytest
 
 HERE = Path(__file__).parent
 FIX = HERE / "fixtures" / "gcode"
-pytestmark = pytest.mark.skipif(shutil.which("node") is None, reason="node is needed to run the browser parser")
+# In CI (CI is set) a missing node must fail the test, not skip it.
+pytestmark = pytest.mark.skipif(shutil.which("node") is None and not os.environ.get("CI"), reason="node is needed to run the browser parser")
 
 
 def parse(text):

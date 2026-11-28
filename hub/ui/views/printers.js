@@ -270,7 +270,9 @@ async function detail(ctx, root, serial) {
     last = sig;
     if (p.camera_url !== camUrl || p.online !== camOnline || !p.online) { camUrl = p.camera_url; camOnline = p.online; clear(camHost, camera(p, true)); }
     const mine = queue.jobs.filter((j) => j.printer === serial || j.target === serial || (j.target === 'any' && j.model === p.model));
+    const typing = document.activeElement?.dataset?.focus;  // the redraw replaces the input the person is typing in
     draw(ctx, body, { camHost, model: model.box, recent }, p, mine, () => { last = ''; });
+    if (typing) body.querySelector(`[data-focus="${typing}"]`)?.focus();
     if (p.light != null) showLight(p.serial, lightOn(p));  // the camera's switch is drawn once, with the camera
   });
 }
@@ -352,8 +354,8 @@ function dryCard(ctx, p, u, refresh) {
   const active = u.active;
   const f = h('select', { onchange: (e) => { draft.filament = e.target.value; const pr = DRY_PRESETS[draft.filament]; if (pr) { draft.temp = Math.min(pr[0], u.temp_max); draft.hours = pr[1]; temp.value = draft.temp; hours.value = draft.hours; } } },
     [...Object.keys(DRY_PRESETS), ''].map((t) => h('option', { value: t, selected: t === draft.filament }, t || 'Other')));
-  const temp = h('input', { type: 'number', min: u.temp_min, max: u.temp_max, step: 1, value: draft.temp, oninput: (e) => (draft.temp = +e.target.value) });
-  const hours = h('input', { type: 'number', min: 1, max: 72, step: 1, value: draft.hours, oninput: (e) => (draft.hours = +e.target.value) });
+  const temp = h('input', { type: 'number', 'data-focus': `${p.serial}:${u.ams_id}:temp`, min: u.temp_min, max: u.temp_max, step: 1, value: draft.temp, oninput: (e) => (draft.temp = +e.target.value) });
+  const hours = h('input', { type: 'number', 'data-focus': `${p.serial}:${u.ams_id}:hours`, min: 1, max: 72, step: 1, value: draft.hours, oninput: (e) => (draft.hours = +e.target.value) });
   const body = () => ({ ams_id: u.ams_id, temp: +temp.value, hours: +hours.value, filament: f.value });
   const status = active
     ? `${u.status === 'drying' ? 'Drying' : 'Active'}: ${u.filament || 'filament'} at ${u.temp ?? '–'}°C, ${dur(u.left_min)} left`

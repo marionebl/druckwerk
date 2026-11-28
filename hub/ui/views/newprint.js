@@ -76,6 +76,9 @@ export async function mount(ctx, root) {
       .then(() => { if (box.isConnected) draw(); else e.worker?.terminate(); });
   }
   function dropEngine() { S.engine?.worker?.terminate(); S.engine = null; }
+  // Leaving the page: the engine worker holds the engine's memory, the views hold GL contexts.
+  let shown = null;  // the G-code preview of the chosen variant: {id, node}
+  ctx.onLeave(() => { dropEngine(); view.dispose(); shown?.node.dispose(); });
 
   const invalidate = () => { S.variants = null; S.pick = null; };
   const picked = () => S.objects.filter((o) => S.sel.has(o.id));
@@ -325,8 +328,13 @@ export async function mount(ctx, root) {
 
   function queueCard() {
     const v = S.variants.find((x) => x.q === S.pick);
-    const prev = gcodePreview();
-    api.gcode(v.id).then((t) => prev.load(t)).catch((e) => prev.fail(e.message));
+    // One preview per chosen variant, kept across redraws (each new one would fetch the G-code again).
+    if (shown?.id !== v.id) {
+      const node = gcodePreview();
+      api.gcode(v.id).then((t) => node.load(t)).catch((e) => node.fail(e.message));
+      shown = { id: v.id, node };
+    }
+    const prev = shown.node;
     const opt = (key, label, hint) => h('label', { class: 'check' },
       h('input', { type: 'checkbox', checked: S.options[key], onchange: (e) => (S.options[key] = e.target.checked) }),
       h('span', null, h('b', null, label), h('br'), h('small', null, hint)));

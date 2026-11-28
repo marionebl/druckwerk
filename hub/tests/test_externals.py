@@ -29,6 +29,7 @@ def test_env_matches_python():
     assert e["BRIDGE_LIB_ENV"] == externals.BRIDGE_LIB_ENV
     assert e["PLUGIN_AGENT_DIR"] == externals.PLUGIN_AGENT_DIR
     assert e["CERT_URL"] == externals.CERT_URL
+    assert e["CERT_SHA256"] == externals.CERT_SHA256
 
 
 def test_plugin_net_lib_is_one_of_the_libs():

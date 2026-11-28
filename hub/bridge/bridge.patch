@@ -1,0 +1,2441 @@
+diff -ruN -x tests -x target a/Cargo.lock b/Cargo.lock
+--- a/Cargo.lock	2026-11-27 21:06:35.043229393 +0000
++++ b/Cargo.lock	2026-11-27 21:06:35.048976615 +0000
+@@ -235,8 +235,29 @@
+ ]
+ 
+ [[package]]
+-name = "bambu-bridge"
+-version = "0.1.0"
++name = "base64"
++version = "0.22.1"
++source = "registry+https://github.com/rust-lang/crates.io-index"
++checksum = "72b3254f16251a8381aa12e40e3c4d2f0199f8c6508fbecb9d91f575e0fbb8c6"
++
++[[package]]
++name = "bitflags"
++version = "2.11.0"
++source = "registry+https://github.com/rust-lang/crates.io-index"
++checksum = "843867be96c8daad0d758b57df9392b6d8d271134fce549de6ce169ff98a92af"
++
++[[package]]
++name = "block-buffer"
++version = "0.10.4"
++source = "registry+https://github.com/rust-lang/crates.io-index"
++checksum = "3078c7629b62d3f0439517fa394996acacc5cbc91c5a20d8c658e77abd503a71"
++dependencies = [
++ "generic-array",
++]
++
++[[package]]
++name = "boocloud-bridge"
++version = "0.2.2"
+ dependencies = [
+  "axum",
+  "axum-extra",
+@@ -244,6 +265,8 @@
+  "cc",
+  "clap",
+  "dirs",
++ "futures-util",
++ "hostname",
+  "libc",
+  "reqwest",
+  "roxmltree",
+@@ -255,31 +278,11 @@
+  "tower-http",
+  "tracing",
+  "tracing-subscriber",
++ "uuid",
+  "zip",
+ ]
+ 
+ [[package]]
+-name = "base64"
+-version = "0.22.1"
+-source = "registry+https://github.com/rust-lang/crates.io-index"
+-checksum = "72b3254f16251a8381aa12e40e3c4d2f0199f8c6508fbecb9d91f575e0fbb8c6"
+-
+-[[package]]
+-name = "bitflags"
+-version = "2.11.0"
+-source = "registry+https://github.com/rust-lang/crates.io-index"
+-checksum = "843867be96c8daad0d758b57df9392b6d8d271134fce549de6ce169ff98a92af"
+-
+-[[package]]
+-name = "block-buffer"
+-version = "0.10.4"
+-source = "registry+https://github.com/rust-lang/crates.io-index"
+-checksum = "3078c7629b62d3f0439517fa394996acacc5cbc91c5a20d8c658e77abd503a71"
+-dependencies = [
+- "generic-array",
+-]
+-
+-[[package]]
+ name = "bumpalo"
+ version = "3.20.2"
+ source = "registry+https://github.com/rust-lang/crates.io-index"
+@@ -732,6 +735,17 @@
+ ]
+ 
+ [[package]]
++name = "hostname"
++version = "0.4.2"
++source = "registry+https://github.com/rust-lang/crates.io-index"
++checksum = "617aaa3557aef3810a6369d0a99fac8a080891b68bd9f9812a1eeda0c0730cbd"
++dependencies = [
++ "cfg-if",
++ "libc",
++ "windows-link",
++]
++
++[[package]]
+ name = "http"
+ version = "0.2.12"
+ source = "registry+https://github.com/rust-lang/crates.io-index"
+@@ -1741,6 +1755,12 @@
+ ]
+ 
+ [[package]]
++name = "sha1_smol"
++version = "1.0.1"
++source = "registry+https://github.com/rust-lang/crates.io-index"
++checksum = "bbfa15b3dddfee50a0fff136974b3e1bde555604ba463834a7eb7deb6417705d"
++
++[[package]]
+ name = "sharded-slab"
+ version = "0.1.7"
+ source = "registry+https://github.com/rust-lang/crates.io-index"
+@@ -2215,6 +2235,17 @@
+ checksum = "06abde3611657adf66d383f00b093d7faecc7fa57071cce2578660c9f1010821"
+ 
+ [[package]]
++name = "uuid"
++version = "1.26.1"
++source = "registry+https://github.com/rust-lang/crates.io-index"
++checksum = "2ef6dac1e96601b4fb3acccccff2139741fcb757cb9a36089bf5be91cfb285ce"
++dependencies = [
++ "js-sys",
++ "sha1_smol",
++ "wasm-bindgen",
++]
++
++[[package]]
+ name = "valuable"
+ version = "0.1.1"
+ source = "registry+https://github.com/rust-lang/crates.io-index"
+diff -ruN -x tests -x target a/Cargo.toml b/Cargo.toml
+--- a/Cargo.toml	2026-11-27 21:06:35.043284006 +0000
++++ b/Cargo.toml	2026-11-27 21:06:35.049178585 +0000
+@@ -24,6 +24,7 @@
+ dirs = "6"
+ uuid = { version = "1", features = ["v5"] }
+ hostname = "0.4"
++futures-util = { version = "0.3", default-features = false }
+ 
+ [build-dependencies]
+ cc = "1"
+diff -ruN -x tests -x target a/shim/shim.cpp b/shim/shim.cpp
+--- a/shim/shim.cpp	2026-11-27 21:06:35.043425756 +0000
++++ b/shim/shim.cpp	2026-11-27 21:06:35.049280706 +0000
+@@ -8,7 +8,10 @@
+  * The library is loaded at runtime via dlopen — no compile-time linking needed.
+  */
+ 
++#include <chrono>
++#include <cstdlib>
+ #include <cstring>
++#include <thread>
+ #include <dlfcn.h>
+ #include <functional>
+ #include <map>
+@@ -102,6 +105,8 @@
+ typedef int (*fn_send_message_to_printer)(void*, std::string, std::string, int, int);
+ typedef int (*fn_start_subscribe)(void*, std::string);
+ typedef int (*fn_start_print)(void*, PrintParams, OnUpdateStatusFn, WasCancelledFn, OnWaitFn);
++typedef int (*fn_get_camera_url)(void*, std::string, std::function<void(std::string)>);
++typedef void (*fn_install_device_cert)(void*, std::string, bool);
+ 
+ // ---------------------------------------------------------------------------
+ // Resolved function pointers
+@@ -133,6 +138,10 @@
+ static fn_send_message_to_printer   fp_send_msg_printer = nullptr;
+ static fn_start_subscribe           fp_start_sub = nullptr;
+ static fn_start_print               fp_start_print = nullptr;
++// Optional (camera support): resolved separately so that a plugin without this
++// symbol neither breaks the core 24 nor changes their resolved/expected counts.
++static fn_get_camera_url            fp_get_camera_url = nullptr;
++static fn_install_device_cert       fp_install_device_cert = nullptr;
+ 
+ // ---------------------------------------------------------------------------
+ // Helper
+@@ -192,6 +201,12 @@
+     fp_start_sub       = load_fn<fn_start_subscribe>("bambu_network_start_subscribe");
+     fp_start_print     = load_fn<fn_start_print>("bambu_network_start_print");
+ 
++    // Optional symbols: not counted in resolved/expected, never fatal.
++    fp_get_camera_url = reinterpret_cast<fn_get_camera_url>(
++        dlsym(g_lib, "bambu_network_get_camera_url"));
++    fp_install_device_cert = reinterpret_cast<fn_install_device_cert>(
++        dlsym(g_lib, "bambu_network_install_device_cert"));
++
+     // All core functions must resolve — fail early rather than segfault later.
+     if (!fp_create_agent || !fp_destroy_agent || !fp_change_user ||
+         !fp_connect_server || !fp_start || !fp_set_machine ||
+@@ -204,6 +219,18 @@
+     return 0;
+ }
+ 
++/// BambuStudio calls this per printer after connecting; the plugin needs the device cert
++/// before it can sign control commands. Returns -1 if the symbol is not available.
++int bambu_shim_install_device_cert(void* agent, const char* dev_id, int lan_only) {
++    if (!fp_install_device_cert) return -1;
++    fp_install_device_cert(agent, std::string(dev_id), lan_only != 0);
++    return 0;
++}
++
++int bambu_shim_has_camera_url() {
++    return fp_get_camera_url ? 1 : 0;
++}
++
+ int bambu_shim_resolved_count() {
+     return g_resolved_count;
+ }
+@@ -462,6 +489,10 @@
+     int         task_record_timelapse;
+     int         task_use_ams;
+     const char* task_bed_type;
++    int         auto_bed_leveling;
++    int         auto_flow_cali;
++    int         auto_offset_cali;
++    int         task_ext_change_assist;
+ };
+ 
+ // Print progress callback: (stage, code, msg, ctx)
+@@ -522,11 +553,11 @@
+     params.task_use_ams          = p->task_use_ams != 0;
+     params.task_bed_type         = p->task_bed_type ? p->task_bed_type : "auto";
+     params.extra_options         = "";
+-    params.auto_bed_leveling     = 0;
+-    params.auto_flow_cali        = 0;
+-    params.auto_offset_cali      = 0;
++    params.auto_bed_leveling     = p->auto_bed_leveling;
++    params.auto_flow_cali        = p->auto_flow_cali;
++    params.auto_offset_cali      = p->auto_offset_cali;
+     params.extruder_cali_manual_mode = -1;
+-    params.task_ext_change_assist = false;
++    params.task_ext_change_assist = p->task_ext_change_assist != 0;
+     params.try_emmc_print         = false;
+ 
+     // Track result
+@@ -551,4 +582,310 @@
+     return 0;
+ }
+ 
++// ---------------------------------------------------------------------------
++// Camera URL
++// ---------------------------------------------------------------------------
++
++typedef void (*shim_camera_url_cb)(void* ctx, const char* url);
++
++/// Starts an asynchronous camera URL request. The URL (or an error string such
++/// as "...[code]") is delivered via cb(ctx, url) from a library thread.
++/// Returns the .so's return value, or -1 if the symbol is not available.
++int shim_get_camera_url(void* agent, const char* dev_id, shim_camera_url_cb cb, void* ctx) {
++    if (!fp_get_camera_url) return -1;
++    std::function<void(std::string)> wrapper = [cb, ctx](std::string url) {
++        if (cb) cb(ctx, url.c_str());
++    };
++    return fp_get_camera_url(agent, std::string(dev_id), wrapper);
++}
++
++// ---------------------------------------------------------------------------
++// Snapshot via libBambuSource.so (BambuTunnel API, see BambuTunnel.h)
++// ---------------------------------------------------------------------------
++
++typedef void* Bambu_Tunnel;
++typedef void (*BambuLogger)(void* context, int level, const char* msg);
++
++struct BambuStreamInfo {
++    int type;
++    int sub_type;
++    int width;     // union format.video.{width,height,frame_rate} / audio
++    int height;
++    int frame_rate;
++    int format_type;
++    int format_size;
++    int max_frame_size;
++    unsigned char const* format_buffer;
++};
++
++struct BambuSample {
++    int itrack;
++    int size;
++    int flags;
++    unsigned char const* buffer;
++    unsigned long long decode_time;
++};
++
++typedef int  (*bs_create)(Bambu_Tunnel*, const char*);
++typedef void (*bs_set_logger)(Bambu_Tunnel, BambuLogger, void*);
++typedef int  (*bs_open)(Bambu_Tunnel);
++typedef int  (*bs_start_stream)(Bambu_Tunnel, bool);
++typedef int  (*bs_get_stream_info)(Bambu_Tunnel, int, BambuStreamInfo*);
++typedef int  (*bs_read_sample)(Bambu_Tunnel, BambuSample*);
++typedef void (*bs_close)(Bambu_Tunnel);
++typedef void (*bs_destroy)(Bambu_Tunnel);
++typedef void (*bs_free_log)(const char*);
++
++// Stages (also reported to Rust through stage_out as they are entered).
++enum { ST_NONE = 0, ST_DLOPEN = 1, ST_CREATE = 2, ST_OPEN = 3, ST_START = 4, ST_INFO = 5, ST_READ = 6, ST_DONE = 7 };
++
++struct ShimSnapResult {
++    int stage;          // stage that failed (or ST_DONE on success)
++    int code;           // return code of the failing call (0 on success)
++    int ok;
++    int sub_type;       // 0 = H.264, 1 = MJPEG
++    int format_type;    // 0 avc_packet, 1 avc_byte_stream, 2 jpeg
++    int width, height, frame_rate;
++    int sample_flags;
++    unsigned char* data;     // malloc'd, free with shim_snapshot_free
++    int data_len;
++    unsigned char* fmt;      // copy of format_buffer (avcC or SPS/PPS), may be null
++    int fmt_len;
++    char err[256];
++};
++
++// Per-call logger context. Deliberately leaked (a few bytes per call): the
++// library may log from its own threads after we return, so it must stay valid;
++// `cb` is cleared on return so late lines are dropped.
++struct SnapLog {
++    void (*volatile cb)(void*, int, const char*);
++    void* ctx;
++    bs_free_log free_log;
++};
++
++static void snap_logger(void* p, int level, const char* msg) {
++    if (!msg) return;
++    auto* l = (SnapLog*)p;
++    auto cb = l->cb;
++    if (cb) cb(l->ctx, level, msg);
++    if (l->free_log) l->free_log(msg);
++}
++
++static void snap_set_stage(int* stage_out, ShimSnapResult* r, int st) {
++    r->stage = st;
++    if (stage_out) __atomic_store_n(stage_out, st, __ATOMIC_RELEASE);
++}
++
++static void snap_fail(ShimSnapResult* r, int st, int code, const char* msg) {
++    r->stage = st;
++    r->code = code;
++    r->ok = 0;
++    std::strncpy(r->err, msg, sizeof(r->err) - 1);
++    r->err[sizeof(r->err) - 1] = 0;
++}
++
++void shim_snapshot_free(ShimSnapResult* r) {
++    if (!r) return;
++    free(r->data); r->data = nullptr; r->data_len = 0;
++    free(r->fmt);  r->fmt = nullptr;  r->fmt_len = 0;
++}
++
++struct SrcFns {
++    bs_create create; bs_set_logger logger; bs_open open; bs_start_stream start;
++    bs_get_stream_info info; bs_read_sample read; bs_close close; bs_destroy destroy;
++};
++
++// Shared by snapshot and live: dlopen .. GetStreamInfo. On failure r is filled
++// and the caller must still close/destroy via `t`/`is_open`.
++static bool src_open(
++    const char* lib_path, const char* url, SrcFns& f, SnapLog* sl,
++    std::chrono::steady_clock::time_point deadline,
++    ShimSnapResult* r, int* stage_out, Bambu_Tunnel& t, int& is_open
++) {
++    snap_set_stage(stage_out, r, ST_DLOPEN);
++    void* lib = dlopen(lib_path, RTLD_LAZY);
++    if (!lib) {
++        const char* e = dlerror();
++        snap_fail(r, ST_DLOPEN, -2, e ? e : "dlopen failed");
++        return false;
++    }
++    f.create = (bs_create)dlsym(lib, "Bambu_Create");
++    f.logger = (bs_set_logger)dlsym(lib, "Bambu_SetLogger");
++    f.open   = (bs_open)dlsym(lib, "Bambu_Open");
++    f.start  = (bs_start_stream)dlsym(lib, "Bambu_StartStream");
++    f.info   = (bs_get_stream_info)dlsym(lib, "Bambu_GetStreamInfo");
++    f.read   = (bs_read_sample)dlsym(lib, "Bambu_ReadSample");
++    f.close  = (bs_close)dlsym(lib, "Bambu_Close");
++    f.destroy = (bs_destroy)dlsym(lib, "Bambu_Destroy");
++    sl->free_log = (bs_free_log)dlsym(lib, "Bambu_FreeLogMsg");
++    if (!f.create || !f.logger || !f.open || !f.start || !f.info || !f.read || !f.close || !f.destroy) {
++        snap_fail(r, ST_DLOPEN, -3, "libBambuSource is missing required Bambu_* symbols");
++        return false;  // keep library loaded: never dlclose a lib with live threads
++    }
++
++    snap_set_stage(stage_out, r, ST_CREATE);
++    int ret = f.create(&t, url);
++    if (ret != 0 || !t) { snap_fail(r, ST_CREATE, ret ? ret : -1, "Bambu_Create failed"); return false; }
++    f.logger(t, snap_logger, sl);
++
++    snap_set_stage(stage_out, r, ST_OPEN);
++    ret = f.open(t);
++    if (ret != 0) { snap_fail(r, ST_OPEN, ret, "Bambu_Open failed"); return false; }
++    is_open = 1;
++
++    snap_set_stage(stage_out, r, ST_START);
++    while (true) {
++        ret = f.start(t, true);
++        if (ret != 2 /* would_block */) break;
++        if (std::chrono::steady_clock::now() >= deadline) break;
++        std::this_thread::sleep_for(std::chrono::milliseconds(100));
++    }
++    if (ret != 0) {
++        snap_fail(r, ST_START, ret, ret == 2 ? "Bambu_StartStream kept blocking until timeout" : "Bambu_StartStream failed");
++        return false;
++    }
++
++    snap_set_stage(stage_out, r, ST_INFO);
++    BambuStreamInfo info;
++    std::memset(&info, 0, sizeof(info));
++    ret = f.info(t, 0, &info);
++    if (ret != 0) { snap_fail(r, ST_INFO, ret, "Bambu_GetStreamInfo failed"); return false; }
++    r->sub_type = info.sub_type;
++    r->format_type = info.format_type;
++    r->width = info.width;
++    r->height = info.height;
++    r->frame_rate = info.frame_rate;
++    if (info.format_buffer && info.format_size > 0 && info.format_size < (1 << 20)) {
++        r->fmt = (unsigned char*)malloc(info.format_size);
++        if (r->fmt) { std::memcpy(r->fmt, info.format_buffer, info.format_size); r->fmt_len = info.format_size; }
++    }
++    snap_set_stage(stage_out, r, ST_READ);
++    return true;
++}
++
++/// Blocking: dlopen libBambuSource, run the play loop until the first
++/// keyframe (or JPEG), copy it into r->data. Never logs or returns `url`.
++/// Safe to run concurrently for different tunnels (logger state is per call).
++int shim_snapshot(
++    const char* lib_path, const char* url, int timeout_ms,
++    ShimSnapResult* r, int* stage_out,
++    void (*log_cb)(void*, int, const char*), void* log_ctx
++) {
++    std::memset(r, 0, sizeof(*r));
++    auto deadline = std::chrono::steady_clock::now() + std::chrono::milliseconds(timeout_ms);
++    auto expired = [&]() { return std::chrono::steady_clock::now() >= deadline; };
++
++    SrcFns f{};
++    auto* sl = new SnapLog{log_cb, log_ctx, nullptr};
++    Bambu_Tunnel t = nullptr;
++    int is_open = 0;
++
++    do {
++        if (!src_open(lib_path, url, f, sl, deadline, r, stage_out, t, is_open)) break;
++
++        const bool is_jpeg = (r->sub_type == 1);
++        int last = 0;
++        while (true) {
++            if (expired()) {
++                snap_fail(r, ST_READ, last, "timeout waiting for first keyframe");
++                break;
++            }
++            BambuSample s;
++            std::memset(&s, 0, sizeof(s));
++            last = f.read(t, &s);
++            if (last == 0) {
++                // MJPEG: every frame is self-contained, accept the first one.
++                if ((s.flags & 1) || is_jpeg) {
++                    if (s.size <= 0 || !s.buffer) { snap_fail(r, ST_READ, -4, "empty sample"); break; }
++                    r->data = (unsigned char*)malloc(s.size);
++                    if (!r->data) { snap_fail(r, ST_READ, -5, "out of memory"); break; }
++                    std::memcpy(r->data, s.buffer, s.size);
++                    r->data_len = s.size;
++                    r->sample_flags = s.flags;
++                    r->ok = 1;
++                    r->code = 0;
++                    snap_set_stage(stage_out, r, ST_DONE);
++                    break;
++                }
++                continue;  // delta frame, keep reading
++            } else if (last == 2 /* would_block */) {
++                std::this_thread::sleep_for(std::chrono::milliseconds(100));
++                continue;
++            } else if (last == 1 /* stream_end */) {
++                snap_fail(r, ST_READ, last, "stream ended before a keyframe arrived");
++                break;
++            } else {
++                snap_fail(r, ST_READ, last, "Bambu_ReadSample failed");
++                break;
++            }
++        }
++    } while (false);
++
++    if (is_open) f.close(t);
++    if (t) f.destroy(t);
++    sl->cb = nullptr;
++    // Intentionally no dlclose: the library owns background threads.
++    return r->ok ? 0 : -1;
++}
++
++/// Blocking live play loop. `on_info` is called once with the stream info (r
++/// with sub_type/format/fmt filled), then `on_sample` per sample; a non-zero
++/// return from either, or *stop != 0, ends the loop. `timeout_ms` bounds the
++/// open phase and the gap between delivered samples. On return r->ok is 1 for
++/// a normal end (stop/stream end/callback), 0 with stage/code/err on failure.
++/// The tunnel is always closed and destroyed before returning.
++int shim_stream(
++    const char* lib_path, const char* url, int timeout_ms,
++    ShimSnapResult* r, int* stage_out, const int* stop,
++    void (*log_cb)(void*, int, const char*), void* log_ctx,
++    int (*on_info)(void*, const ShimSnapResult*),
++    int (*on_sample)(void*, const unsigned char*, int, int), void* cb_ctx
++) {
++    std::memset(r, 0, sizeof(*r));
++    auto now = []() { return std::chrono::steady_clock::now(); };
++    auto gap = std::chrono::milliseconds(timeout_ms);
++    auto deadline = now() + gap;
++    auto stopped = [&]() { return __atomic_load_n(stop, __ATOMIC_ACQUIRE) != 0; };
++
++    SrcFns f{};
++    auto* sl = new SnapLog{log_cb, log_ctx, nullptr};
++    Bambu_Tunnel t = nullptr;
++    int is_open = 0;
++
++    do {
++        if (!src_open(lib_path, url, f, sl, deadline, r, stage_out, t, is_open)) break;
++        if (on_info(cb_ctx, r)) { r->ok = 1; break; }
++
++        int last = 0;
++        while (!stopped()) {
++            if (now() >= deadline) {
++                snap_fail(r, ST_READ, last, "timeout waiting for samples");
++                break;
++            }
++            BambuSample s;
++            std::memset(&s, 0, sizeof(s));
++            last = f.read(t, &s);
++            if (last == 0) {
++                if (s.size <= 0 || !s.buffer) continue;
++                deadline = now() + gap;
++                if (on_sample(cb_ctx, s.buffer, s.size, s.flags)) { r->ok = 1; break; }
++            } else if (last == 2 /* would_block */) {
++                std::this_thread::sleep_for(std::chrono::milliseconds(10));
++            } else if (last == 1 /* stream_end */) {
++                r->ok = 1;
++                break;
++            } else {
++                snap_fail(r, ST_READ, last, "Bambu_ReadSample failed");
++                break;
++            }
++        }
++        if (!r->err[0] && stopped()) r->ok = 1;
++    } while (false);
++
++    if (is_open) f.close(t);
++    if (t) f.destroy(t);
++    sl->cb = nullptr;
++    return r->ok ? 0 : -1;
++}
++
+ } // extern "C"
+diff -ruN -x tests -x target a/src/agent.rs b/src/agent.rs
+--- a/src/agent.rs	2026-11-27 21:06:35.043508647 +0000
++++ b/src/agent.rs	2026-11-27 21:06:35.049467148 +0000
+@@ -45,6 +45,24 @@
+     pub timelapse: bool,
+     #[serde(default = "default_true")]
+     pub use_ams: bool,
++    // The slicer's print dialog also sets these; left out they keep the values the daemon always sent.
++    #[serde(default)]
++    pub layer_inspect: bool,
++    #[serde(default = "default_bed_type")]
++    pub bed_type: String,
++    // 0 off, 1 on, 2 auto (the slicer's PrintOption::getValueInt)
++    #[serde(default)]
++    pub auto_bed_leveling: i32,
++    #[serde(default)]
++    pub auto_flow_cali: i32,
++    #[serde(default)]
++    pub auto_offset_cali: i32,
++    #[serde(default)]
++    pub ext_change_assist: bool,
++}
++
++fn default_bed_type() -> String {
++    "auto".into()
+ }
+ 
+ fn default_project_name() -> String {
+@@ -237,6 +255,12 @@
+         } else {
+             eprintln!("shim: resolved all {resolved}/{expected} symbols");
+         }
++        // Optional 25th symbol (camera). Never fatal.
++        if unsafe { ffi::bambu_shim_has_camera_url() } != 0 {
++            eprintln!("shim: optional symbol bambu_network_get_camera_url resolved (25th)");
++        } else {
++            eprintln!("warning: optional symbol bambu_network_get_camera_url NOT found; camera routes disabled");
++        }
+ 
+         // Set SSL cert env vars (same as C++ bridge) — needed for uploads
+         if std::env::var("CURL_CA_BUNDLE").is_err() {
+@@ -321,7 +345,7 @@
+     /// Generate a stable UUID device ID from the machine hostname.
+     /// This mimics BambuStudio's slicer_uuid — a persistent identifier
+     /// that the cloud API requires for request signing.
+-    fn stable_device_id() -> String {
++    pub fn stable_device_id() -> String {
+         // Use UUID v5 (SHA-1) with the DNS namespace and hostname
+         // to produce a deterministic, stable ID per machine.
+         let host = hostname::get()
+@@ -512,19 +536,27 @@
+         let dev = to_cstring(device_id)?;
+         let msg = to_cstring(json)?;
+         // QoS 1 — BambuStudio sends all print commands at QoS 1
+-        let mut ret =
+-            unsafe { ffi::bambu_shim_send_message(self.agent, dev.as_ptr(), msg.as_ptr(), 1) };
++        let send = || unsafe { ffi::bambu_shim_send_message(self.agent, dev.as_ptr(), msg.as_ptr(), 1) };
++        let mut ret = send();
++        // -4 (SEND_MSG_FAILED): the plugin cannot sign control commands until the device cert is
++        // installed. BambuStudio installs it after connecting; do the same and retry.
++        for attempt in 1..=3 {
++            if ret == 0 {
++                break;
++            }
++            let cert = unsafe { ffi::bambu_shim_install_device_cert(self.agent, dev.as_ptr(), 0) };
++            tracing::info!(ret, attempt, cert, "send_message (cloud) failed; installed device cert, retrying");
++            std::thread::sleep(Duration::from_secs(2 * attempt));
++            ret = send();
++        }
+         if ret != 0 {
+-            tracing::debug!(ret, "send_message (cloud) failed, trying send_message_to_printer");
++            let cloud_ret = ret;
+             ret = unsafe {
+-                ffi::bambu_shim_send_message_to_printer(
+-                    self.agent,
+-                    dev.as_ptr(),
+-                    msg.as_ptr(),
+-                    1,
+-                    0,
+-                )
++                ffi::bambu_shim_send_message_to_printer(self.agent, dev.as_ptr(), msg.as_ptr(), 1, 0)
+             };
++            tracing::warn!(cloud_ret, lan_ret = ret, "send_message failed on cloud and LAN path");
++        } else {
++            tracing::info!("send_message (cloud) ok");
+         }
+         Ok(ret)
+     }
+@@ -551,7 +583,7 @@
+         let ams_mapping_info = CString::new("").expect("literal contains no NUL");
+         let connection_type = CString::new("cloud").expect("literal contains no NUL");
+         let print_type = CString::new("from_normal").expect("literal contains no NUL");
+-        let bed_type = CString::new("auto").expect("literal contains no NUL");
++        let bed_type = to_cstring(&params.bed_type)?;
+ 
+         let shim_params = ffi::ShimPrintParams {
+             dev_id: dev_id.as_ptr(),
+@@ -570,10 +602,14 @@
+             task_bed_leveling: if params.bed_leveling { 1 } else { 0 },
+             task_flow_cali: if params.flow_cali { 1 } else { 0 },
+             task_vibration_cali: if params.vibration_cali { 1 } else { 0 },
+-            task_layer_inspect: 0,
++            task_layer_inspect: if params.layer_inspect { 1 } else { 0 },
+             task_record_timelapse: if params.timelapse { 1 } else { 0 },
+             task_use_ams: if params.use_ams { 1 } else { 0 },
+             task_bed_type: bed_type.as_ptr(),
++            auto_bed_leveling: params.auto_bed_leveling,
++            auto_flow_cali: params.auto_flow_cali,
++            auto_offset_cali: params.auto_offset_cali,
++            task_ext_change_assist: if params.ext_change_assist { 1 } else { 0 },
+         };
+ 
+         let mut result = ffi::ShimPrintResult {
+@@ -652,6 +688,20 @@
+         &self.state
+     }
+ 
++    /// Start an asynchronous camera URL request (`dev_id` = `serial|dev_ver|protocols`).
++    /// `cb` is invoked with `ctx` from a library thread when the URL (or an
++    /// error string) is ready. Returns the .so's return code, -1 if the
++    /// symbol is unavailable.
++    pub fn get_camera_url(
++        &self,
++        dev_id: &str,
++        cb: ffi::CameraUrlCb,
++        ctx: *mut c_void,
++    ) -> Result<i32, String> {
++        let dev = to_cstring(dev_id)?;
++        Ok(unsafe { ffi::shim_get_camera_url(self.agent, dev.as_ptr(), cb, ctx) })
++    }
++
+     /// Raw agent pointer for direct FFI calls.
+     pub fn agent_ptr(&self) -> *mut c_void {
+         self.agent
+@@ -785,6 +835,24 @@
+     }
+ 
+     #[test]
++    fn print_request_option_defaults_match_the_old_daemon() {
++        let req: PrintRequest = serde_json::from_str(r#"{"device_id":"D","filename":"t.3mf"}"#).unwrap();
++        assert!(!req.layer_inspect && !req.ext_change_assist);
++        assert_eq!(req.bed_type, "auto");
++        assert_eq!((req.auto_bed_leveling, req.auto_flow_cali, req.auto_offset_cali), (0, 0, 0));
++    }
++
++    #[test]
++    fn print_request_takes_the_dialog_options() {
++        let json = r#"{"device_id":"D","filename":"t.3mf","layer_inspect":true,"bed_type":"textured_plate",
++            "auto_bed_leveling":2,"auto_flow_cali":2,"auto_offset_cali":1,"ext_change_assist":true}"#;
++        let req: PrintRequest = serde_json::from_str(json).unwrap();
++        assert!(req.layer_inspect && req.ext_change_assist);
++        assert_eq!(req.bed_type, "textured_plate");
++        assert_eq!((req.auto_bed_leveling, req.auto_flow_cali, req.auto_offset_cali), (2, 2, 1));
++    }
++
++    #[test]
+     fn print_request_deserialize_full() {
+         let json = r#"{
+             "device_id": "DEV1",
+@@ -822,6 +890,12 @@
+             vibration_cali: true,
+             timelapse: false,
+             use_ams: true,
++            layer_inspect: false,
++            bed_type: "auto".into(),
++            auto_bed_leveling: 0,
++            auto_flow_cali: 0,
++            auto_offset_cali: 0,
++            ext_change_assist: false,
+         };
+         let json = serde_json::to_string(&req).unwrap();
+         let req2: PrintRequest = serde_json::from_str(&json).unwrap();
+diff -ruN -x tests -x target a/src/camera.rs b/src/camera.rs
+--- a/src/camera.rs	1970-01-01 00:00:00.000000000 +0000
++++ b/src/camera.rs	2026-11-27 21:06:35.049598906 +0000
+@@ -0,0 +1,1389 @@
++//! Camera support: mint a Bambu camera URL and grab one still frame.
++//!
++//! Routes (registered in `server::router`):
++//!   GET /camera/:serial/url       -> {"ok","url_prefix","transport","protocols","ipcam",...}
++//!   GET /camera/:serial/snapshot  -> image/jpeg (MJPEG) or video/h264 (Annex-B keyframe),
++//!                                    or 502 {"error","stage","code","log"}
++//!   GET /camera/:serial/live      -> continuous stream: video/h264 (Annex-B) or
++//!                                    multipart/x-mixed-replace (MJPEG); same errors
++//!
++//! SECURITY: the minted URL carries credentials (authkey, passwd, ...). It is
++//! never returned, never logged, and library log lines are redacted before
++//! they are stored or returned.
++
++use std::collections::{HashMap, VecDeque};
++use std::ffi::{CStr, CString};
++use std::os::raw::{c_char, c_int, c_void};
++use std::sync::atomic::{AtomicBool, AtomicI32, Ordering};
++use std::sync::{Arc, Mutex, RwLock};
++use std::time::Duration;
++
++use axum::body::{Body, Bytes};
++use axum::extract::{Path, Query, State};
++use axum::http::{header, HeaderValue, StatusCode};
++use axum::response::{IntoResponse, Json, Response};
++use serde_json::{json, Value};
++use tokio::sync::{oneshot, Notify};
++
++use crate::agent::{BambuAgent, BAMBU_STUDIO_VERSION};
++use crate::ffi;
++use crate::server::SharedState;
++
++pub const MINT_TIMEOUT: Duration = Duration::from_secs(20);
++pub const SNAPSHOT_TIMEOUT: Duration = Duration::from_secs(45);
++/// Extra grace on top of SNAPSHOT_TIMEOUT before the helper thread is declared hung.
++const HELPER_GRACE: Duration = Duration::from_secs(15);
++const LOG_KEEP: usize = 200;
++const LOG_RETURN: usize = 20;
++
++// ---------------------------------------------------------------------------
++// State
++// ---------------------------------------------------------------------------
++
++#[derive(Default)]
++pub struct CameraState {
++    /// Path of libbambu_networking.so as given to the bridge (host-visible,
++    /// i.e. the same string dlopen gets). libBambuSource.so lives next to it.
++    pub lib_path: Mutex<String>,
++    /// serial -> firmware (ota) version, scraped from `info.module` MQTT replies.
++    pub versions: RwLock<HashMap<String, String>>,
++    /// Per-serial play-loop state: serials do not block each other (the shim
++    /// keeps logger state per call).
++    slots: Mutex<HashMap<String, Arc<SerialSlot>>>,
++    /// Test hook: pretend the cloud returned this URL.
++    #[cfg(test)]
++    pub test_url: Mutex<Option<String>>,
++}
++
++/// One printer's camera: snapshots are serialised by `lock`; `live` (only set
++/// under `lock`) marks a running live stream.
++#[derive(Default)]
++struct SerialSlot {
++    lock: tokio::sync::Mutex<()>,
++    live: AtomicBool,
++}
++
++impl CameraState {
++    fn slot(&self, serial: &str) -> Arc<SerialSlot> {
++        self.slots.lock().unwrap().entry(serial.to_string()).or_default().clone()
++    }
++
++    pub fn set_lib_path(&self, p: &str) {
++        *self.lib_path.lock().unwrap() = p.to_string();
++    }
++
++    pub fn bambu_source_path(&self) -> String {
++        let lp = self.lib_path.lock().unwrap().clone();
++        bambu_source_path_for(&lp)
++    }
++}
++
++/// `<dir of networking lib>/libBambuSource.so`, string manipulation only (no
++/// stat: qemu 11 does not apply `-L` to statx, dlopen reports failures itself).
++pub fn bambu_source_path_for(networking_lib: &str) -> String {
++    match std::path::Path::new(networking_lib).parent() {
++        Some(d) if !d.as_os_str().is_empty() => format!("{}/libBambuSource.so", d.display()),
++        _ => "libBambuSource.so".to_string(),
++    }
++}
++
++// ---------------------------------------------------------------------------
++// Redaction
++// ---------------------------------------------------------------------------
++
++const SENSITIVE_KEYS: &[&str] = &[
++    "authkey", "passwd", "password", "token", "license", "uid", "channel", "cli_id",
++    "refresh_url", "sign", "secret",
++];
++
++fn is_delim(c: char) -> bool {
++    c.is_whitespace() || matches!(c, '"' | '\'' | ',' | ';' | ')' | '(' | '<' | '>' | '[' | ']' | '{' | '}')
++}
++
++/// Remove URL query strings and credential-looking `key=value` pairs from a log line.
++pub fn redact(line: &str) -> String {
++    // 1. Cut every query string: "?....." up to the next delimiter.
++    let mut out = String::with_capacity(line.len());
++    let mut chars = line.chars().peekable();
++    while let Some(c) = chars.next() {
++        if c == '?' && chars.peek().map(|n| !is_delim(*n)).unwrap_or(false) {
++            out.push_str("?<redacted>");
++            while let Some(n) = chars.peek() {
++                if is_delim(*n) {
++                    break;
++                }
++                chars.next();
++            }
++        } else {
++            out.push(c);
++        }
++    }
++    // 2. Mask `key=value` for sensitive keys that appear outside a query string.
++    let mut res = out;
++    for key in SENSITIVE_KEYS {
++        let needle = format!("{key}=");
++        let mut search_from = 0;
++        while let Some(rel) = res[search_from..].to_ascii_lowercase().find(&needle) {
++            let start = search_from + rel;
++            let val_start = start + needle.len();
++            let val_end = res[val_start..]
++                .find(|c: char| is_delim(c) || c == '&')
++                .map(|i| val_start + i)
++                .unwrap_or(res.len());
++            if &res[val_start..val_end] == "<redacted>" {
++                search_from = val_end;
++                continue;
++            }
++            res.replace_range(val_start..val_end, "<redacted>");
++            search_from = val_start + "<redacted>".len();
++        }
++    }
++    if res.len() > 500 {
++        let mut cut = 500;
++        while !res.is_char_boundary(cut) {
++            cut -= 1;
++        }
++        res.truncate(cut);
++        res.push_str("...");
++    }
++    res
++}
++
++/// Only the part of a camera URL before '?': e.g. `bambu:///tutk`.
++pub fn url_prefix(url: &str) -> String {
++    url.split('?').next().unwrap_or("").to_string()
++}
++
++/// `bambu:///tutk` -> `tutk`
++pub fn transport_of(prefix: &str) -> String {
++    prefix
++        .strip_prefix("bambu:///")
++        .unwrap_or("")
++        .trim_end_matches('/')
++        .to_string()
++}
++
++// ---------------------------------------------------------------------------
++// Status helpers
++// ---------------------------------------------------------------------------
++
++/// The printer's `ipcam` object (usually `print.ipcam`).
++pub fn ipcam_of(status: &Value) -> Value {
++    status
++        .get("print")
++        .and_then(|p| p.get("ipcam"))
++        .or_else(|| status.get("ipcam"))
++        .cloned()
++        .unwrap_or(Value::Null)
++}
++
++/// Protocol list from `ipcam.liveview.remote`, mapped like BambuStudio's
++/// `remote_protos` ("none","tutk","agora","tutk_agaro"); default tutk+agora.
++pub fn protocols_from_ipcam(ipcam: &Value) -> Vec<String> {
++    let remote = ipcam
++        .get("liveview")
++        .and_then(|l| l.get("remote"))
++        .and_then(|r| r.as_str())
++        .unwrap_or("none");
++    match remote {
++        "tutk" => vec!["tutk".into()],
++        "agora" => vec!["agora".into()],
++        "tutk_agora" | "tutk_agaro" => vec!["tutk".into(), "agora".into()],
++        _ => vec!["tutk".into(), "agora".into()],
++    }
++}
++
++/// Protocol list as it must appear in dev_id: `"tutk","agora"` (quotes included).
++pub fn protocols_wire(p: &[String]) -> String {
++    p.iter().map(|s| format!("\"{s}\"")).collect::<Vec<_>>().join(",")
++}
++
++/// Parse a user supplied `?protocols=tutk,agora` override.
++fn parse_protocol_override(s: &str) -> Vec<String> {
++    s.split(',')
++        .map(|x| x.trim().trim_matches('"').to_string())
++        .filter(|x| matches!(x.as_str(), "tutk" | "agora"))
++        .collect()
++}
++
++/// Firmware version if present: `info.module[name=ota].sw_ver`, else a few
++/// `upgrade_state`/`print` fields. Returns None when not present.
++pub fn extract_dev_ver(v: &Value) -> Option<String> {
++    let nonempty = |x: &Value| x.as_str().filter(|s| !s.is_empty()).map(|s| s.to_string());
++    if let Some(mods) = v.get("info").and_then(|i| i.get("module")).and_then(|m| m.as_array()) {
++        for m in mods {
++            if m.get("name").and_then(|n| n.as_str()) == Some("ota") {
++                if let Some(s) = m.get("sw_ver").and_then(nonempty) {
++                    return Some(s);
++                }
++            }
++        }
++    }
++    let print = v.get("print").unwrap_or(v);
++    if let Some(us) = print.get("upgrade_state") {
++        for k in ["sw_ver", "cur_ver", "version", "ota_version"] {
++            if let Some(s) = us.get(k).and_then(nonempty) {
++                return Some(s);
++            }
++        }
++    }
++    print.get("sw_ver").and_then(nonempty)
++}
++
++// ---------------------------------------------------------------------------
++// URL minting
++// ---------------------------------------------------------------------------
++
++struct MintCtx {
++    tx: Mutex<Option<oneshot::Sender<Result<String, String>>>>,
++}
++
++extern "C" fn mint_callback(ctx: *mut c_void, url: *const c_char) {
++    // ctx is a leaked Box<MintCtx> (the library may call back late or never,
++    // so it is deliberately never freed: 1 small allocation per mint).
++    let ctx = unsafe { &*(ctx as *const MintCtx) };
++    let s = if url.is_null() {
++        String::new()
++    } else {
++        unsafe { CStr::from_ptr(url).to_string_lossy().into_owned() }
++    };
++    if let Some(tx) = ctx.tx.lock().unwrap().take() {
++        let r = if s.starts_with("bambu:///") {
++            Ok(s)
++        } else {
++            // Error text such as "...[code]". Redact defensively, never log.
++            Err(redact(&s))
++        };
++        let _ = tx.send(r);
++    }
++}
++
++/// Runs on the agent thread: start the async request and return immediately.
++pub fn start_mint(
++    agent: &BambuAgent,
++    dev_id: &str,
++    reply: oneshot::Sender<Result<String, String>>,
++) {
++    if unsafe { ffi::bambu_shim_has_camera_url() } == 0 {
++        let _ = reply.send(Err(
++            "libbambu_networking.so has no bambu_network_get_camera_url symbol".into(),
++        ));
++        return;
++    }
++    let ctx = Box::into_raw(Box::new(MintCtx { tx: Mutex::new(Some(reply)) }));
++    match agent.get_camera_url(dev_id, mint_callback, ctx as *mut c_void) {
++        Ok(ret) => {
++            // dev_id has no credentials (serial|version|protocols): safe to log.
++            tracing::info!(ret, "get_camera_url submitted");
++        }
++        Err(e) => {
++            let ctx = unsafe { &*ctx };
++            if let Some(tx) = ctx.tx.lock().unwrap().take() {
++                let _ = tx.send(Err(e));
++            }
++        }
++    }
++}
++
++pub struct MintOk {
++    /// Full URL (credentials!). Never log or return.
++    url: String,
++    pub dev_ver: String,
++    pub protocols: Vec<String>,
++    pub ipcam: Value,
++}
++
++pub struct MintErr {
++    pub error: String,
++    pub ipcam: Value,
++    pub protocols: Vec<String>,
++}
++
++async fn mint(
++    state: &SharedState,
++    serial: &str,
++    protocols_override: Option<Vec<String>>,
++) -> Result<MintOk, MintErr> {
++    #[cfg(test)]
++    {
++        let t = state.camera.test_url.lock().unwrap().clone();
++        if let Some(url) = t {
++            return Ok(MintOk {
++                url,
++                dev_ver: "01.00.00.00".into(),
++                protocols: vec!["tutk".into(), "agora".into()],
++                ipcam: json!({"liveview": {"remote": "tutk"}}),
++            });
++        }
++    }
++
++    let fail = |error: String, ipcam: Value, protocols: Vec<String>| MintErr { error, ipcam, protocols };
++
++    if serial.is_empty() || serial.contains(['|', '/', '"']) {
++        return Err(fail("invalid serial".into(), Value::Null, vec![]));
++    }
++
++    let status = crate::server::get_printer_status_for_ams(state, serial)
++        .await
++        .ok_or_else(|| fail(format!("no MQTT status for {serial} (not subscribed / printer offline?)"), Value::Null, vec![]))?;
++
++    let ipcam = ipcam_of(&status);
++    let protocols = match protocols_override {
++        Some(p) if !p.is_empty() => p,
++        _ => protocols_from_ipcam(&ipcam),
++    };
++
++    // Firmware version: scraped info.module, else status fields, else ask the printer.
++    let mut dev_ver = state.camera.versions.read().unwrap().get(serial).cloned();
++    if dev_ver.is_none() {
++        dev_ver = extract_dev_ver(&status);
++    }
++    if dev_ver.is_none() {
++        let cmd = r#"{"info":{"sequence_id":"0","command":"get_version"}}"#;
++        let _ = state.handle.send_message(serial.to_string(), cmd.to_string()).await;
++        for _ in 0..50 {
++            tokio::time::sleep(Duration::from_millis(100)).await;
++            if let Some(v) = state.camera.versions.read().unwrap().get(serial).cloned() {
++                dev_ver = Some(v);
++                break;
++            }
++        }
++    }
++    let dev_ver = dev_ver.unwrap_or_default();
++
++    let dev_id = format!("{serial}|{dev_ver}|{}", protocols_wire(&protocols));
++    match state.handle.get_camera_url(dev_id, MINT_TIMEOUT).await {
++        Ok(url) => Ok(MintOk { url, dev_ver, protocols, ipcam }),
++        Err(e) => Err(fail(e, ipcam, protocols)),
++    }
++}
++
++// ---------------------------------------------------------------------------
++// Route: GET /camera/:serial/url
++// ---------------------------------------------------------------------------
++
++pub async fn camera_url(
++    State(state): State<SharedState>,
++    Path(serial): Path<String>,
++    Query(q): Query<HashMap<String, String>>,
++) -> Response {
++    let ov = q.get("protocols").map(|s| parse_protocol_override(s));
++    match mint(&state, &serial, ov).await {
++        Ok(m) => {
++            let prefix = url_prefix(&m.url);
++            Json(json!({
++                "ok": true,
++                "url_prefix": prefix,
++                "transport": transport_of(&prefix),
++                "protocols": m.protocols,
++                "dev_ver": m.dev_ver,
++                "ipcam": m.ipcam,
++                "error": Value::Null,
++            }))
++            .into_response()
++        }
++        Err(e) => (
++            StatusCode::BAD_GATEWAY,
++            Json(json!({
++                "ok": false,
++                "url_prefix": Value::Null,
++                "protocols": e.protocols,
++                "ipcam": e.ipcam,
++                "error": e.error,
++            })),
++        )
++            .into_response(),
++    }
++}
++
++// ---------------------------------------------------------------------------
++// Snapshot
++// ---------------------------------------------------------------------------
++
++pub const STAGES: [&str; 8] = ["none", "dlopen", "create", "open", "start", "info", "read", "done"];
++
++pub fn stage_name(i: i32) -> &'static str {
++    STAGES.get(i as usize).copied().unwrap_or("unknown")
++}
++
++#[derive(Debug)]
++pub struct SnapOutcome {
++    pub ok: bool,
++    pub stage: i32,
++    pub code: i32,
++    pub err: String,
++    pub sub_type: i32,
++    pub format_type: i32,
++    pub width: i32,
++    pub height: i32,
++    pub frame_rate: i32,
++    pub flags: i32,
++    pub data: Vec<u8>,
++    pub fmt: Vec<u8>,
++    pub log: Vec<String>,
++}
++
++type LogBuf = Mutex<VecDeque<String>>;
++
++extern "C" fn snap_log_cb(ctx: *mut c_void, level: c_int, msg: *const c_char) {
++    if ctx.is_null() || msg.is_null() {
++        return;
++    }
++    let buf = unsafe { &*(ctx as *const LogBuf) };
++    let m = unsafe { CStr::from_ptr(msg).to_string_lossy().into_owned() };
++    let line = format!("[{level}] {}", redact(m.trim_end()));
++    let mut b = buf.lock().unwrap();
++    if b.len() >= LOG_KEEP {
++        b.pop_front();
++    }
++    b.push_back(line);
++}
++
++fn last_lines(log: &LogBuf) -> Vec<String> {
++    let b = log.lock().unwrap();
++    let skip = b.len().saturating_sub(LOG_RETURN);
++    b.iter().skip(skip).cloned().collect()
++}
++
++/// Run the BambuSource play loop on a dedicated thread. `url` is the full
++/// credentialed URL. Always returns; a hung library yields stage = last stage
++/// reached with code -999.
++pub async fn run_snapshot(lib_path: String, url: String, timeout: Duration) -> SnapOutcome {
++    let log: Arc<LogBuf> = Arc::new(Mutex::new(VecDeque::new()));
++    let stage: Arc<AtomicI32> = Arc::new(AtomicI32::new(0));
++    let (tx, rx) = oneshot::channel::<SnapOutcome>();
++
++    // One reference is handed to the C side as the logger context. It is only
++    // reclaimed after the helper returned; on a hang it is leaked on purpose
++    // because the library may still log from its own threads.
++    let log_ctx = Arc::into_raw(log.clone()) as usize;
++    let stage_t = stage.clone();
++    let log_t = log.clone();
++
++    let spawn = std::thread::Builder::new().name("bambu-snapshot".into()).spawn(move || {
++        let mut out = SnapOutcome {
++            ok: false, stage: 0, code: 0, err: String::new(), sub_type: 0, format_type: 0,
++            width: 0, height: 0, frame_rate: 0, flags: 0, data: vec![], fmt: vec![], log: vec![],
++        };
++        let (c_lib, c_url) = match (CString::new(lib_path), CString::new(url)) {
++            (Ok(a), Ok(b)) => (a, b),
++            _ => {
++                out.stage = 1;
++                out.code = -1;
++                out.err = "NUL byte in path/url".into();
++                let _ = tx.send(out);
++                return;
++            }
++        };
++        let mut r: ffi::ShimSnapResult = unsafe { std::mem::zeroed() };
++        unsafe {
++            ffi::shim_snapshot(
++                c_lib.as_ptr(),
++                c_url.as_ptr(),
++                timeout.as_millis() as c_int,
++                &mut r,
++                stage_t.as_ptr(),
++                snap_log_cb,
++                log_ctx as *mut c_void,
++            );
++        }
++        out.ok = r.ok != 0;
++        out.stage = r.stage;
++        out.code = r.code;
++        out.err = unsafe { CStr::from_ptr(r.err.as_ptr()).to_string_lossy().into_owned() };
++        out.sub_type = r.sub_type;
++        out.format_type = r.format_type;
++        out.width = r.width;
++        out.height = r.height;
++        out.frame_rate = r.frame_rate;
++        out.flags = r.sample_flags;
++        if !r.data.is_null() && r.data_len > 0 {
++            out.data = unsafe { std::slice::from_raw_parts(r.data, r.data_len as usize) }.to_vec();
++        }
++        if !r.fmt.is_null() && r.fmt_len > 0 {
++            out.fmt = unsafe { std::slice::from_raw_parts(r.fmt, r.fmt_len as usize) }.to_vec();
++        }
++        unsafe { ffi::shim_snapshot_free(&mut r) };
++        out.log = last_lines(&log_t);
++        // Reclaim the logger ref: the helper returned and cleared the logger.
++        // (The library might still hold the tunnel's logger pointer, but the
++        // shim's trampoline no longer forwards after return.)
++        unsafe { drop(Arc::from_raw(log_ctx as *const LogBuf)) };
++        let _ = tx.send(out);
++    });
++
++    if let Err(e) = spawn {
++        return SnapOutcome {
++            ok: false, stage: 1, code: -1, err: format!("cannot spawn helper thread: {e}"),
++            sub_type: 0, format_type: 0, width: 0, height: 0, frame_rate: 0, flags: 0,
++            data: vec![], fmt: vec![], log: vec![],
++        };
++    }
++
++    match tokio::time::timeout(timeout + HELPER_GRACE, rx).await {
++        Ok(Ok(o)) => o,
++        Ok(Err(_)) => SnapOutcome {
++            ok: false, stage: stage.load(Ordering::Acquire), code: -998,
++            err: "helper thread died (crash in library?)".into(),
++            sub_type: 0, format_type: 0, width: 0, height: 0, frame_rate: 0, flags: 0,
++            data: vec![], fmt: vec![], log: last_lines(&log),
++        },
++        Err(_) => SnapOutcome {
++            ok: false, stage: stage.load(Ordering::Acquire), code: -999,
++            err: format!("library call did not return within {}s", (timeout + HELPER_GRACE).as_secs()),
++            sub_type: 0, format_type: 0, width: 0, height: 0, frame_rate: 0, flags: 0,
++            data: vec![], fmt: vec![], log: last_lines(&log),
++        },
++    }
++}
++
++/// Studio's extra URL parameters (MediaPlayCtrl.cpp). `refresh_url` (a raw
++/// function pointer in Studio, only used by agora) is intentionally omitted.
++pub fn append_studio_params(
++    url: &str,
++    serial: &str,
++    net_ver: &str,
++    dev_ver: &str,
++    cli_id: &str,
++    cli_ver: &str,
++) -> String {
++    let sep = if url.contains('?') { '&' } else { '?' };
++    format!("{url}{sep}device={serial}&net_ver={net_ver}&dev_ver={dev_ver}&cli_id={cli_id}&cli_ver={cli_ver}")
++}
++
++fn has_nal_type(annexb: &[u8], t: u8) -> bool {
++    let mut i = 0;
++    while i + 3 < annexb.len() {
++        if annexb[i] == 0 && annexb[i + 1] == 0 && (annexb[i + 2] == 1) {
++            if i + 3 < annexb.len() && annexb[i + 3] & 0x1f == t {
++                return true;
++            }
++            i += 3;
++        } else if annexb[i] == 0 && annexb[i + 1] == 0 && annexb[i + 2] == 0 && i + 4 < annexb.len() && annexb[i + 3] == 1 {
++            if annexb[i + 4] & 0x1f == t {
++                return true;
++            }
++            i += 4;
++        } else {
++            i += 1;
++        }
++    }
++    false
++}
++
++/// SPS+PPS from avcC extradata as Annex-B, plus the NAL length-field size.
++fn avcc_param_sets(avcc: &[u8]) -> Option<(Vec<u8>, usize)> {
++    const SC: [u8; 4] = [0, 0, 0, 1];
++    if avcc.len() < 7 || avcc[0] != 1 {
++        return None;
++    }
++    let len_size = (avcc[4] & 3) as usize + 1;
++    let mut out = Vec::with_capacity(64);
++    let mut p = 5;
++    let nsps = (avcc[p] & 0x1f) as usize;
++    p += 1;
++    for _ in 0..nsps {
++        let l = u16::from_be_bytes([*avcc.get(p)?, *avcc.get(p + 1)?]) as usize;
++        p += 2;
++        out.extend_from_slice(&SC);
++        out.extend_from_slice(avcc.get(p..p + l)?);
++        p += l;
++    }
++    let npps = *avcc.get(p)? as usize;
++    p += 1;
++    for _ in 0..npps {
++        let l = u16::from_be_bytes([*avcc.get(p)?, *avcc.get(p + 1)?]) as usize;
++        p += 2;
++        out.extend_from_slice(&SC);
++        out.extend_from_slice(avcc.get(p..p + l)?);
++        p += l;
++    }
++    Some((out, len_size))
++}
++
++/// Append a length-prefixed (AVCC) sample to `out` as Annex-B NAL units.
++fn avcc_nals_to_annexb(sample: &[u8], len_size: usize, out: &mut Vec<u8>) -> Option<()> {
++    let mut i = 0;
++    while i < sample.len() {
++        let mut l = 0usize;
++        for k in 0..len_size {
++            l = (l << 8) | *sample.get(i + k)? as usize;
++        }
++        i += len_size;
++        out.extend_from_slice(&[0, 0, 0, 1]);
++        out.extend_from_slice(sample.get(i..i + l)?);
++        i += l;
++    }
++    Some(())
++}
++
++/// Convert an AVCC (length-prefixed) sample into Annex-B, prepending SPS/PPS
++/// from the avcC extradata. None when the data is malformed.
++pub fn avcc_to_annexb(avcc: &[u8], sample: &[u8]) -> Option<Vec<u8>> {
++    let (mut out, len_size) = avcc_param_sets(avcc)?;
++    out.reserve(sample.len());
++    avcc_nals_to_annexb(sample, len_size, &mut out)?;
++    Some(out)
++}
++
++/// Make the keyframe a self-contained Annex-B stream where possible.
++fn to_annexb(o: &SnapOutcome) -> Vec<u8> {
++    match o.format_type {
++        0 => avcc_to_annexb(&o.fmt, &o.data).unwrap_or_else(|| o.data.clone()),
++        1 => {
++            let fmt_is_annexb = o.fmt.starts_with(&[0, 0, 0, 1]) || o.fmt.starts_with(&[0, 0, 1]);
++            if fmt_is_annexb && !has_nal_type(&o.data, 7) {
++                let mut v = o.fmt.clone();
++                v.extend_from_slice(&o.data);
++                v
++            } else {
++                o.data.clone()
++            }
++        }
++        _ => o.data.clone(),
++    }
++}
++
++fn snap_error(stage: &str, code: i32, error: String, log: Vec<String>) -> Response {
++    (
++        StatusCode::BAD_GATEWAY,
++        Json(json!({
++            "error": error,
++            "stage": stage,
++            "code": code,
++            "log": log,
++        })),
++    )
++        .into_response()
++}
++
++/// Turn a finished play loop into an HTTP response.
++pub fn outcome_response(o: SnapOutcome) -> Response {
++    if !o.ok {
++        return snap_error(stage_name(o.stage), o.code, o.err, o.log);
++    }
++    let info = json!({
++        "width": o.width,
++        "height": o.height,
++        "sub_type": o.sub_type,
++        "format_type": o.format_type,
++        "frame_rate": o.frame_rate,
++        "flags": o.flags,
++    });
++    let (ctype, body) = if o.sub_type == 1 {
++        ("image/jpeg", o.data.clone())
++    } else {
++        ("video/h264", to_annexb(&o))
++    };
++    let mut resp = (StatusCode::OK, body).into_response();
++    let h = resp.headers_mut();
++    h.insert(header::CONTENT_TYPE, HeaderValue::from_static(ctype));
++    h.insert(header::CACHE_CONTROL, HeaderValue::from_static("no-store"));
++    if let Ok(v) = HeaderValue::from_str(&info.to_string()) {
++        h.insert("x-stream-info", v);
++    }
++    resp
++}
++
++/// A live stream owns this printer's camera tunnel; fail fast instead of
++/// queueing behind a stream that may run for hours.
++fn busy_response() -> Response {
++    let mut r = snap_error("busy", -1, "a live stream is running for this printer".into(), vec![]);
++    *r.status_mut() = StatusCode::CONFLICT;
++    r
++}
++
++pub async fn camera_snapshot(
++    State(state): State<SharedState>,
++    Path(serial): Path<String>,
++    Query(q): Query<HashMap<String, String>>,
++) -> Response {
++    let ov = q.get("protocols").map(|s| parse_protocol_override(s));
++    let m = match mint(&state, &serial, ov).await {
++        Ok(m) => m,
++        Err(e) => return snap_error("mint", -1, e.error, vec![]),
++    };
++
++    let full = append_studio_params(
++        &m.url,
++        &serial,
++        &state.plugin_version,
++        &m.dev_ver,
++        &BambuAgent::stable_device_id(),
++        BAMBU_STUDIO_VERSION,
++    );
++
++    let slot = state.camera.slot(&serial);
++    let _guard = slot.lock.lock().await;
++    if slot.live.load(Ordering::Acquire) {
++        return busy_response();
++    }
++    let lib = state.camera.bambu_source_path();
++    tracing::info!(serial = %serial, lib = %lib, "snapshot: starting play loop");
++    let o = run_snapshot(lib, full, SNAPSHOT_TIMEOUT).await;
++    tracing::info!(
++        ok = o.ok,
++        stage = stage_name(o.stage),
++        code = o.code,
++        bytes = o.data.len(),
++        "snapshot: finished"
++    );
++    outcome_response(o)
++}
++
++// ---------------------------------------------------------------------------
++// Live stream
++// ---------------------------------------------------------------------------
++
++/// Frames buffered for a slow client (~1 s at 30 fps) before old ones are dropped.
++const LIVE_QUEUE_FRAMES: usize = 30;
++
++struct LiveShared {
++    queue: Mutex<VecDeque<Bytes>>,
++    notify: Notify,
++    done: AtomicBool,
++}
++
++/// Ends the body when the reader thread exits, however it exits.
++struct DoneOnDrop(Arc<LiveShared>);
++
++impl Drop for DoneOnDrop {
++    fn drop(&mut self) {
++        self.0.done.store(true, Ordering::Release);
++        self.0.notify.notify_one();
++    }
++}
++
++/// Dropped with the response body (client gone): tells the reader to stop.
++struct StopOnDrop(Arc<AtomicI32>);
++
++impl Drop for StopOnDrop {
++    fn drop(&mut self) {
++        self.0.store(1, Ordering::Release);
++    }
++}
++
++/// Clears the serial's live flag once the tunnel is closed.
++struct LiveFlag(Arc<SerialSlot>);
++
++impl Drop for LiveFlag {
++    fn drop(&mut self) {
++        self.0.live.store(false, Ordering::Release);
++    }
++}
++
++type FirstMsg = Result<Value, SnapOutcome>;
++
++/// Per-stream state used by the library callbacks (reader thread only).
++struct LiveCtx {
++    shared: Arc<LiveShared>,
++    first: Option<oneshot::Sender<FirstMsg>>,
++    info: Value,
++    sub_type: i32,
++    format_type: i32,
++    fmt: Vec<u8>,
++    /// Annex-B SPS+PPS and NAL length size, for avcC streams.
++    params: Vec<u8>,
++    len_size: usize,
++    bad_fmt: bool,
++    /// False until a keyframe went out (and again after a drop): deltas are useless then.
++    synced: bool,
++}
++
++impl LiveCtx {
++    /// Wire form of one sample; None to skip it.
++    fn frame(&mut self, s: &[u8], key: bool) -> Option<Bytes> {
++        if self.sub_type == 1 {
++            let mut v = format!("--frame\r\nContent-Type: image/jpeg\r\nContent-Length: {}\r\n\r\n", s.len()).into_bytes();
++            v.extend_from_slice(s);
++            v.extend_from_slice(b"\r\n");
++            return Some(v.into());
++        }
++        if !key && !self.synced {
++            return None;
++        }
++        let mut v = Vec::with_capacity(s.len() + self.params.len() + self.fmt.len());
++        match self.format_type {
++            0 => {
++                if key {
++                    v.extend_from_slice(&self.params);
++                }
++                avcc_nals_to_annexb(s, self.len_size, &mut v)?;
++            }
++            1 => {
++                let fmt_is_annexb = self.fmt.starts_with(&[0, 0, 0, 1]) || self.fmt.starts_with(&[0, 0, 1]);
++                if key && fmt_is_annexb && !has_nal_type(s, 7) {
++                    v.extend_from_slice(&self.fmt);
++                }
++                v.extend_from_slice(s);
++            }
++            _ => v.extend_from_slice(s),
++        }
++        Some(v.into())
++    }
++
++    fn push(&mut self, f: Bytes, key: bool) {
++        let mut q = self.shared.queue.lock().unwrap();
++        if q.len() >= LIVE_QUEUE_FRAMES {
++            if self.sub_type == 1 {
++                q.pop_front();
++            } else {
++                // Dropping single H.264 frames corrupts the picture: drop
++                // everything and resume at the next keyframe.
++                q.clear();
++                if !key {
++                    self.synced = false;
++                    return;
++                }
++            }
++        }
++        if key {
++            self.synced = true;
++        }
++        q.push_back(f);
++        drop(q);
++        if let Some(tx) = self.first.take() {
++            let _ = tx.send(Ok(self.info.clone()));
++        }
++        self.shared.notify.notify_one();
++    }
++}
++
++extern "C" fn live_info(ctx: *mut c_void, r: *const ffi::ShimSnapResult) -> c_int {
++    let c = unsafe { &mut *(ctx as *mut LiveCtx) };
++    let r = unsafe { &*r };
++    c.sub_type = r.sub_type;
++    c.format_type = r.format_type;
++    if !r.fmt.is_null() && r.fmt_len > 0 {
++        c.fmt = unsafe { std::slice::from_raw_parts(r.fmt, r.fmt_len as usize) }.to_vec();
++    }
++    c.info = json!({
++        "sub_type": r.sub_type,
++        "format_type": r.format_type,
++        "width": r.width,
++        "height": r.height,
++        "frame_rate": r.frame_rate,
++    });
++    if r.sub_type != 1 && r.format_type == 0 {
++        match avcc_param_sets(&c.fmt) {
++            Some((p, l)) => {
++                c.params = p;
++                c.len_size = l;
++            }
++            None => {
++                c.bad_fmt = true;
++                return 1;
++            }
++        }
++    }
++    0
++}
++
++extern "C" fn live_sample(ctx: *mut c_void, data: *const u8, size: c_int, flags: c_int) -> c_int {
++    let c = unsafe { &mut *(ctx as *mut LiveCtx) };
++    let s = unsafe { std::slice::from_raw_parts(data, size as usize) };
++    let key = flags & 1 != 0;
++    if let Some(f) = c.frame(s, key) {
++        c.push(f, key);
++    }
++    0
++}
++
++/// Start the play loop on its own thread. Resolves at the first frame (info
++/// for the response headers) or with the failure outcome; the frames follow in
++/// the returned queue.
++async fn start_live(
++    lib_path: String,
++    url: String,
++    timeout: Duration,
++    flag: LiveFlag,
++) -> Result<(Value, Arc<LiveShared>, Arc<AtomicI32>), SnapOutcome> {
++    let log: Arc<LogBuf> = Arc::new(Mutex::new(VecDeque::new()));
++    let stage = Arc::new(AtomicI32::new(0));
++    let stop = Arc::new(AtomicI32::new(0));
++    let shared = Arc::new(LiveShared { queue: Mutex::new(VecDeque::new()), notify: Notify::new(), done: AtomicBool::new(false) });
++    let (tx, rx) = oneshot::channel::<FirstMsg>();
++    let fail = |stage: i32, code: i32, err: String, log: Vec<String>| SnapOutcome {
++        ok: false, stage, code, err, sub_type: 0, format_type: 0, width: 0, height: 0,
++        frame_rate: 0, flags: 0, data: vec![], fmt: vec![], log,
++    };
++
++    // Logger ref handed to C: reclaimed after the shim returned (it stops
++    // forwarding before that), see run_snapshot.
++    let log_ctx = Arc::into_raw(log.clone()) as usize;
++    let (stage_t, log_t, stop_t, shared_t) = (stage.clone(), log.clone(), stop.clone(), shared.clone());
++
++    let spawn = std::thread::Builder::new().name("bambu-live".into()).spawn(move || {
++        let _flag = flag;
++        let _done = DoneOnDrop(shared_t.clone());
++        let mut ctx = LiveCtx {
++            shared: shared_t, first: Some(tx), info: Value::Null, sub_type: 0, format_type: 0,
++            fmt: vec![], params: vec![], len_size: 4, bad_fmt: false, synced: false,
++        };
++        let (c_lib, c_url) = match (CString::new(lib_path), CString::new(url)) {
++            (Ok(a), Ok(b)) => (a, b),
++            _ => {
++                unsafe { drop(Arc::from_raw(log_ctx as *const LogBuf)) };
++                if let Some(tx) = ctx.first.take() {
++                    let _ = tx.send(Err(fail(1, -1, "NUL byte in path/url".into(), vec![])));
++                }
++                return;
++            }
++        };
++        let mut r: ffi::ShimSnapResult = unsafe { std::mem::zeroed() };
++        unsafe {
++            ffi::shim_stream(
++                c_lib.as_ptr(), c_url.as_ptr(), timeout.as_millis() as c_int,
++                &mut r, stage_t.as_ptr(), stop_t.as_ptr(),
++                snap_log_cb, log_ctx as *mut c_void,
++                live_info, live_sample, &mut ctx as *mut LiveCtx as *mut c_void,
++            );
++        }
++        let err = unsafe { CStr::from_ptr(r.err.as_ptr()).to_string_lossy().into_owned() };
++        let (st, code) = (r.stage, r.code);
++        let ok = r.ok != 0;
++        unsafe { ffi::shim_snapshot_free(&mut r) };
++        let lines = last_lines(&log_t);
++        unsafe { drop(Arc::from_raw(log_ctx as *const LogBuf)) };
++        if let Some(tx) = ctx.first.take() {
++            // Nothing was sent: report why, as the snapshot route would.
++            let o = if ctx.bad_fmt {
++                fail(5, -6, "malformed avcC format buffer".into(), lines)
++            } else if ok {
++                fail(6, 1, "stream ended before a keyframe arrived".into(), lines)
++            } else {
++                fail(st, code, err, lines)
++            };
++            let _ = tx.send(Err(o));
++        } else if !ok {
++            tracing::warn!(stage = stage_name(st), code, "live: stream failed: {err}");
++        }
++    });
++    if let Err(e) = spawn {
++        return Err(fail(1, -1, format!("cannot spawn helper thread: {e}"), vec![]));
++    }
++
++    match tokio::time::timeout(timeout + HELPER_GRACE, rx).await {
++        Ok(Ok(Ok(info))) => Ok((info, shared, stop)),
++        Ok(Ok(Err(o))) => Err(o),
++        Ok(Err(_)) => Err(fail(stage.load(Ordering::Acquire), -998, "helper thread died (crash in library?)".into(), last_lines(&log))),
++        Err(_) => {
++            stop.store(1, Ordering::Release);
++            Err(fail(
++                stage.load(Ordering::Acquire), -999,
++                format!("library call did not return within {}s", (timeout + HELPER_GRACE).as_secs()),
++                last_lines(&log),
++            ))
++        }
++    }
++}
++
++pub async fn camera_live(
++    State(state): State<SharedState>,
++    Path(serial): Path<String>,
++    Query(q): Query<HashMap<String, String>>,
++) -> Response {
++    let ov = q.get("protocols").map(|s| parse_protocol_override(s));
++    let m = match mint(&state, &serial, ov).await {
++        Ok(m) => m,
++        Err(e) => return snap_error("mint", -1, e.error, vec![]),
++    };
++    let full = append_studio_params(
++        &m.url,
++        &serial,
++        &state.plugin_version,
++        &m.dev_ver,
++        &BambuAgent::stable_device_id(),
++        BAMBU_STUDIO_VERSION,
++    );
++
++    // Wait for an in-flight snapshot, then claim the serial under the lock.
++    let slot = state.camera.slot(&serial);
++    {
++        let _g = slot.lock.lock().await;
++        if slot.live.swap(true, Ordering::AcqRel) {
++            return busy_response();
++        }
++    }
++    let flag = LiveFlag(slot);
++
++    let lib = state.camera.bambu_source_path();
++    tracing::info!(serial = %serial, lib = %lib, "live: starting play loop");
++    let (info, shared, stop) = match start_live(lib, full, SNAPSHOT_TIMEOUT, flag).await {
++        Ok(x) => x,
++        Err(o) => {
++            tracing::info!(stage = stage_name(o.stage), code = o.code, "live: failed before first frame");
++            return snap_error(stage_name(o.stage), o.code, o.err, o.log);
++        }
++    };
++
++    let ctype = if info["sub_type"] == 1 { "multipart/x-mixed-replace; boundary=frame" } else { "video/h264" };
++    let guard = StopOnDrop(stop);
++    let stream = futures_util::stream::unfold((shared, guard), |(shared, guard)| async move {
++        loop {
++            let f = shared.queue.lock().unwrap().pop_front();
++            if let Some(f) = f {
++                return Some((Ok::<Bytes, std::convert::Infallible>(f), (shared, guard)));
++            }
++            if shared.done.load(Ordering::Acquire) {
++                // The thread pushes before setting `done`, so empty here means finished.
++                if shared.queue.lock().unwrap().is_empty() {
++                    return None;
++                }
++                continue;
++            }
++            shared.notify.notified().await;
++        }
++    });
++    let mut resp = (StatusCode::OK, Body::from_stream(stream)).into_response();
++    let h = resp.headers_mut();
++    h.insert(header::CONTENT_TYPE, HeaderValue::from_static(ctype));
++    h.insert(header::CACHE_CONTROL, HeaderValue::from_static("no-store"));
++    if let Ok(v) = HeaderValue::from_str(&info.to_string()) {
++        h.insert("x-stream-info", v);
++    }
++    resp
++}
++
++// ---------------------------------------------------------------------------
++// Tests
++// ---------------------------------------------------------------------------
++
++#[cfg(test)]
++mod tests {
++    use super::*;
++    use std::process::Command;
++
++    #[test]
++    fn redact_cuts_query_and_keys() {
++        let r = redact("open bambu:///tutk?uid=AB12&authkey=SECRET&passwd=PW done");
++        assert!(!r.contains("SECRET") && !r.contains("PW") && !r.contains("AB12"), "{r}");
++        assert!(r.contains("bambu:///tutk?<redacted>"));
++        let r = redact("x authkey=SECRET&foo=1 y token=abc");
++        assert!(!r.contains("SECRET") && !r.contains("abc"), "{r}");
++        assert_eq!(redact("plain line"), "plain line");
++    }
++
++    #[test]
++    fn prefix_and_transport() {
++        assert_eq!(url_prefix("bambu:///tutk?uid=1&authkey=2"), "bambu:///tutk");
++        assert_eq!(transport_of("bambu:///tutk"), "tutk");
++        assert_eq!(transport_of("bambu:///agora"), "agora");
++    }
++
++    #[test]
++    fn protocols_mapping() {
++        let none = Value::Null;
++        assert_eq!(protocols_wire(&protocols_from_ipcam(&none)), "\"tutk\",\"agora\"");
++        let t = json!({"liveview": {"remote": "tutk"}});
++        assert_eq!(protocols_wire(&protocols_from_ipcam(&t)), "\"tutk\"");
++        let a = json!({"liveview": {"remote": "agora"}});
++        assert_eq!(protocols_wire(&protocols_from_ipcam(&a)), "\"agora\"");
++    }
++
++    #[test]
++    fn dev_ver_extraction() {
++        let v = json!({"info": {"module": [{"name": "rv1126", "sw_ver": "x"}, {"name": "ota", "sw_ver": "01.02.03.04"}]}});
++        assert_eq!(extract_dev_ver(&v).as_deref(), Some("01.02.03.04"));
++        assert_eq!(extract_dev_ver(&json!({"print": {"gcode_state": "IDLE"}})), None);
++        let u = json!({"print": {"upgrade_state": {"sw_ver": "09.09"}}});
++        assert_eq!(extract_dev_ver(&u).as_deref(), Some("09.09"));
++    }
++
++    #[test]
++    fn studio_params_appended() {
++        let u = append_studio_params("bambu:///tutk?uid=1", "SER", "02.05.00.56", "01.00", "cid", "02.05.00.66");
++        assert_eq!(u, "bambu:///tutk?uid=1&device=SER&net_ver=02.05.00.56&dev_ver=01.00&cli_id=cid&cli_ver=02.05.00.66");
++    }
++
++    #[test]
++    fn avcc_conversion() {
++        // avcC: ver=1, profile, compat, level, 0xFF (len size 4), 0xE1 (1 SPS), sps, 1 PPS, pps
++        let avcc = [1, 0x64, 0, 0x1f, 0xff, 0xe1, 0, 2, 0x67, 0xaa, 1, 0, 2, 0x68, 0xbb];
++        let sample = [0, 0, 0, 3, 0x65, 0x11, 0x22];
++        let out = avcc_to_annexb(&avcc, &sample).unwrap();
++        assert_eq!(
++            out,
++            vec![0, 0, 0, 1, 0x67, 0xaa, 0, 0, 0, 1, 0x68, 0xbb, 0, 0, 0, 1, 0x65, 0x11, 0x22]
++        );
++        assert!(avcc_to_annexb(&avcc, &[0, 0, 0, 9, 1]).is_none());
++    }
++
++    // ---- Fake libBambuSource harness ------------------------------------
++
++    pub const FAKE_JPEG: &[u8] = &[0xff, 0xd8, 0xff, 0xe0, 0x00, 0x10, b'J', b'F', b'I', b'F', 0x00, 0x01, 0x02, 0xff, 0xd9];
++    pub const FAKE_H264: &[u8] = &[
++        0, 0, 0, 1, 0x67, 0x64, 0x00, 0x1f, // SPS
++        0, 0, 0, 1, 0x68, 0xee, 0x3c, 0x80, // PPS
++        0, 0, 0, 1, 0x65, 0x88, 0x84, 0x00, 0x10, // IDR
++    ];
++
++    /// Compile tests/fake_bambusource.c once per process; returns the .so path.
++    fn fake_lib() -> String {
++        use std::sync::OnceLock;
++        static P: OnceLock<String> = OnceLock::new();
++        P.get_or_init(|| {
++            let dir = std::env::temp_dir().join(format!("fake_bambusource_{}", std::process::id()));
++            std::fs::create_dir_all(&dir).unwrap();
++            let out = dir.join("libBambuSource.so");
++            let src = concat!(env!("CARGO_MANIFEST_DIR"), "/tests/fake_bambusource.c");
++            let st = Command::new("cc")
++                .args(["-shared", "-fPIC", "-O1", "-o"])
++                .arg(&out)
++                .arg(src)
++                .status()
++                .expect("cc available");
++            assert!(st.success(), "compiling fake libBambuSource failed");
++            out.to_string_lossy().into_owned()
++        })
++        .clone()
++    }
++
++    fn test_server(url: &str) -> (axum_test::TestServer, SharedState) {
++        let state = crate::server::mock_state(HashMap::new());
++        // Fake lib sits where "networking lib dir" points.
++        let nl = format!("{}/libbambu_networking.so", std::path::Path::new(&fake_lib()).parent().unwrap().display());
++        state.camera.set_lib_path(&nl);
++        *state.camera.test_url.lock().unwrap() = Some(url.to_string());
++        let server = axum_test::TestServer::new(crate::server::router(state.clone())).unwrap();
++        (server, state)
++    }
++
++    const SECRET_URL: &str = "bambu:///tutk?uid=UIDSECRET&authkey=AUTHSECRET&passwd=PWSECRET";
++
++    #[tokio::test]
++    async fn t1_snapshot_open_minus13_gives_502_stage_open() {
++        let (server, _s) = test_server(&format!("{SECRET_URL}&mode=open13"));
++        let resp = server.get("/camera/SER123/snapshot").await;
++        let body = resp.text();
++        println!("HTTP {} body={}", resp.status_code(), body);
++        resp.assert_status(StatusCode::BAD_GATEWAY);
++        let j: Value = serde_json::from_str(&body).unwrap();
++        assert_eq!(j["stage"], "open");
++        assert_eq!(j["code"], -13);
++        let log = j["log"].as_array().unwrap();
++        assert!(!log.is_empty(), "log lines expected");
++        assert!(log.len() <= 20);
++        for forbidden in ["AUTHSECRET", "PWSECRET", "UIDSECRET", "authkey", "passwd"] {
++            assert!(!body.contains(forbidden), "leaked {forbidden} in {body}");
++        }
++    }
++
++    #[tokio::test]
++    async fn t1b_snapshot_dlopen_failure_gives_stage_dlopen() {
++        let state = crate::server::mock_state(HashMap::new());
++        state.camera.set_lib_path("/nonexistent/dir/libbambu_networking.so");
++        *state.camera.test_url.lock().unwrap() = Some(SECRET_URL.to_string());
++        let server = axum_test::TestServer::new(crate::server::router(state)).unwrap();
++        let resp = server.get("/camera/SER123/snapshot").await;
++        println!("HTTP {} body={}", resp.status_code(), resp.text());
++        resp.assert_status(StatusCode::BAD_GATEWAY);
++        let j: Value = resp.json();
++        assert_eq!(j["stage"], "dlopen");
++        assert_eq!(j["code"], -2);
++    }
++
++    #[tokio::test]
++    async fn t2_snapshot_mjpeg_returns_jpeg_bytes() {
++        let (server, _s) = test_server(&format!("{SECRET_URL}&mode=mjpeg"));
++        let resp = server.get("/camera/SER123/snapshot").await;
++        resp.assert_status_ok();
++        let ct = resp.header("content-type");
++        let info = resp.header("x-stream-info");
++        println!("HTTP 200 content-type={ct:?} x-stream-info={info:?} bytes={}", resp.as_bytes().len());
++        assert_eq!(ct, "image/jpeg");
++        assert_eq!(resp.as_bytes().as_ref(), FAKE_JPEG);
++        let i: Value = serde_json::from_str(info.to_str().unwrap()).unwrap();
++        assert_eq!(i["sub_type"], 1);
++        assert_eq!(i["width"], 1280);
++        assert_eq!(i["height"], 720);
++    }
++
++    #[tokio::test]
++    async fn t3_snapshot_h264_annexb_waits_for_keyframe() {
++        let (server, _s) = test_server(&format!("{SECRET_URL}&mode=h264"));
++        let resp = server.get("/camera/SER123/snapshot").await;
++        resp.assert_status_ok();
++        let ct = resp.header("content-type");
++        let info = resp.header("x-stream-info");
++        println!("HTTP 200 content-type={ct:?} x-stream-info={info:?} bytes={}", resp.as_bytes().len());
++        assert_eq!(ct, "video/h264");
++        assert_eq!(resp.as_bytes().as_ref(), FAKE_H264);
++        let i: Value = serde_json::from_str(info.to_str().unwrap()).unwrap();
++        assert_eq!(i["sub_type"], 0);
++        assert_eq!(i["format_type"], 1);
++        assert_eq!(i["width"], 1920);
++        assert_eq!(i["height"], 1080);
++    }
++
++    #[tokio::test]
++    async fn t4_snapshot_h264_avcc_converted_to_annexb() {
++        let (server, _s) = test_server(&format!("{SECRET_URL}&mode=h264avcc"));
++        let resp = server.get("/camera/SER123/snapshot").await;
++        resp.assert_status_ok();
++        println!("HTTP 200 content-type={:?} bytes={}", resp.header("content-type"), resp.as_bytes().len());
++        assert_eq!(resp.as_bytes().as_ref(), FAKE_H264);
++        let i: Value = serde_json::from_str(resp.header("x-stream-info").to_str().unwrap()).unwrap();
++        assert_eq!(i["format_type"], 0);
++    }
++
++    #[tokio::test]
++    async fn t5_camera_url_route_returns_prefix_only() {
++        let (server, _s) = test_server(SECRET_URL);
++        let resp = server.get("/camera/SER123/url").await;
++        let body = resp.text();
++        println!("HTTP {} body={}", resp.status_code(), body);
++        resp.assert_status_ok();
++        let j: Value = serde_json::from_str(&body).unwrap();
++        assert_eq!(j["ok"], true);
++        assert_eq!(j["url_prefix"], "bambu:///tutk");
++        assert_eq!(j["transport"], "tutk");
++        for forbidden in ["AUTHSECRET", "PWSECRET", "UIDSECRET", "authkey", "passwd", "?"] {
++            assert!(!body.contains(forbidden), "leaked {forbidden}");
++        }
++    }
++
++    #[tokio::test]
++    async fn t6_camera_url_route_fails_without_agent() {
++        // No test hook: mint goes through the (disconnected) agent channel.
++        let state = crate::server::mock_state(HashMap::new());
++        let server = axum_test::TestServer::new(crate::server::router(state)).unwrap();
++        let resp = server.get("/camera/SER123/url").await;
++        println!("HTTP {} body={}", resp.status_code(), resp.text());
++        resp.assert_status(StatusCode::BAD_GATEWAY);
++        let j: Value = resp.json();
++        assert_eq!(j["ok"], false);
++        assert!(j["error"].as_str().unwrap().len() > 0);
++    }
++
++    // ---- Live stream -----------------------------------------------------
++
++    fn delta(n: u8) -> Vec<u8> {
++        vec![0, 0, 0, 1, 0x41, 0x9a, n]
++    }
++
++    #[tokio::test]
++    async fn t7_live_h264_starts_with_sps_pps_keyframe_and_drops_leading_deltas() {
++        let (server, _s) = test_server(&format!("{SECRET_URL}&mode=live_avcc"));
++        let resp = server.get("/camera/SER123/live").await;
++        resp.assert_status_ok();
++        println!("HTTP 200 content-type={:?} x-stream-info={:?}", resp.header("content-type"), resp.header("x-stream-info"));
++        assert_eq!(resp.header("content-type"), "video/h264");
++        let i: Value = serde_json::from_str(resp.header("x-stream-info").to_str().unwrap()).unwrap();
++        assert_eq!((i["sub_type"].as_i64(), i["format_type"].as_i64()), (Some(0), Some(0)));
++        assert_eq!((i["width"].as_i64(), i["height"].as_i64(), i["frame_rate"].as_i64()), (Some(1920), Some(1080), Some(30)));
++        // Reads 1,2 are deltas before the first keyframe (dropped); 3 is the
++        // keyframe, 4 a delta, 6 a keyframe (SPS/PPS repeated), 7 a delta.
++        let mut want = FAKE_H264.to_vec();
++        want.extend(delta(4));
++        want.extend_from_slice(FAKE_H264);
++        want.extend(delta(7));
++        assert_eq!(resp.as_bytes().as_ref(), want.as_slice());
++    }
++
++    #[tokio::test]
++    async fn t8_live_mjpeg_is_multipart_parts() {
++        let (server, _s) = test_server(&format!("{SECRET_URL}&mode=live_jpeg"));
++        let resp = server.get("/camera/SER123/live").await;
++        resp.assert_status_ok();
++        println!("HTTP 200 content-type={:?}", resp.header("content-type"));
++        assert_eq!(resp.header("content-type"), "multipart/x-mixed-replace; boundary=frame");
++        let i: Value = serde_json::from_str(resp.header("x-stream-info").to_str().unwrap()).unwrap();
++        assert_eq!(i["sub_type"], 1);
++        let mut part = format!("--frame\r\nContent-Type: image/jpeg\r\nContent-Length: {}\r\n\r\n", FAKE_JPEG.len()).into_bytes();
++        part.extend_from_slice(FAKE_JPEG);
++        part.extend_from_slice(b"\r\n");
++        let want: Vec<u8> = part.repeat(3);
++        assert_eq!(resp.as_bytes().as_ref(), want.as_slice());
++    }
++
++    #[tokio::test]
++    async fn t9_live_failure_before_first_frame_matches_snapshot_error() {
++        let (server, _s) = test_server(&format!("{SECRET_URL}&mode=open13"));
++        let resp = server.get("/camera/SER123/live").await;
++        let body = resp.text();
++        println!("HTTP {} body={}", resp.status_code(), body);
++        resp.assert_status(StatusCode::BAD_GATEWAY);
++        let j: Value = serde_json::from_str(&body).unwrap();
++        assert_eq!((j["stage"].as_str(), j["code"].as_i64()), (Some("open"), Some(-13)));
++        for forbidden in ["AUTHSECRET", "PWSECRET", "UIDSECRET", "authkey", "passwd"] {
++            assert!(!body.contains(forbidden), "leaked {forbidden} in {body}");
++        }
++    }
++
++    /// Serve the router on a real socket (the mock transport buffers whole bodies).
++    async fn serve_real(state: SharedState) -> std::net::SocketAddr {
++        let l = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
++        let addr = l.local_addr().unwrap();
++        tokio::spawn(async move { axum::serve(l, crate::server::router(state)).await.unwrap() });
++        addr
++    }
++
++    /// Open a live request and read until the headers plus some body arrived.
++    async fn open_live(addr: std::net::SocketAddr, serial: &str) -> tokio::net::TcpStream {
++        use tokio::io::{AsyncReadExt, AsyncWriteExt};
++        let mut c = tokio::net::TcpStream::connect(addr).await.unwrap();
++        c.write_all(format!("GET /camera/{serial}/live HTTP/1.1\r\nHost: t\r\n\r\n").as_bytes()).await.unwrap();
++        let mut got = Vec::new();
++        let mut buf = [0u8; 4096];
++        while !(got.windows(4).any(|w| w == b"\r\n\r\n") && got.len() > 300) {
++            let n = tokio::time::timeout(Duration::from_secs(10), c.read(&mut buf)).await.expect("no data").unwrap();
++            assert!(n > 0, "closed early: {}", String::from_utf8_lossy(&got));
++            got.extend_from_slice(&buf[..n]);
++        }
++        assert!(String::from_utf8_lossy(&got).starts_with("HTTP/1.1 200"), "{}", String::from_utf8_lossy(&got[..100]));
++        c
++    }
++
++    fn marker_lines(p: &std::path::Path) -> Vec<String> {
++        std::fs::read_to_string(p).unwrap_or_default().lines().map(String::from).collect()
++    }
++
++    #[tokio::test]
++    async fn t10_live_client_disconnect_closes_and_destroys_tunnel() {
++        let dir = std::env::temp_dir().join(format!("live_marker_{}", std::process::id()));
++        std::fs::create_dir_all(&dir).unwrap();
++        let marker = dir.join("t10");
++        let _ = std::fs::remove_file(&marker);
++        let (_server, state) = test_server(&format!("{SECRET_URL}&mode=live_forever&marker={}", marker.display()));
++        let addr = serve_real(state).await;
++        let c = open_live(addr, "SER123").await;
++        assert!(marker_lines(&marker).is_empty(), "tunnel closed while client still connected");
++        drop(c);
++        let t0 = std::time::Instant::now();
++        while marker_lines(&marker) != ["close", "destroy"] && t0.elapsed() < Duration::from_secs(5) {
++            tokio::time::sleep(Duration::from_millis(20)).await;
++        }
++        println!("marker={:?} after {:?}", marker_lines(&marker), t0.elapsed());
++        assert_eq!(marker_lines(&marker), ["close", "destroy"]);
++        assert!(t0.elapsed() < Duration::from_secs(1), "took {:?}", t0.elapsed());
++    }
++
++    #[tokio::test]
++    async fn t11_live_blocks_only_snapshots_of_same_serial() {
++        let (server, state) = test_server(&format!("{SECRET_URL}&mode=live_forever"));
++        let addr = serve_real(state).await;
++        let c = open_live(addr, "SER123").await;
++        // Same serial: fail fast with 409. Other serial: unaffected.
++        let busy = server.get("/camera/SER123/snapshot").await;
++        println!("same serial: HTTP {} {}", busy.status_code(), busy.text());
++        busy.assert_status(StatusCode::CONFLICT);
++        assert_eq!(busy.json::<Value>()["stage"], "busy");
++        let busy2 = server.get("/camera/SER123/live").await;
++        busy2.assert_status(StatusCode::CONFLICT);
++        let other = server.get("/camera/SER456/snapshot").await;
++        println!("other serial: HTTP {}", other.status_code());
++        other.assert_status_ok();
++        // Once the live client is gone the serial is free again.
++        drop(c);
++        let t0 = std::time::Instant::now();
++        loop {
++            let r = server.get("/camera/SER123/snapshot").await;
++            if r.status_code() == StatusCode::OK {
++                break;
++            }
++            assert!(t0.elapsed() < Duration::from_secs(5), "serial still busy: {}", r.text());
++            tokio::time::sleep(Duration::from_millis(50)).await;
++        }
++    }
++}
+diff -ruN -x tests -x target a/src/ffi.rs b/src/ffi.rs
+--- a/src/ffi.rs	2026-11-27 21:06:35.043627573 +0000
++++ b/src/ffi.rs	2026-11-27 21:06:35.049915973 +0000
+@@ -28,6 +28,10 @@
+     pub task_record_timelapse: c_int,
+     pub task_use_ams: c_int,
+     pub task_bed_type: *const c_char,
++    pub auto_bed_leveling: c_int,
++    pub auto_flow_cali: c_int,
++    pub auto_offset_cali: c_int,
++    pub task_ext_change_assist: c_int,
+ }
+ 
+ #[repr(C)]
+@@ -49,7 +53,65 @@
+ pub type OnHttpErrorFn = extern "C" fn(code: c_uint, body: *const c_char, ctx: *mut c_void);
+ pub type OnSubscribeFailureFn = extern "C" fn(topic: *const c_char, ctx: *mut c_void);
+ 
++/// Mirrors ShimSnapResult in shim.cpp.
++#[repr(C)]
++pub struct ShimSnapResult {
++    pub stage: c_int,
++    pub code: c_int,
++    pub ok: c_int,
++    pub sub_type: c_int,
++    pub format_type: c_int,
++    pub width: c_int,
++    pub height: c_int,
++    pub frame_rate: c_int,
++    pub sample_flags: c_int,
++    pub data: *mut u8,
++    pub data_len: c_int,
++    pub fmt: *mut u8,
++    pub fmt_len: c_int,
++    pub err: [c_char; 256],
++}
++
++pub type CameraUrlCb = extern "C" fn(ctx: *mut c_void, url: *const c_char);
++pub type SnapLogCb = extern "C" fn(ctx: *mut c_void, level: c_int, msg: *const c_char);
++pub type StreamInfoCb = extern "C" fn(ctx: *mut c_void, info: *const ShimSnapResult) -> c_int;
++pub type StreamSampleCb =
++    extern "C" fn(ctx: *mut c_void, data: *const u8, size: c_int, flags: c_int) -> c_int;
++
+ extern "C" {
++    // Camera (optional symbol, see bambu_shim_has_camera_url)
++    pub fn bambu_shim_has_camera_url() -> c_int;
++    pub fn bambu_shim_install_device_cert(agent: *mut c_void, dev_id: *const c_char, lan_only: c_int) -> c_int;
++    pub fn shim_get_camera_url(
++        agent: *mut c_void,
++        dev_id: *const c_char,
++        cb: CameraUrlCb,
++        ctx: *mut c_void,
++    ) -> c_int;
++    pub fn shim_snapshot(
++        lib_path: *const c_char,
++        url: *const c_char,
++        timeout_ms: c_int,
++        result: *mut ShimSnapResult,
++        stage_out: *mut c_int,
++        log_cb: SnapLogCb,
++        log_ctx: *mut c_void,
++    ) -> c_int;
++    pub fn shim_stream(
++        lib_path: *const c_char,
++        url: *const c_char,
++        timeout_ms: c_int,
++        result: *mut ShimSnapResult,
++        stage_out: *mut c_int,
++        stop: *const c_int,
++        log_cb: SnapLogCb,
++        log_ctx: *mut c_void,
++        on_info: StreamInfoCb,
++        on_sample: StreamSampleCb,
++        cb_ctx: *mut c_void,
++    ) -> c_int;
++    pub fn shim_snapshot_free(result: *mut ShimSnapResult);
++
+     // Library loading
+     pub fn bambu_shim_load(lib_path: *const c_char) -> c_int;
+     pub fn bambu_shim_load_error() -> *const c_char;
+diff -ruN -x tests -x target a/src/handle.rs b/src/handle.rs
+--- a/src/handle.rs	2026-11-27 21:06:35.043663088 +0000
++++ b/src/handle.rs	2026-11-27 21:06:35.050013542 +0000
+@@ -40,6 +40,13 @@
+     CancelPrint {
+         reply: oneshot::Sender<()>,
+     },
++    /// Kick off an async camera URL request. Replies with the URL string (or
++    /// the library's error string) once the library's callback fires; the
++    /// agent thread itself is NOT blocked while waiting.
++    GetCameraUrl {
++        dev_id: String,
++        reply: oneshot::Sender<Result<String, String>>,
++    },
+ }
+ 
+ // ---------------------------------------------------------------------------
+@@ -116,6 +123,24 @@
+         rx.await.map_err(|_| "agent thread dropped reply".to_string())?
+     }
+ 
++    /// Mint a camera URL. The URL carries credentials: callers must never log it.
++    /// Waits up to `timeout` for the library callback.
++    pub async fn get_camera_url(
++        &self,
++        dev_id: String,
++        timeout: Duration,
++    ) -> Result<String, String> {
++        let (reply, rx) = oneshot::channel();
++        self.tx
++            .send(AgentCommand::GetCameraUrl { dev_id, reply })
++            .await
++            .map_err(|_| "agent thread gone".to_string())?;
++        match tokio::time::timeout(timeout, rx).await {
++            Ok(r) => r.map_err(|_| "agent thread dropped reply".to_string())?,
++            Err(_) => Err(format!("timeout after {}s waiting for camera URL callback", timeout.as_secs())),
++        }
++    }
++
+     /// Cancel the current in-flight print upload.
+     ///
+     /// Sets the atomic cancel flag so the C++ upload loop aborts, and also
+@@ -212,6 +237,9 @@
+                         agent.cancel_current_print();
+                         let _ = reply.send(());
+                     }
++                    AgentCommand::GetCameraUrl { dev_id, reply } => {
++                        crate::camera::start_mint(&agent, &dev_id, reply);
++                    }
+                 }
+ 
+                 // Sync connection state after each command
+@@ -304,6 +332,12 @@
+             vibration_cali: true,
+             timelapse: false,
+             use_ams: true,
++            layer_inspect: false,
++            bed_type: "auto".into(),
++            auto_bed_leveling: 0,
++            auto_flow_cali: 0,
++            auto_offset_cali: 0,
++            ext_change_assist: false,
+         };
+         let result = handle.start_print(req).await;
+         assert!(result.is_err());
+diff -ruN -x tests -x target a/src/main.rs b/src/main.rs
+--- a/src/main.rs	2026-11-27 21:06:35.043701094 +0000
++++ b/src/main.rs	2026-11-27 21:06:35.050126082 +0000
+@@ -4,6 +4,7 @@
+ //! Phase 2: `daemon` subcommand — axum HTTP API on localhost
+ 
+ mod agent;
++mod camera;
+ mod callbacks;
+ mod fetch;
+ mod ffi;
+@@ -466,6 +467,12 @@
+                 vibration_cali: true,
+                 timelapse: false,
+                 use_ams: true,
++                layer_inspect: false,
++                bed_type: "auto".into(),
++                auto_bed_leveling: 0,
++                auto_flow_cali: 0,
++                auto_offset_cali: 0,
++                ext_change_assist: false,
+             };
+ 
+             let result = match agent.start_print(&request) {
+@@ -519,6 +526,7 @@
+                 printers.clone(),
+                 cli.plugin_version.clone(),
+             );
++            state.camera.set_lib_path(&lib_path);
+             server::spawn_cache_updater(state.clone());
+ 
+             // Pre-subscribe to all configured printers so the cache is warm
+diff -ruN -x tests -x target a/src/server.rs b/src/server.rs
+--- a/src/server.rs	2026-11-27 21:06:35.043787694 +0000
++++ b/src/server.rs	2026-11-27 21:08:26.661103280 +0000
+@@ -11,6 +11,9 @@
+ //!   GET  /status/:device_id — cached printer status (instant) or live query
+ //!   GET  /ams/:device_id    — AMS tray info extracted from cached status
+ //!   POST /cancel/:device_id — cancel current print
++//!   GET  /camera/:serial/url      — mint camera URL (returns prefix only)
++//!   GET  /camera/:serial/snapshot — one still frame (JPEG or Annex-B H.264 keyframe)
++//!   GET  /camera/:serial/live     — continuous stream (Annex-B H.264 or multipart MJPEG)
+ 
+ use std::collections::{HashMap, HashSet};
+ use std::sync::{Arc, RwLock};
+@@ -59,6 +62,8 @@
+     pub started_at: Instant,
+     /// Bambu plugin version (e.g. "02.05.00.00").
+     pub plugin_version: String,
++    /// Camera support state (lib path, firmware versions, snapshot lock).
++    pub camera: crate::camera::CameraState,
+ }
+ 
+ pub type SharedState = Arc<AppState>;
+@@ -79,6 +84,7 @@
+                 .collect(),
+             started_at: Instant::now(),
+             plugin_version,
++            camera: Default::default(),
+         })
+     }
+ }
+@@ -365,6 +371,32 @@
+     })))
+ }
+ 
++/// POST /command/:device_id — publish one MQTT message (the request body) the way BambuStudio's
++/// cloud_publish_json does. The plugin signs it where the firmware requires that.
++async fn send_command(
++    State(state): State<SharedState>,
++    Path(device_id): Path<String>,
++    Json(payload): Json<serde_json::Value>,
++) -> Result<Json<serde_json::Value>, (StatusCode, Json<ErrorResponse>)> {
++    if !payload.is_object() {
++        return Err(err(StatusCode::BAD_REQUEST, "body must be a JSON object".into()));
++    }
++    // The SDK requires the device to be selected before send_message works (-2 otherwise).
++    let _ = state
++        .handle
++        .subscribe_and_pushall(device_id.clone(), std::time::Duration::from_secs(10))
++        .await;
++    let ret = state
++        .handle
++        .send_message(device_id.clone(), payload.to_string())
++        .await
++        .map_err(|e| err(StatusCode::BAD_REQUEST, format!("invalid device_id: {e}")))?;
++    if ret != 0 {
++        return Err(err(StatusCode::BAD_GATEWAY, format!("send_message returned {ret}")));
++    }
++    Ok(Json(serde_json::json!({"device_id": device_id, "sent": true})))
++}
++
+ /// POST /print — multipart upload
+ ///
+ /// Fields:
+@@ -529,7 +561,7 @@
+ }
+ 
+ /// Get printer status for AMS tray parsing. Checks cache first, then does a live query.
+-async fn get_printer_status_for_ams(
++pub(crate) async fn get_printer_status_for_ams(
+     state: &SharedState,
+     device_id: &str,
+ ) -> Option<serde_json::Value> {
+@@ -618,6 +650,25 @@
+                 continue;
+             }
+ 
++            // Scrape firmware versions from `info.module` replies (used by /camera).
++            for msg in &messages {
++                if !msg.dev_id.is_empty()
++                    && msg.payload.contains("\"module\"")
++                    && msg.payload.contains("\"sw_ver\"")
++                {
++                    if let Ok(v) = serde_json::from_str::<serde_json::Value>(&msg.payload) {
++                        if let Some(ver) = crate::camera::extract_dev_ver(&v) {
++                            state
++                                .camera
++                                .versions
++                                .write()
++                                .unwrap()
++                                .insert(msg.dev_id.clone(), ver);
++                        }
++                    }
++                }
++            }
++
+             // Group messages by device_id, keep the best (largest) per device
+             let mut best_per_device: HashMap<String, &crate::callbacks::MqttMessage> =
+                 HashMap::new();
+@@ -706,6 +757,7 @@
+             .collect(),
+         started_at: Instant::now(),
+         plugin_version: "02.05.00.00".into(),
++        camera: Default::default(),
+     });
+     state
+ }
+@@ -733,9 +785,15 @@
+         .route("/printers", get(list_printers))
+         .route("/status/:device_id", get(get_status))
+         .route("/ams/:device_id", get(get_ams))
++        .route("/camera/:serial/url", get(crate::camera::camera_url))
++        .route("/camera/:serial/snapshot", get(crate::camera::camera_snapshot))
++        .route("/camera/:serial/live", get(crate::camera::camera_live))
+         .route("/print", axum::routing::post(start_print))
+         .route("/cancel/:device_id", axum::routing::post(cancel_print))
++        .route("/command/:device_id", axum::routing::post(send_command))
+         .route("/shutdown", axum::routing::post(shutdown))
++        // axum's default body limit is 2 MB; a sliced .gcode.3mf is often larger (Druckwerk caps uploads at 64 MiB).
++        .layer(axum::extract::DefaultBodyLimit::max(64 * 1024 * 1024))
+         .with_state(state)
+ }
+ 
+@@ -995,6 +1053,15 @@
+     }
+ 
+     #[tokio::test]
++    async fn command_route_exists_and_rejects_non_object() {
++        let state = mock_state(HashMap::new());
++        let server = axum_test::TestServer::new(router(state)).unwrap();
++        server.post("/command/DEV001").json(&serde_json::json!([1])).await.assert_status(StatusCode::BAD_REQUEST);
++        let resp = server.post("/command/DEV001").json(&serde_json::json!({"system": {"command": "ledctrl"}})).await;
++        assert_ne!(resp.status_code(), StatusCode::NOT_FOUND);
++    }
++
++    #[tokio::test]
+     async fn nonexistent_route_returns_404() {
+         let state = mock_state(HashMap::new());
+         let app = router(state);
+@@ -1028,3 +1095,19 @@
+         assert_eq!(body["print"]["mc_percent"], 0);
+     }
+ }
++
++#[cfg(test)]
++mod body_limit_tests {
++    use std::collections::HashMap;
++
++    // A sliced plate is often over axum's 2 MB default; the file must reach the handler.
++    #[tokio::test]
++    async fn print_upload_over_2mb_is_read() {
++        let server = axum_test::TestServer::new(crate::server::router(crate::server::mock_state(HashMap::new()))).unwrap();
++        let form = axum_test::multipart::MultipartForm::new()
++            .add_part("file", axum_test::multipart::Part::bytes(vec![0u8; 3 * 1024 * 1024]).file_name("plate.gcode.3mf"));
++        let resp = server.post("/print").multipart(form).await;
++        let body = resp.text();
++        assert!(body.contains("missing 'params' field"), "HTTP {} body={}", resp.status_code(), body);
++    }
++}

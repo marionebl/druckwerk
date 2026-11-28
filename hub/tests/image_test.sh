@@ -78,7 +78,7 @@ curl -fsS "${ID[@]}" -X POST --data-binary @"$REPO/hub/tests/fixtures/gcode/h2s_
   | python3 -c 'import json,sys;j=json.load(sys.stdin);print(json.dumps({k:j.get(k) for k in ("state","error","info")}));assert j["state"]=="done" and j["info"]["seconds"]==7440,j'
 curl -fsS "${ID[@]}" -o /dev/null -w 'plate.gcode %{http_code} %{size_download} B\n' $B/api/jobs/$J/plate.gcode
 # The app sends the print to the real bridge, which has no account here: it must refuse with its own error text.
-code=$(curl -s -o /tmp/print.json -w '%{http_code}' "${ID[@]}" -X POST -d '{"confirm":true}' $B/api/jobs/$J/print); echo "print: $code $(cat /tmp/print.json)"
+code=$(curl -s -o /tmp/print.json -w '%{http_code}' "${ID[@]}" -X POST -H 'Content-Type: application/json' -d '{"confirm":true}' $B/api/jobs/$J/print); echo "print: $code $(cat /tmp/print.json)"
 case "$code" in 409|502) python3 -c 'import json;assert json.load(open("/tmp/print.json"))["error"]' ;; *) echo "FAIL: print gave $code" >&2; exit 1 ;; esac
 curl -fsS http://127.0.0.1:18801/calls; echo
 curl -fsS http://127.0.0.1:18801/calls | python3 -c 'import json,sys;c=[x for x in json.load(sys.stdin) if x["path"]=="/supervisor/discovery"];assert c and c[0]["body"]["service"]=="druckwerk" and c[0]["body"]["config"]["host"]=="hub-test",c;print("discovery sent to Supervisor")'

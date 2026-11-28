@@ -11,6 +11,7 @@ import tempfile
 import time
 import urllib.error
 import urllib.request
+from urllib.parse import quote
 
 from app import log
 from gcode_guard import check_gcode_3mf, file_model, same_model
@@ -58,6 +59,7 @@ class PlatesInbox:
         except (OSError, ValueError):
             pass
         self.rejected = {}  # (key, blob sha) -> reason, in memory: a changed file or a restart looks again
+        self.rejected_dirs = {}  # folder -> its id (GitHub's tree sha) when every file in it was rejected: skipped until the id changes
         self.last_poll, self.last_error = None, None
         self.enabled = bool(token) and bool(REPO.fullmatch(repo or ""))
 
@@ -82,7 +84,7 @@ class PlatesInbox:
 
     # -- github --
     def _open(self, method, path, accept, body=None, timeout=30):
-        req = urllib.request.Request(self.api + "/repos/%s/%s" % (self.repo, path), method=method,
+        req = urllib.request.Request(self.api + "/repos/%s/%s" % (self.repo, quote(path, safe="/?=&")), method=method,
                                      data=json.dumps(body).encode() if body is not None else None,
                                      headers={"Authorization": "Bearer " + self.token, "Accept": accept,
                                               "X-GitHub-Api-Version": "2022-11-28", "User-Agent": "druckwerk"})
@@ -130,8 +132,10 @@ class PlatesInbox:
             for d in self._list("plates"):
                 if d.get("type") != "dir" or not SAFE.fullmatch(d.get("name", "")):
                     continue
+                if d.get("sha") and self.rejected_dirs.get(d["name"]) == d["sha"]:
+                    continue
                 try:
-                    added += self._folder(d["name"], errors)
+                    added += self._folder(d["name"], errors, d.get("sha"))
                 except Exception as e:  # noqa: BLE001 - one bad folder must not stop the others
                     errors.append("plates/%s: %s" % (d["name"], e))
         except Exception as e:  # noqa: BLE001
@@ -141,7 +145,7 @@ class PlatesInbox:
             log("plates inbox: " + e)
         return added
 
-    def _folder(self, id, errors):
+    def _folder(self, id, errors, tree_id):
         files = [f for f in self._list("plates/" + id) if f.get("type") == "file"]
         plates = [f for f in files if f["name"].endswith(".gcode.3mf") and SAFE.fullmatch(f["name"])]
         if not plates:
@@ -167,6 +171,8 @@ class PlatesInbox:
             write_json(self.taken_path, self.taken)
             added += 1
             log("plates inbox: queued %s" % key)
+        if keep and tree_id:
+            self.rejected_dirs[id] = tree_id
         if not keep:
             for f in files:  # the folder disappears with its last file
                 try:

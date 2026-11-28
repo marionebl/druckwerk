@@ -1,12 +1,14 @@
 """Painting helpers of New print (hub/ui/views/paintcodes.js), run with node: mesh refinement and the engine's paint codes."""
 import json
+import os
 import shutil
 import subprocess
 from pathlib import Path
 
 import pytest
 
-pytestmark = pytest.mark.skipif(shutil.which("node") is None, reason="node is needed to run the browser module")
+# In CI (CI is set) a missing node must fail the test, not skip it.
+pytestmark = pytest.mark.skipif(shutil.which("node") is None and not os.environ.get("CI"), reason="node is needed to run the browser module")
 
 
 def run():

@@ -1,24 +1,53 @@
 name: Tests
+# push only on main: a pull request branch is tested by its pull_request run, not twice.
+# workflow_call: hub.yml lists this workflow in `needs` of the image job, so a failing test stops the push to ghcr.io.
 on:
   push:
+    branches: [main]
   pull_request:
+  workflow_call:
 permissions:
   contents: read
+# github.workflow is the caller's name when hub.yml calls this file, so the two groups never collide.
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
 jobs:
   tests:
+    # The app image runs Python 3.13 (Debian trixie); the HA integration needs 3.14 (Home Assistant 2026.10).
+    name: Python ${{ matrix.python }}
+    strategy:
+      fail-fast: false
+      matrix:
+        python: ["3.13", "3.14"]
     runs-on: ubuntu-24.04
     timeout-minutes: 20
     steps:
       - uses: actions/checkout@v4
       - uses: actions/setup-python@v5
         with:
-          python-version: "3.14"
+          python-version: ${{ matrix.python }}
           cache: pip
           cache-dependency-path: requirements-test.txt
+      # The three browser-module tests (hub/tests/test_*.py with a .mjs harness) fail without node when CI is set.
+      - uses: actions/setup-node@v4
+        with:
+          node-version: "22"
+      - name: Node must be there
+        run: node --version
       - name: System libraries (JPEG encoding in the camera tests)
         run: sudo apt-get update -q && sudo apt-get install -y -q libturbojpeg ffmpeg
-      - run: pip install -r requirements-test.txt
+      - name: Install (3.14 with Home Assistant)
+        if: matrix.python == '3.14'
+        run: pip install -r requirements-test.txt
+      - name: Lint
+        if: matrix.python == '3.14'
+        run: pip install ruff && ruff check custom_components hub tests tools
+      - name: Install (3.13 as in the app image, no Home Assistant)
+        if: matrix.python == '3.13'
+        run: pip install pytest pillow
       - name: HA integration
+        if: matrix.python == '3.14'
         run: python -m pytest tests
       - name: Slicer server
         run: python -m pytest hub/slicer
