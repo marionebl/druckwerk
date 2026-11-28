@@ -23,7 +23,9 @@ HERE = os.path.dirname(os.path.abspath(__file__))
 PREFIX = "/api/hassio_ingress/MOCKTOKEN/"
 sys.path.insert(0, HERE)
 import ingress_proxy  # noqa: E402
-MODEL = {"name": "demo_part.stl", "mimeType": "model/stl", "buffer": b"solid x\nendsolid x\n"}
+CUBE = open(os.path.join(HERE, "..", "tests", "fixtures", "cube20.stl"), "rb").read()  # a real STL: New print parses it when it is added
+MODEL = {"name": "demo_part.stl", "mimeType": "model/stl", "buffer": CUBE}
+HAS_ENGINE = bool(os.environ.get("MOCK_ENGINE"))  # a built WebAssembly engine for the mock; without it nothing can be sliced here
 SLICE_TIMEOUT = 15000
 MOCKED = True  # False against a real hub (--base-url): no mock hooks, other spool names
 ONLY = None
@@ -275,12 +277,12 @@ def check_history_list(page, base, ident, go, shot):
 
 def check_reslice_lands(page):
     # New print opens with what the old print had: model, name, target, filament (AMS 1·1), build plate
-    page.wait_for_selector(".drop b:has-text('cable_clip_set.stl')", timeout=8000)
+    page.wait_for_selector(".pobj[data-name='cable_clip_set.stl']", timeout=8000)
     assert page.locator(".chip[aria-pressed=true]", has_text="AMS 1·1").count() == 1, "the old filament is preselected"
     assert page.locator(".chip[aria-pressed=true]", has_text="Workshop H2S").count() == 1, "the old printer is preselected"
     assert page.locator("select option:checked", has_text="Textured PEI Plate").count() >= 1
     page.get_by_role("button", name="Slice good, better and best").click()
-    if MOCKED:  # the mock's slice takes 3 s and reports a percent
+    if MOCKED and not HAS_ENGINE:  # the mock's fake slice takes 3 s and reports a percent; the real engine is too quick for that
         must(page, ".variant .slice-progress:not([data-percent=''])", "a slice in progress shows its percent", 4000)
         assert re.search(r"Slicing… \d+% · Generating infill", page.locator(".variant .slice-progress").first.text_content())
     page.wait_for_selector(".variant[aria-pressed=true]", timeout=SLICE_TIMEOUT)
@@ -562,6 +564,45 @@ def check_library_pick(page, go, shot):
     hook(page, "empty_ams", P1S, 0)
 
 
+def check_plate(page, go, shot):
+    """Several models on one plate, settings per selected object, only the chosen variant is sliced."""
+    go("#/new", ".drop")
+    page.set_input_files("input[type=file]", files=[{**MODEL, "name": "a.stl"}, {**MODEL, "name": "b.stl"}])
+    page.wait_for_function("document.querySelectorAll('.pobj[data-id]').length === 2", timeout=8000)
+    page.wait_for_selector('#plate3d[data-ready="1"]', timeout=15000)
+    assert page.locator("#plate3d").get_attribute("data-objects") == "2", "both models are in the preview"
+    page.get_by_role("button", name="Workshop H2S").click()
+    page.locator(".chip", has_text="AMS 1·1").click()
+    page.wait_for_selector("#object-settings .orow", state="attached", timeout=60000)
+    page.locator("#object-settings summary").click()
+    page.locator(".pobj[data-name='a.stl']").click()
+    assert page.locator(".pobj[data-selected=true]").count() == 1 and page.locator("#os-target").text_content() == "a.stl"
+    page.locator("#os-wall_loops").fill("5")
+    page.locator("#os-wall_loops").dispatch_event("change")
+    page.wait_for_selector(".pobj[data-name='a.stl'][data-changed='1']", timeout=8000)
+    assert page.locator(".pobj[data-name='b.stl']").get_attribute("data-changed") == "0", "the other model keeps its preset"
+    assert '"wall_loops":"5"' in page.locator(".pobj[data-name='a.stl']").get_attribute("data-config")
+    page.locator(".pobj[data-name='b.stl']").click(modifiers=["Shift"])
+    assert page.locator("#os-target").text_content() == "a.stl and 1 more" and page.locator("[data-row=wall_loops] .varies").count() == 1, "a mixed selection says varies"
+    assert page.locator("#paint-open").is_disabled(), "paint needs a single selection"
+    page.get_by_role("button", name="Select none").click()
+    assert "Nothing selected" in page.locator("#object-settings").text_content()
+    shot("new-print-plate")
+    page.locator("#variant-chips [data-q=good]").click()
+    page.locator("#variant-chips [data-q=best]").click()
+    assert page.locator("#variant-chips [data-q=better]").get_attribute("aria-pressed") == "true"
+    page.locator("#variant-chips [data-q=better]").click()  # the last one stays on
+    assert page.locator("#variant-chips [data-q=better]").get_attribute("aria-pressed") == "true"
+    before = len(page.evaluate("fetch('api/_mock/slices').then((r) => r.json())"))
+    page.get_by_role("button", name="Slice Better").click()
+    page.wait_for_selector(".variant[aria-pressed=true]", timeout=SLICE_TIMEOUT * 8)
+    sent = page.evaluate("fetch('api/_mock/slices').then((r) => r.json())")[before:]
+    assert page.locator(".variant").count() == 1 and [b["quality"] for b in sent] == ["better"], "one variant is sliced: %s" % sent
+    shot("new-print-plate-sliced")
+    page.evaluate("localStorage.removeItem('dw-variants')")  # the walks after this one slice all three
+    go("#/queue", ".job")  # leave the page, so that the next New print starts fresh
+
+
 def walk(page, ident, base, shot, inject):
     def go(h, wait):
         page.evaluate("h => { location.hash = h }", h)
@@ -639,6 +680,8 @@ def walk(page, ident, base, shot, inject):
         if ident == "admin":
             check_inside_ha_panel(page, base, ident)
         go("#/queue", ".job")
+    if MOCKED and HAS_ENGINE:
+        check_plate(page, go, shot)
     # new print: upload, pick printer + tray, slice 3 variants, pick
     go("#/new", ".drop")
     page.set_input_files("input[type=file]", files=[MODEL])

@@ -1,5 +1,18 @@
 # Changelog
 
+## 3.12.0 (unreleased)
+
+- New print has a plate. Step 1 takes several STL files at once (file picker or drop) and puts them on one plate that is sliced as one print. Each model is turned to lie well (auto-orient, on by default, switch it off with "Auto-orient new models") and the plate is arranged with 6 mm between models. A 3D preview shows the bed outline (from the printer's machine preset, 256 x 256 mm until a printer is chosen, and its keep-out area) and every model. Drag to turn the view, wheel or pinch to zoom. The buttons "Auto-orient", "Original orientation", "Arrange" and "Select all" change the plate. A model that is bigger than the bed, or has no room left, is marked "Does not fit the bed" and blocks slicing. A new printer model arranges the plate again on its bed.
+- Auto-orient follows OrcaSlicer's Orient.cpp in short: the big face directions (and the six axes) are tried as "down", and the one with the least overhang, the lowest height and the largest contact wins. A cube tilted by 30 or 40 degrees comes back flat, a pyramid or cone stands on its base, a mushroom goes cap down, and a model that already lies well stays as it is. It takes about 0.2 s for 300,000 triangles.
+- Object settings now work on a selection, as in Bambu Studio. Click a model in the preview or the list (Shift, Ctrl or Cmd for several). The settings card names the selection, shows the values of the first selected model and writes each change to every selected model. A setting where they differ is marked "varies". "Reset all" resets the selected models. Paint works on one selected model. The list shows how many settings each model has changed.
+- You choose the variants to slice: Good, Better and Best are chips in the slice card (at least one stays on, all three at first). The choice is remembered in this browser (`dw-variants`). The button says what it will do ("Slice Better", "Slice Good and Best"), and Compare shows only the sliced ones.
+- The engine's error for two models whose paths cross (-101) is shown in plain words on the variant.
+- The server still stores one model file per job. For history, queue and Reslice the page uploads the whole plate as one binary STL named after the first model ("a.stl" or "a + 2 more.stl").
+- Nothing in the New print layout moves while models, presets or the engine load: the 3D preview and the rows have fixed sizes and placeholders.
+- Gap: Reslice brings the plate back as one merged model, without the separate settings and paint of each model.
+- Gap: no scale, and no moving or turning of a model by hand. Only auto-orient and arrange.
+- Gap: one STL with several bodies is not split into separate models.
+
 ## 3.9.0 (unreleased)
 
 - Fix: New print failed with "HTTP 413" for a model or a G-code file above about 1 MB. A proxy between the browser and the app (Home Assistant's ingress) refuses bigger request bodies, and the app's own limit is 100 MB. The page now sends models and G-code in parts of 512 KB and the app joins them (`total` and `offset` in the query of `POST /api/jobs`, `POST /api/jobs/{id}/model` (new) and `POST /api/jobs/{id}/gcode`, see API.md). A request without `total` works as before.

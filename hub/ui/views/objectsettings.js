@@ -18,24 +18,30 @@ const SUPPORT_KEYS = /^(support_|tree_support|enable_support$)/;
 
 const first = (v) => (Array.isArray(v) ? v[0] : v);
 
-// ctx: {engine(), model, quality, bed, filament} for the engine requests; S.obj is the object's settings, kept by the caller.
-export function objectCard(S, ctx, { onChange, onPaint, paintSummary }) {
+// ctx: {engine(), model, quality, bed, filament} for the engine requests. The card edits the objects of S.objects whose id is in
+// S.sel (the plate selection): each keeps its own settings in `config`, an edit goes to all of them.
+export function objectCard(S, ctx, { onChange, paintSummary }) {
   const box = h('section', { class: 'card stack', id: 'object-settings' });
   let form = S.ovForm || null, view = S.ovView || null, busy = Promise.resolve(), process = null, notice = '';
 
   const eng = () => { const e = ctx.engine(); return e && e.state === 'ready' ? e : null; };
-  const call = (op, extra) => settingsCall(eng(), ctx, op, { scope: 'object', object: { ...S.obj }, values: true, ...extra });
+  const sel = () => S.objects.filter((o) => S.sel.has(o.id));
+  const call = (op, extra) => settingsCall(eng(), ctx, op, { scope: 'object', object: { ...sel()[0]?.config }, values: true, ...extra });
   const opt = (k) => form?.options[k];
   const inherited = (k) => view?.object.groups.flatMap((g) => g.rows).find((r) => r.key === k)?.inherited ?? first(process?.[k]) ?? first(opt(k)?.default) ?? '';
-  const own = (k) => S.obj[k];
+  const own = (k) => sel()[0]?.config[k];
+  const varies = (k) => sel().some((o) => o.config[k] !== own(k));
+  const changed = () => new Set(sel().flatMap((o) => Object.keys(o.config))).size;
+  const title = () => { const s = sel(); return s.length ? s[0].name + (s.length > 1 ? ` and ${s.length - 1} more` : '') : ''; };
 
   // Serial queue: an edit is sent after the one before it, and the view that comes back is the one after the last edit.
   function edit(spec) {
     busy = busy.then(async () => {
-      if (!eng()) return;
+      const objs = sel();
+      if (!eng() || !objs.length) return;
       try {
         const r = await call('settings.edit', { edit: spec, view: { form: form?.id, values: true } });
-        for (const [k, v] of Object.entries(r.writes)) { if (v == null) delete S.obj[k]; else S.obj[k] = v; }
+        for (const o of objs) for (const [k, v] of Object.entries(r.writes)) { if (v == null) delete o.config[k]; else o.config[k] = v; }
         notice = [...(r.notices || []), ...(r.prompts || []).map((p) => p.message)].join(' ');
         take(await call('settings.view', { form: form?.id }));
         onChange();
@@ -47,7 +53,7 @@ export function objectCard(S, ctx, { onChange, onPaint, paintSummary }) {
   function take(v) { if (v.form) form = v.form; view = v; S.ovForm = form; S.ovView = view; }
 
   async function load() {
-    if (!eng()) return;
+    if (!eng() || !sel().length) return;
     process = (await loadPresets(ctx.model)).process[ctx.quality];
     take(await call('settings.view', { form: form?.id }));
     render();
@@ -71,14 +77,23 @@ export function objectCard(S, ctx, { onChange, onPaint, paintSummary }) {
   function row(k, viewRow) {
     const o = opt(k); if (!o) return null;
     const cur = own(k);
-    return h('div', { class: 'orow' + (cur != null ? ' set' : ''), 'data-row': k },
-      h('label', { for: 'os-' + k, title: o.tooltip || '' }, viewRow?.label || o.label),
+    return h('div', { class: 'orow' + (cur != null ? ' set' : '') + (varies(k) ? ' varies' : ''), 'data-row': k },
+      h('label', { for: 'os-' + k, title: o.tooltip || '' }, viewRow?.label || o.label,
+        varies(k) ? h('small', { class: 'varies', title: 'The selected models have different values here. A change sets them all.' }, ' varies') : null),
       control(k, viewRow), o.unit ? h('small', { class: 'muted' }, o.unit) : null,
-      cur != null ? h('button', { type: 'button', class: 'icon-btn sm', 'aria-label': `Use the preset value for ${o.label}`, title: `Back to the preset: ${inherited(k)}`, onclick: () => edit({ reset: [{ key: k }] }) }, '↺') : null);
+      cur != null || varies(k) ? h('button', { type: 'button', class: 'icon-btn sm', 'aria-label': `Use the preset value for ${o.label}`, title: `Back to the preset: ${inherited(k)}`, onclick: () => edit({ reset: [{ key: k }] }) }, '↺') : null);
   }
 
   function render() {
-    if (!view) return clear(box, h('h2', { style: 'margin:0' }, '3 · Object settings'), h('p', { class: 'muted', style: 'margin:0' }, eng() ? 'Loading the settings…' : 'Waiting for the slicing engine…'));
+    const head = (right) => h('div', { class: 'row between os-head' }, h('h2', { style: 'margin:0' }, '3 · Object settings'), right);
+    box.dataset.selected = sel().map((o) => o.id).join(',');
+    if (!sel().length) {
+      return clear(box, head(h('small', { class: 'muted' }, 'Nothing selected')),
+        h('p', { class: 'muted', style: 'margin:0' }, 'Select a model on the plate or in the list above to change its settings. Shift-click selects several.'),
+        h('details', { class: 'adv', open: S.ovOpen }, h('summary', { onclick: (e) => e.preventDefault() }, 'Settings'),
+          h('p', { class: 'muted os-empty' }, 'The settings of the selected models show here.')));
+    }
+    if (!view) return clear(box, head(null), h('p', { class: 'muted', style: 'margin:0' }, eng() ? 'Loading the settings…' : 'Waiting for the slicing engine…'));
     const rows = new Map(view.object.groups.flatMap((g) => g.rows).map((r) => [r.key, r]));
     const shown = new Set();
     const common = COMMON.map(([title, keys]) => {
@@ -95,11 +110,10 @@ export function objectCard(S, ctx, { onChange, onPaint, paintSummary }) {
     const picker = h('select', { id: 'os-add', 'aria-label': 'Add an object setting', onchange: (e) => { const k = e.target.value; if (k) edit({ add: k }); } },
       h('option', { value: '' }, 'Add a setting…'), addList);
     const issues = view.issues.filter((i) => i.severity !== 'info');
-    const n = Object.keys(S.obj).length;
+    const n = changed();
     clear(box,
-      h('div', { class: 'row between' }, h('h2', { style: 'margin:0' }, '3 · Object settings'),
-        n ? pill(`${n} changed`, 'ok') : h('small', { class: 'muted' }, 'Optional')),
-      h('p', { class: 'muted', style: 'margin:0' }, 'These apply to the model in all three slices. A value you change replaces the preset value. ↺ returns to the preset.'),
+      head(n ? pill(`${n} changed`, 'ok') : h('small', { class: 'muted' }, 'Optional')),
+      h('p', { class: 'muted', style: 'margin:0' }, h('b', { id: 'os-target' }, title()), ': a value you change replaces the preset value in every slice. ↺ returns to the preset.'),
       h('details', { class: 'adv', open: S.ovOpen, ontoggle: (e) => (S.ovOpen = e.target.open) },
         h('summary', null, n ? `Settings (${n} changed)` : 'Settings'),
         h('div', { class: 'stack', style: 'gap:12px;margin-top:10px' },
@@ -107,7 +121,7 @@ export function objectCard(S, ctx, { onChange, onPaint, paintSummary }) {
           common,
           extra.length ? h('fieldset', { class: 'ogroup' }, h('legend', null, 'More settings'), extra.map((k) => row(k, rows.get(k)))) : null,
           h('div', { class: 'row', style: 'gap:8px;flex-wrap:wrap' }, picker,
-            n ? btn('Reset all', () => { S.obj = {}; load().then(onChange); }, 'sm') : null),
+            n ? btn('Reset all', () => { for (const o of sel()) o.config = {}; load().then(onChange); }, 'sm') : null),
           notice ? h('small', { class: 'muted', id: 'os-notice' }, notice) : null,
           issues.map((i) => h('div', { class: 'hms ' + (i.severity === 'error' ? 'err' : 'warn'), 'data-issue': i.id },
             h('div', { class: 'txt' }, i.message, i.fix && i.fixable !== false ? [' ', btn(i.fixLabel || 'Fix', () => edit({ apply: i.fix }), 'sm')] : null))))));
