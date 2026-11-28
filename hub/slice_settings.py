@@ -8,6 +8,8 @@ import re
 import xml.etree.ElementTree as ET
 import zipfile
 
+import files
+
 # (key, label, unit). The curated view; the full list is "all".
 GROUPS = [
     ("Quality", [("layer_height", "Layer height", "mm"), ("initial_layer_print_height", "First layer height", "mm"),
@@ -64,7 +66,7 @@ def joined(v, keep=None):
 def info(z):
     """(plate facts, used filament slots) from slice_info.config; empty when absent."""
     try:
-        root = ET.fromstring(z.read("Metadata/slice_info.config"))
+        root = ET.fromstring(files.read_member(z, "Metadata/slice_info.config", files.CONFIG_MAX))
     except (KeyError, ET.ParseError):
         return {}, []
     plate = {m.get("key"): m.get("value") for m in root.iterfind("./plate/metadata")}
@@ -91,7 +93,7 @@ def read(path):
     """{slicer, groups: [{title, rows: [{key, label, value, unit}]}], all: [[key, text]], plate} or None without settings."""
     try:
         with zipfile.ZipFile(path) as z:
-            s = json.loads(z.read("Metadata/project_settings.config"))
+            s = json.loads(files.read_member(z, "Metadata/project_settings.config", files.CONFIG_MAX))
             plate, slots = info(z)
     except (OSError, KeyError, ValueError, zipfile.BadZipFile):
         return None

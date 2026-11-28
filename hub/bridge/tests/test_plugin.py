@@ -63,7 +63,7 @@ def wait(p, state, t=5):
 def test_installs_only_the_five_libs(request, tmp_path, monkeypatch, cdn):
     p = start(request, tmp_path, monkeypatch, cdn)
     assert p.ready.wait(5)
-    assert sorted(os.listdir(p.dir)) == sorted(plugin.LIBS)
+    assert sorted(os.listdir(p.dir)) == sorted([*plugin.LIBS, ".sha256"])
     assert sorted(os.listdir(tmp_path / "lib")) == sorted(plugin.LIBS)
     assert (tmp_path / "lib" / "liblive555.so").read_bytes() == b"content of liblive555.so"
     assert p.status()["state"] == "ready" and p.status()["error"] is None
@@ -120,3 +120,21 @@ def test_host_links(request, tmp_path, monkeypatch, cdn):
 
 def test_pinned_hash_looks_like_sha256():
     assert len(plugin.SHA256) == 64 and int(plugin.SHA256, 16) >= 0
+
+
+def test_one_byte_libs_trigger_a_new_download(request, tmp_path, monkeypatch, cdn):
+    first = start(request, tmp_path, monkeypatch, cdn)
+    assert first.ready.wait(5)
+    for n in plugin.LIBS:
+        (tmp_path / "data" / "plugin" / plugin.VERSION / n).write_bytes(b"x")
+    hits = cdn["hits"]
+    again = start(request, tmp_path, monkeypatch, cdn)
+    assert again.ready.wait(5) and cdn["hits"] == hits + 1
+    assert (tmp_path / "lib" / plugin.LIBS[0]).read_bytes() == b"content of " + plugin.LIBS[0].encode()
+
+
+def test_another_pinned_zip_triggers_a_new_download(request, tmp_path, monkeypatch, cdn):
+    assert start(request, tmp_path, monkeypatch, cdn).ready.wait(5)
+    hits = cdn["hits"]
+    cdn["body"] = make_zip(extra=("readme.txt", "new.txt"))
+    assert start(request, tmp_path, monkeypatch, cdn).ready.wait(5) and cdn["hits"] == hits + 1

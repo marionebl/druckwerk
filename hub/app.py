@@ -12,6 +12,7 @@ import json
 import os
 import re
 import secrets
+import shutil
 import sys
 import tempfile
 import threading
@@ -64,11 +65,15 @@ TASKS_TTL = 60  # seconds a printer's cloud task list is reused
 SPOOLS_TTL = 30  # seconds an account's cloud filament library is reused
 STALE_AFTER = 60  # seconds after which a printer view from an earlier status call is marked stale
 STATUS_STALE_MAX = 600  # seconds the queue may still act on such a view
+STATUS_REUSE = 2  # seconds a printer view is shared by the ticker, watchdog, queue and UI
+FAIL_HOLD = 5  # seconds a failed cached call is not tried again
 STATUS_CACHE_EVERY = 30  # seconds between writes of a printer's last good view to the data dir
 CLOUD_OFFLINE_AFTER = 60  # seconds the cloud flag must say offline, reading after reading, before the page does
 CLOUD_READING_GAP = 30  # a longer pause between two offline readings starts the count again
 COVER_MAX = 5 * 1024 * 1024  # bytes of a cloud cover image
 FILE_MAX = 400 * 1024 * 1024  # bytes of a sliced 3MF fetched from the cloud
+CLOUD_KEEP, CLOUD_MAX_BYTES = 20, 500 * 1024 * 1024  # fetched cloud files kept in data/cloud: the newest ones up to both limits
+IMAGE_TYPES = ("image/png", "image/jpeg", "image/webp", "image/gif")
 MISS_TTL = 600  # seconds before a failed cloud file fetch is tried again
 DOMAIN_DEFAULTS = "schedule,input_boolean,binary_sensor,person"
 
@@ -91,16 +96,34 @@ def num(v, cast=float):
         return None
 
 
+class NoRedirect(urllib.request.HTTPRedirectHandler):
+    def redirect_request(self, *a, **k):
+        return None  # the cloud's file URLs are final; a redirect could lead into the home network
+
+
+def _open(url, timeout):
+    return urllib.request.build_opener(NoRedirect).open(url, timeout=timeout)
+
+
+def _complete(r, size):
+    """A body shorter than its Content-Length is a cut connection, not a file."""
+    announced = r.headers.get("Content-Length") or ""
+    if announced.isdigit() and int(announced) != size:
+        raise HttpError(502, "download cut short (%d of %s bytes)" % (size, announced))
+
+
 def fetch_image(url):
     """(bytes, content type) of an image at an http(s) URL; a failure is a 502."""
     if urlsplit(url).scheme not in ("http", "https"):
         raise HttpError(502, "cover image: not a web address")
     try:
-        with urllib.request.urlopen(url, timeout=15) as r:
+        with _open(url, 15) as r:
             data, ctype = r.read(COVER_MAX + 1), r.headers.get_content_type()
-    except (OSError, ValueError) as e:
+            if len(data) <= COVER_MAX:
+                _complete(r, len(data))
+    except (OSError, ValueError, http.client.HTTPException) as e:
         raise HttpError(502, "cover image: %s" % e)
-    if len(data) > COVER_MAX or not ctype.startswith("image/"):
+    if len(data) > COVER_MAX or ctype not in IMAGE_TYPES:
         raise HttpError(502, "cover image: not an image or too large")
     return data, ctype
 
@@ -112,7 +135,7 @@ def fetch_file(url, dest):
     os.makedirs(os.path.dirname(dest), exist_ok=True)
     fd, part = tempfile.mkstemp(dir=os.path.dirname(dest), suffix=".part")
     try:
-        with os.fdopen(fd, "wb") as out, urllib.request.urlopen(url, timeout=60) as r:
+        with os.fdopen(fd, "wb") as out, _open(url, 60) as r:
             size = 0
             while True:
                 chunk = r.read(1 << 20)
@@ -122,8 +145,9 @@ def fetch_file(url, dest):
                 if size > FILE_MAX:
                     raise HttpError(502, "cloud file: too large")
                 out.write(chunk)
+            _complete(r, size)
         os.replace(part, dest)
-    except (OSError, ValueError) as e:
+    except (OSError, ValueError, http.client.HTTPException) as e:
         raise HttpError(502, "cloud file: %s" % e)
     finally:
         if os.path.exists(part):
@@ -179,7 +203,8 @@ class App:
         self.queue = Queue(self.registry, data_dir, self.state, self._call_service, self.get_trays, clock=clock,
                            job_allowed=self.access.job_allowed, dry=Drying(self), send_print=self.send_print,
                            get_nozzle=self.installed_diameter, get_requests=self.job_requests,
-                           get_start_state=lambda e: self.state(e, START_STATUS_AGE))
+                           get_start_state=lambda e: self.state(e, START_STATUS_AGE),
+                           on_drop=self.drop_job_files, has_file=lambda j: os.path.isfile(self.share_path(j)))
         self.plates_inbox = None  # set by hub.py when the app has a plates token
         self.media_roots = list(MEDIA_ROOTS)
         self.media_dir = MEDIA_DIR
@@ -191,6 +216,7 @@ class App:
         self.cloud_miss = {}  # task id -> (time, reason) of a failed cloud file fetch
         self._cache_lock = threading.Lock()
         self._feedback_lock, self._feedback_sent = threading.Lock(), {}  # user id -> times of the last hour
+        self._key_locks, self._failures = {}, {}  # per cache key: its lock; (time, error) of its last failed call
         self._cloud_false = {}  # serial -> (first, latest) reading time of an unbroken run of offline readings
         self._saved_at = {}  # serial -> when its view was last written to status_cache.json
         self._load_views()
@@ -229,20 +255,32 @@ class App:
         return Caller(act_as, user["name"], user["name"])  # not internal: this user's rules apply
 
     def _cached(self, key, ttl, fn):
-        """fn() result for ttl seconds; on failure the last good value, else the error."""
+        """fn() result for ttl seconds; on failure the last good value, else the error (a failure holds for FAIL_HOLD s).
+        One lock per key: callers of one key share a call, a slow key does not block the others."""
         with self._cache_lock:
-            at, val = self._cache.get(key, (0, None))
-        if self.clock() - at < ttl and val is not None:
+            key_lock = self._key_locks.setdefault(key, threading.Lock())
+        with key_lock:
+            with self._cache_lock:
+                at, val = self._cache.get(key, (0, None))
+                failed = self._failures.get(key)
+            if self.clock() - at < ttl and val is not None:
+                return val
+            if failed and self.clock() - failed[0] < FAIL_HOLD:
+                if val is None:
+                    raise failed[1]
+                return val
+            try:
+                val = fn()
+            except (HAError, HttpError) as e:
+                with self._cache_lock:
+                    self._failures[key] = (self.clock(), e)
+                if val is None:
+                    raise
+                return val
+            with self._cache_lock:
+                self._cache[key] = (self.clock(), val)
+                self._failures.pop(key, None)
             return val
-        try:
-            val = fn()
-        except (HAError, HttpError):
-            if val is None:
-                raise
-            return val
-        with self._cache_lock:
-            self._cache[key] = (self.clock(), val)
-        return val
 
     def get_user(self, user_id):
         try:
@@ -361,7 +399,7 @@ class App:
         h.close_connection = True  # HTTP/1.0 style: the body ends when we close
         h.end_headers()
         try:
-            while chunk := r.read(65536):
+            while chunk := r.read1(65536):
                 h.wfile.write(chunk)
         except OSError:
             pass  # viewer left
@@ -384,6 +422,10 @@ class App:
             return self.bridge_ok("GET", "/api/printers", timeout=10)
         except HttpError:
             return []
+
+    def listed_printers(self):
+        """bridge_printers shared for 5 s by the UI, the integration poll and the online check."""
+        return self._cached("printers", 5, self.bridge_printers)
 
     def ha_users(self):
         users = self.ha.command("config/auth/list")
@@ -446,8 +488,13 @@ class App:
         except OSError as e:
             log("cannot write status_cache.json: %s" % e)
 
-    def status_entry(self, serial):
-        """(view, age in s) of the printer: fresh from the bridge, else the last good one (one failed call is not offline)."""
+    def status_entry(self, serial, max_age=STATUS_REUSE):
+        """(view, age in s) of the printer: fresh from the bridge, else the last good one (one failed call is not offline).
+        A view younger than STATUS_REUSE and than max_age is reused: the ticker, watchdog and queue read it together."""
+        with self._cache_lock:
+            at, last = self._cache.get("view:" + serial, (0, None))
+        if last is not None and self.clock() - at < min(STATUS_REUSE, max_age):
+            return last, self.clock() - at
         data, served = self.bridge_print(serial)
         v = printer_state.view(data, self.clock())
         with self._cache_lock:
@@ -462,14 +509,14 @@ class App:
     def printer_status(self, serial, max_age=STATUS_STALE_MAX):
         """What the printer reports now (hub/printer_state.py), from the bridge; None when the bridge cannot say.
         The queue acts on it, so a last good view counts for 10 min only (a start passes a shorter max_age)."""
-        v, age = self.status_entry(serial)
+        v, age = self.status_entry(serial, max_age)
         return v if age <= max_age else None
 
     def cloud_online(self, serial):
         """False only when the bridge's printer list has said offline, reading after reading, for CLOUD_OFFLINE_AFTER s;
         one reading, a gap or unknown counts as online."""
         try:
-            printers = self._cached("printers", 5, self.bridge_printers)
+            printers = self.listed_printers()
         except (HAError, HttpError):
             return True
         flag = next((p.get("online") for p in printers if p.get("serial") == serial), None)
@@ -756,9 +803,17 @@ class App:
         name = (m.group(1) if m.re.groups else None) or "index.html"
         try:
             with open(os.path.join(self.ui_dir, name), "rb") as f:
-                h.send(200, f.read(), MIME[name.rsplit(".", 1)[1]])
+                data = f.read()
         except OSError:
             raise NotFound("no such file")
+        ctype = MIME[name.rsplit(".", 1)[1]]
+        if not name.startswith("vendor/"):
+            return h.send(200, data, ctype)  # the app code stays no-store until its files are versioned (UI-05)
+        etag = '"%s"' % hashlib.sha256(data).hexdigest()[:32]  # the libraries are 1 MB: the browser asks, the Pi answers 304
+        if etag in [t.strip() for t in (h.headers.get("If-None-Match") or "").split(",")]:
+            return h.head(304, ctype, 0, "no-cache", etag)
+        h.head(200, ctype, len(data), "no-cache", etag)
+        h.wfile.write(data)
 
     # -- route functions --
     def role_or_none(self, c, serial):
@@ -973,16 +1028,58 @@ class App:
             os.makedirs(os.path.join(self.data_dir, "settings"), exist_ok=True)
             write_json(self.saved_settings_path(job_id), parsed)
 
+    def share_path(self, job):
+        return os.path.join(self.share, os.path.basename(job.get("file") or ""))
+
+    def drop_job_files(self, job):
+        """A cancelled, rejected or aged-out job: remove its share copy, plate picture and saved settings.
+        A printer's last sent file stays: the integration's picture reads it (hub/slicer/server.py post_print)."""
+        if job.get("kind") == "dry" or not job.get("file"):
+            return
+        share = self.share_path(job)
+        last = {os.path.realpath(r["last_path"]) for r in list(self.sender.results.values()) if r.get("last_path")}
+        if os.path.realpath(share) not in last:
+            self.remove(share)
+        self.remove(os.path.join(self.data_dir, "plates", job["id"] + ".png"))
+        self.remove(self.saved_settings_path(job["id"]))
+
+    @staticmethod
+    def remove(path):
+        try:
+            os.remove(path)
+        except OSError:
+            pass
+
+    def prune_cloud(self, keep):
+        """Keep the newest CLOUD_KEEP fetched cloud files within CLOUD_MAX_BYTES, and `keep` always; a pruned file is fetched again on demand."""
+        d = os.path.join(self.data_dir, "cloud")
+        found = []
+        for n in os.listdir(d):
+            if n.endswith(".gcode.3mf"):
+                try:
+                    st = os.stat(os.path.join(d, n))
+                except OSError:
+                    continue
+                found.append((st.st_mtime, st.st_size, os.path.join(d, n)))
+        total = 0
+        for i, (_, size, path) in enumerate(sorted(found, reverse=True)):
+            total += size
+            if path != keep and (i >= CLOUD_KEEP or total > CLOUD_MAX_BYTES):
+                self.remove(path)
+
     def cloud_file(self, it):
         """Path of the item's sliced 3MF from the Bambu cloud (fetched once, kept in data/cloud); ValueError says why not."""
         if it["source"] == "job" or not re.fullmatch(r"\d{1,19}", str(it["id"])):
             raise ValueError("This print has no Bambu cloud task.")
         with self.cloud_locks.setdefault(it["id"], threading.Lock()):  # a second request waits for the first download
-            return self._cloud_file(it)
+            path = self._cloud_file(it)
+            self.prune_cloud(path)
+            return path
 
     def _cloud_file(self, it):
         dest = os.path.join(self.data_dir, "cloud", "%s.gcode.3mf" % it["id"])
         if os.path.isfile(dest):
+            os.utime(dest)  # the newest-used files are the ones prune_cloud keeps
             return dest
         miss = self.cloud_miss.get(it["id"])
         if miss and self.clock() - miss[0] < MISS_TTL:
@@ -1031,7 +1128,8 @@ class App:
         if not path:
             raise NotFound("no stored file for this print")
         with open(path, "rb") as f:
-            h.send(200, f.read(), "application/octet-stream")
+            h.head(200, "application/octet-stream", os.fstat(f.fileno()).st_size, "no-store")
+            shutil.copyfileobj(f, h.wfile, 1 << 20)
 
     def get_history_gcode(self, h, m, q, c):
         """The first plate's G-code out of the sliced file, for the 3D preview."""
@@ -1041,7 +1139,12 @@ class App:
             with zipfile.ZipFile(path) as z:
                 names = sorted(n for n in z.namelist() if SLICED.fullmatch(n))
                 if names:
-                    return h.send(200, z.read(names[0]), "text/plain; charset=utf-8")
+                    size = z.getinfo(names[0]).file_size
+                    if size > files.GCODE_MAX:
+                        raise NotFound("the G-code of this print is too big to show (%d MB)" % (size >> 20))
+                    with z.open(names[0]) as src:
+                        h.head(200, "text/plain; charset=utf-8", size, "no-store")
+                        return shutil.copyfileobj(src, h.wfile, 1 << 20)
         except (OSError, zipfile.BadZipFile):
             pass
         raise NotFound("no G-code for this print")
@@ -1211,19 +1314,14 @@ class App:
             name, job["filename"], target, model,
             [{"type": f["type"], "colour": f["colour"]} for f in use["filaments"]], b.get("options"),
             name=b.get("name") or job["filename"].rsplit(".", 1)[0])
-        files = [os.path.join(self.share, name), os.path.join(self.data_dir, "plates", added["id"] + ".png")]
+        made = [os.path.join(self.share, name), os.path.join(self.data_dir, "plates", added["id"] + ".png")]
         try:
             os.makedirs(self.share, exist_ok=True)
             with open(job["result"], "rb") as src:
                 # Written after the job passed the access check, so a refused request leaves nothing in the share.
-                with open(files[0], "wb") as dst:
+                with open(made[0], "wb") as dst:
                     dst.write(src.read())
-            png = None
-            with zipfile.ZipFile(job["result"]) as z:
-                if "Metadata/plate_1.png" in z.namelist():
-                    with open(files[1], "wb") as f:
-                        f.write(z.read("Metadata/plate_1.png"))
-                    png = "api/queue/%s/plate.png" % added["id"]
+            png = self.keep_plate(job["result"], added["id"])
             self.save_settings(added["id"], job["result"])
             tray = (job.get("settings") or {}).get("tray")
             with self.queue.lock:
@@ -1235,7 +1333,7 @@ class App:
                              slice_job=job["id"], slice=self.slice_view(job, use))
                 self.queue._save()
         except BaseException:
-            self.drop_new_job(added, files)
+            self.drop_new_job(added, made)
             raise
         return added
 
@@ -1250,6 +1348,17 @@ class App:
                 os.remove(f)
             except OSError:
                 pass
+
+    def keep_plate(self, path, job_id):
+        """Store the slice's plate picture for a job; the API path of it, or None when there is none or it is over the limit."""
+        with zipfile.ZipFile(path) as z:
+            try:
+                data = files.read_member(z, "Metadata/plate_1.png", files.PNG_MAX)
+            except (KeyError, ValueError):
+                return None
+        with open(os.path.join(self.data_dir, "plates", job_id + ".png"), "wb") as f:
+            f.write(data)
+        return "api/queue/%s/plate.png" % job_id
 
     @staticmethod
     def slice_view(job, use):
@@ -1275,7 +1384,7 @@ class App:
             with zipfile.ZipFile(real) as z:
                 if not any(SLICED.fullmatch(n) for n in z.namelist()):
                     raise ValueError("that 3MF is not sliced: it has no Metadata/plate_N.gcode")
-                z.read("Metadata/slice_info.config")
+                files.read_member(z, "Metadata/slice_info.config", files.CONFIG_MAX)
         except (zipfile.BadZipFile, KeyError):
             raise ValueError("that file is not a sliced .gcode.3mf")
         return real
@@ -1306,25 +1415,20 @@ class App:
         fils = b.get("filaments") or [{"type": x["type"], "colour": x["colour"]} for x in use["filaments"]]
         added = api.add(name, shown, b.get("target", "any"), b.get("model", ""), fils, b.get("options"),
                         name=b.get("name") or base)
-        files = [os.path.join(self.share, name), os.path.join(self.data_dir, "plates", added["id"] + ".png")]
+        made = [os.path.join(self.share, name), os.path.join(self.data_dir, "plates", added["id"] + ".png")]
         try:
             self.stamp_nozzle(added, real)
             os.makedirs(self.share, exist_ok=True)
-            with open(real, "rb") as src, open(files[0], "wb") as dst:  # after the access check
+            with open(real, "rb") as src, open(made[0], "wb") as dst:  # after the access check
                 dst.write(src.read())
-            png = None
-            with zipfile.ZipFile(real) as z:
-                if "Metadata/plate_1.png" in z.namelist():
-                    with open(files[1], "wb") as out:
-                        out.write(z.read("Metadata/plate_1.png"))
-                    png = "api/queue/%s/plate.png" % added["id"]
+            png = self.keep_plate(real, added["id"])
             self.save_settings(added["id"], real)
             with self.queue.lock:
                 added.update(grams=use["grams"], filament_grams=[x["grams"] for x in use["filaments"]],
                              print_seconds=use["seconds"], plate_png=png)
                 self.queue._save()
         except BaseException:
-            self.drop_new_job(added, files)
+            self.drop_new_job(added, made)
             raise
         return added
 

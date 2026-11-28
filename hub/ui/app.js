@@ -18,8 +18,24 @@ ctx.isAdmin = () => !!ctx.me?.is_admin;
 ctx.role = (serial) => (ctx.me.is_admin ? 'admin' : ctx.me.printers.find((p) => p.serial === serial)?.role || null);
 ctx.canManage = (serial) => ctx.role(serial) === 'admin';
 ctx.managesAny = () => ctx.me.is_admin || ctx.me.printers.some((p) => p.role === 'admin');
-// Run fn now and every ms until the route changes.
-ctx.every = (ms, fn) => { fn(); ctx.timers.push(setInterval(fn, ms)); };
+// Run fn now and every ms until the route changes. A hidden tab does not poll (it runs once when the tab shows again),
+// and a tick is skipped while the last call is still pending.
+ctx.every = (ms, fn) => {
+  let busy = false;
+  const run = async () => {
+    if (document.hidden || busy) return;
+    busy = true;
+    try { await fn(); } finally { busy = false; }
+  };
+  const id = setInterval(run, ms);
+  ctx.timers.push(id);
+  const onShow = () => {
+    if (!ctx.timers.includes(id)) document.removeEventListener('visibilitychange', onShow);  // the route changed
+    else run();
+  };
+  document.addEventListener('visibilitychange', onShow);
+  run();
+};
 ctx.go = (hash) => { location.hash = hash; };
 // Run fn when the route changes: release what the view holds outside its own DOM (workers, GL contexts).
 ctx.onLeave = (fn) => { ctx.leave.push(fn); };

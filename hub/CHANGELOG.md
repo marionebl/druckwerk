@@ -12,6 +12,34 @@
 - `POST /api/feedback`: the item ends with the caller's display name ("... · from Name"), each user may send 10 items per hour (429 above), the description is at most 300000 bytes (400 above).
 - Routes that read a JSON body refuse a body without `Content-Type: application/json` (400). A form from another site can send `text/plain` without a preflight. Calls without a body are unchanged.
 
+## 3.31.0 (unreleased)
+
+- Less constant load on the Pi: the ticker, watchdog and queue share one status call per printer (a view under 2 s old is reused, never for a start, which needs 60 s or less); the integration poll and the web UI share one printer-list call per 5 s.
+- A burst of requests for one cached item (the Home Assistant user list) makes one call, not eight; a failed call is not repeated for 5 s. A slow item no longer blocks the others.
+- The bridge no longer logs a GET request that answered 200; every other request is still logged.
+- The web UI's pollers skip a hidden tab (and run once when it shows again) and skip a tick while the last call is pending; GET calls stop after 20 s.
+- `vendor/*` files (3D and video libraries, 1.1 MB) carry an `ETag` and `Cache-Control: no-cache`; a matching `If-None-Match` gets `304`. The app code stays `no-store`.
+- Integration 0.15.2: the camera writes its state when `online` or `last_error` changes (and for the first still), not after each still; `frame_time` is no longer refreshed on every still.
+
+## 3.30.0 (unreleased)
+
+- Cloud files in `data/cloud` are pruned after each fetch: the newest 20 files within 500 MB stay, an older one is fetched again when needed.
+- A job that leaves the history (the newest entries stay) loses its share copy, plate picture and saved settings. Until then a cancelled or failed job keeps them, so Retry works; the file that a printer reports as its last sent file always stays. A retry of a job whose file is gone is refused with a clear text.
+- Zip members are read only up to a size (config 1 MB, picture 10 MB, G-code 150 MB); the history downloads are streamed; the plate preview no longer loads a whole G-code. A small file that unpacks to gigabytes cannot take the app's memory any more.
+- Cloud downloads: a redirect, a cut connection, a protocol error and a body shorter than its `Content-Length` are a 502; a cover must be PNG, JPEG, WebP or GIF.
+- The bridge takes a print body for the whole 64 MiB upload limit (was 50 MiB: a file between 37.5 and 64 MiB passed the upload and failed at print time with `Broken pipe`). The app refuses a file over 64 MB with a readable 413.
+- The plates inbox skips a folder whose files were rejected until the folder changes (it cost 3 GitHub calls per poll), and quotes file names in URLs (a name with a space raised `InvalidURL`).
+
+## 3.29.0 (unreleased)
+
+- Bridge: `Live` and the camera functions moved from `server.py` to `camera.py` (no behaviour change), so `Live` can be unit tested without a subprocess.
+- Bridge: three races in the live fan-out are closed. The idle timer closes a live upstream only when no client joined meanwhile, and removes it from the list in the same step. A client that the fan-out drops no longer ends the reader thread when its queue was emptied at the same moment. After a drop that leaves no client, the idle timer is armed. A viewer socket has a 30 s write timeout.
+- Bridge: a closed live upstream waits for its ffmpeg process (no defunct process stays) and closes its pipe.
+- Bridge: parallel stills of one keyframe share one decode.
+- Bridge: `Daemon.restart()` kills a daemon that is still running 10 s after SIGTERM (`DW_TERM_WAIT`).
+- Plugin: an install stores the zip hash and the library sizes in `<data>/plugin/<version>/.sha256`, and `installed()` compares both. Libraries of a wrong size trigger a new download. An install from an older version has no `.sha256` and is downloaded once more at the next start.
+- App: the camera proxy forwards the bridge stream as it arrives (`read1`). Before, it waited for 64 kB.
+
 ## 3.28.0 (unreleased)
 
 - A damaged or empty data file (`queue.json`, `printers.json`, `grants.json`, the sender, notification, price and request files) no longer stops the app at start: it is renamed to `<name>.corrupt-<time>`, one line goes to the log and the app starts with that file empty.

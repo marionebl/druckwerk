@@ -511,11 +511,13 @@ def isolation_headers(h):
 
 class Handler(BaseHTTPRequestHandler):
     timeout = 120  # a client that stops sending must not hold a thread
-    def head(self, status, ctype, length, cache):
+    def head(self, status, ctype, length, cache, etag=None):
         self.send_response(status)
         self.send_header("Content-Type", ctype)
         self.send_header("Content-Length", str(length))
         self.send_header("Cache-Control", cache)
+        if etag:
+            self.send_header("ETag", etag)
         isolation_headers(self)
         self.end_headers()
 

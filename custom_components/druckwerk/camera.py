@@ -36,6 +36,7 @@ class AppCamera(AppEntity, Camera):
         self._task: asyncio.Task | None = None
         self._frame_time: str | None = None
         self._last_error: str | None = None
+        self._written: tuple[bool, str | None] | None = None  # (online, last_error) of the last state write
 
     @property
     def online(self) -> bool:
@@ -70,7 +71,10 @@ class AppCamera(AppEntity, Camera):
         if error:
             _LOGGER.debug("Snapshot for %s failed: %s", self.serial, error)
         self._last_error = error
-        self.async_write_ha_state()
+        # frame_time changes with each still; writing for it would fill the database. The first still is written.
+        if self._written != (self.online, error):
+            self._written = (self.online, error)
+            self.async_write_ha_state()
 
     async def stream_source(self) -> str | None:
         stream = self.app.get("stream")

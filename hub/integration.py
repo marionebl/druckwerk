@@ -75,7 +75,7 @@ class Integration:
 
     def state(self):
         out = {}
-        for p in self.app.bridge_printers():
+        for p in self.app.listed_printers():
             serial = p.get("serial")
             if not serial:
                 continue

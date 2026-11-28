@@ -153,3 +153,11 @@ def test_a_file_in_the_slicers_share_is_allowed_by_absolute_path(hub):
     path = make_3mf(os.path.join(hub.app.share, "sliced.gcode.3mf"), gcode=GCODE)
     status, _ = run(hub, file=path)
     assert status == 200
+
+
+def test_a_file_over_the_upload_limit_is_a_readable_413_and_sends_nothing(hub):
+    path = put(hub, "huge.gcode.3mf")
+    os.truncate(path, 70 * 1024 * 1024)  # a sparse file: no disk, no memory
+    status, body = run(hub, file="huge.gcode.3mf")
+    assert status == 413 and body["error"] == "huge.gcode.3mf is too large to send: 70 MB, the limit is 64 MB.", (status, body)
+    assert prints() == []
