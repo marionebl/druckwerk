@@ -4,10 +4,10 @@ ARG BASE=druckwerk-base:local
 
 # One stage collects the app files, so the app is a single layer on top of the base.
 FROM scratch AS app
-COPY hub/bridge/server.py hub/bridge/camera.py hub/bridge/plugin.py hub/bridge/bridge.sh hub/externals.py hub/externals.env /opt/bridge/
+COPY hub/bridge/server.py hub/bridge/camera.py hub/bridge/plugin.py hub/bridge/bridge.sh hub/externals.py hub/externals.env hub/httplen.py /opt/bridge/
 COPY hub/slicer/server.py /srv/slicer_server.py
 COPY hub/slicer/pack.py /srv/
-COPY hub/externals.py /srv/
+COPY hub/externals.py hub/httplen.py /srv/
 COPY hub/hub.py /srv/
 COPY hub/ui/index.html hub/ui/style.css hub/ui/app.js hub/ui/api.js hub/ui/util.js hub/ui/feedback.js /srv/ui/
 COPY hub/ui/views /srv/ui/views

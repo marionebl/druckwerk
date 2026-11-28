@@ -57,7 +57,7 @@ def fetch_camera(acc, serial, kind, qs):
         acc.daemon.camera_timeout(serial)
     if status == 200 and ctype.startswith("video/h264"):
         jpeg = subprocess.run(["ffmpeg", "-loglevel", "error", "-f", "h264", "-i", "-", "-frames:v", "1", "-f", "image2", "-c:v", "mjpeg", "-"],
-                              input=raw, capture_output=True, timeout=60)
+                              input=raw, capture_output=True, timeout=60, env=clean_env())
         if jpeg.returncode or not jpeg.stdout:
             err = {"error": "could not decode keyframe", "stage": "decode", "detail": jpeg.stderr.decode(errors="replace")[-300:]}
             return 502, json.dumps(err).encode(), "application/json"
@@ -112,10 +112,15 @@ TS_PACKET = 188
 PAT_PID, PMT_PID = 0, 0x1000  # ffmpeg's mpegts muxer puts the PMT here
 
 
+def clean_env():
+    """The plugin and ffmpeg must not see SUPERVISOR_TOKEN or the other variables of the app."""
+    return {k: os.environ[k] for k in ("PATH", "HOME", "LANG", "TZ") if k in os.environ}
+
+
 def ffmpeg_jpeg(args, data):
     """First decoded frame of a stream on stdin, as JPEG; None if it did not decode."""
     out = subprocess.run(["ffmpeg", "-loglevel", "error"] + args + ["-i", "-", "-frames:v", "1", "-f", "image2", "-c:v", "mjpeg", "-"],
-                         input=data, capture_output=True, timeout=60)
+                         input=data, capture_output=True, timeout=60, env=clean_env())
     return out.stdout if out.stdout and not out.returncode else None
 
 
@@ -207,7 +212,7 @@ class Live:
             ["ffmpeg", "-loglevel", "error", "-probesize", "32", "-analyzeduration", "0",
              "-framerate", str(rate if 1 <= rate <= 60 else 15), "-f", "h264", "-i", "-",
              "-c", "copy", "-flush_packets", "1", "-f", "mpegts", "-"],
-            stdin=subprocess.PIPE, stdout=subprocess.PIPE)
+            stdin=subprocess.PIPE, stdout=subprocess.PIPE, env=clean_env())
         threading.Thread(target=self.read_ts, daemon=True).start()
         try:
             while True:
@@ -428,7 +433,7 @@ class Live:
         with tempfile.TemporaryDirectory() as d:  # -update 1 overwrites the file with each frame: the last one stays
             out = os.path.join(d, "last.jpg")
             r = subprocess.run(["ffmpeg", "-loglevel", "error", "-f", "mpegts", "-i", "-", "-update", "1", "-c:v", "mjpeg", out],
-                               input=data, capture_output=True, timeout=60)
+                               input=data, capture_output=True, timeout=60, env=clean_env())
             if r.returncode or not os.path.exists(out):
                 return None
             with open(out, "rb") as f:

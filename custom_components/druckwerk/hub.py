@@ -98,6 +98,5 @@ class HubCoordinator(DataUpdateCoordinator[dict[str, dict[str, Any]]]):
         values = {"$serial": serial, **{f"${k}": v for (s, k), v in self.local.items() if s == serial}}
         body = {k: values.get(v, v) if isinstance(v, str) else v for k, v in press.get("body", {}).items()}
         path = press["path"].replace("$serial", serial)
-        as_user = user_id if path.startswith(("/api/actions/", "/api/tools/")) else None
-        await self.request("POST", path, body, as_user, timeout=PRESS_TIMEOUT)
+        await self.request("POST", path, body, user_id, timeout=PRESS_TIMEOUT)
         await self.async_request_refresh()
