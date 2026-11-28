@@ -41,7 +41,7 @@ def hostname():
 
 
 def main():
-    ha = HA(s.CORE, env("HUB_HA_WS", "ws://supervisor/core/websocket"), env("SUPERVISOR_TOKEN", ""))
+    ha = HA(env("SLICER_CORE_URL", "http://supervisor/core/api"), env("HUB_HA_WS", "ws://supervisor/core/websocket"), env("SUPERVISOR_TOKEN", ""))
     app = App(ha, env("HUB_DATA", "/data"), s.SHARE, BRIDGE, s, hostname, int(env("SLICER_PORT", "8099")),
               ui_dir=env("HUB_UI", os.path.join(os.path.dirname(os.path.abspath(__file__)), "ui")),
               trusted_ips=ingress_ips())
