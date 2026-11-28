@@ -185,3 +185,34 @@ def test_a_print_nobody_started_here_names_the_printer_owner_or_keeps_the_old_te
     assert "printer_owner" not in by()[4]
     hub.owner("")  # owner removed again
     assert by()[2]["printer_owner"] is None
+
+
+def test_history_covers_are_served_by_the_app(hub):
+    """The cloud CDN's cover is cross-origin under COEP and may carry no Cross-Origin-Resource-Policy: the app fetches it."""
+    import threading
+    from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
+
+    class Cover(BaseHTTPRequestHandler):
+        def do_GET(self):
+            self.send_response(200)
+            self.send_header("Content-Type", "image/jpeg")
+            self.end_headers()
+            self.wfile.write(b"CLOUDCOVER")
+
+        def log_message(self, *a):
+            pass
+
+    srv = ThreadingHTTPServer(("127.0.0.1", 0), Cover)
+    threading.Thread(target=srv.serve_forever, daemon=True).start()
+    try:
+        scene(hub)
+        FakeBridge.tasks[SERIAL][0]["cover_url"] = "http://127.0.0.1:%d/c.jpg" % srv.server_address[1]
+        hub.app._cache.clear()
+        by = {i["id"]: i for i in items(hub, ADMIN)}
+        assert by[3]["cover_url"] == "api/history/3/cover" and by[2]["cover_url"] == ""
+        assert hub.req("GET", "/api/history/3/cover", user=ADMIN) == (200, b"CLOUDCOVER")
+        assert hub.req("GET", "/api/history/3/cover", user=USER)[0] == 404  # task 3 is OTHER's print: USER does not see it
+        assert hub.req("GET", "/api/history/2/cover", user=ADMIN)[0] == 404  # no cover
+        assert hub.req("GET", "/api/history/3/cover")[0] == 401
+    finally:
+        srv.shutdown()

@@ -6,6 +6,22 @@ export class ApiError extends Error {
   constructor(status, message) { super(message); this.status = status; }
 }
 
+// A part that fails while Home Assistant restarts (or a proxy hiccups) goes again: its offset makes the repeat harmless.
+const RETRY = [0, 502, 503, 504];
+let parts = 0;
+export const uploading = () => parts > 0;  // the page reloads after a restart, but not under a running upload
+async function part(method, path, body) {
+  parts++;
+  try {
+    for (let n = 1; ; n++) {
+      try { return await call(method, path, body, true); } catch (e) {
+        if (n >= 3 || !RETRY.includes(e.status)) throw e;
+        await new Promise((ok) => setTimeout(ok, 1000 * n));
+      }
+    }
+  } finally { parts--; }
+}
+
 // Requests pending for 3 s or more drive the thin loading bar in app.js ('druckwerk:slow', detail = count).
 let slowCount = 0;
 async function call(method, path, body, raw) {
@@ -24,7 +40,7 @@ async function send(method, path, body, raw) {
     else { init.body = JSON.stringify(body); init.headers['Content-Type'] = 'application/json'; }
   }
   let r;
-  try { r = await fetch(path, init); } catch (e) { throw restarting(new ApiError(0, 'Network error: ' + e.message)); }
+  try { r = await fetch(path, init); } catch (e) { throw restarting(new ApiError(0, 'Network error: ' + e.message), UNREACHABLE); }
   const data = await r.json().catch(() => null);
   if (r.ok && method !== 'GET') forget(path);
   if (!r.ok) {
@@ -37,10 +53,12 @@ async function send(method, path, body, raw) {
 }
 
 export const RESTARTING = 'Home Assistant is restarting. This page tries again in a few seconds.';
-function restarting(err) {
+// Status 0 is no answer at all (offline, a network change): that is not a restart.
+const UNREACHABLE = 'Cannot reach Home Assistant. This page tries again in a few seconds.';
+function restarting(err, text = RESTARTING) {
   err.retry = true;
-  err.message = RESTARTING;
-  dispatchEvent(new CustomEvent('druckwerk:restarting'));
+  err.message = text;
+  dispatchEvent(new CustomEvent('druckwerk:restarting', { detail: text }));
   return err;
 }
 // Stale-while-revalidate for the lists people open first. The first read of a list in a page load is answered from the
@@ -53,23 +71,35 @@ let user = '';
 const seen = new Set(), pending = new Set(), served = new Set(), hot = new Map();  // network answered / fetching / read stale this route / fresh answer waiting
 const key = (p) => `dw1:${user}:${p}`;
 const peek = (k) => { try { const v = localStorage.getItem(k); return v == null ? undefined : JSON.parse(v); } catch { return undefined; } };
-const keep = (k, v) => { try { localStorage.setItem(k, JSON.stringify(v)); } catch { /* full or blocked: no cache */ } };
-export const setUser = (id) => { user = String(id || ''); };
+function dropKeys(match) {
+  try {
+    for (let i = localStorage.length - 1; i >= 0; i--) {
+      const k = localStorage.key(i);
+      if (k && match(k)) localStorage.removeItem(k);
+    }
+  } catch { /* nothing cached */ }
+}
+// A full storage drops the other cached lists (every one comes back with its next read), then tries once more.
+const keep = (k, v) => {
+  const text = JSON.stringify(v);
+  try { localStorage.setItem(k, text); } catch {
+    dropKeys((x) => x.startsWith('dw1:') && x !== k);
+    try { localStorage.setItem(k, text); } catch { /* blocked or one list too big: no cache */ }
+  }
+};
+// Another person on this browser profile must not see the first one's lists: their keys go.
+export const setUser = (id) => {
+  user = String(id || '');
+  dropKeys((k) => k.startsWith('dw1:') && !k.startsWith(`dw1:${user}:`));
+};
 export const newRoute = () => served.clear();
 // True while a list on this route was read from the cache and its network answer is still on the way.
 export const stale = () => [...served].some((p) => pending.has(p));
-// The last app.js start answer: lets the shell and the cached lists draw before the network answers.
-export const cachedMe = () => peek('dw1:me');
 // A change makes the cached lists of that resource wrong: drop them (the next read goes to the network).
 function forget(path) {
   const bases = RELATED[path.split('/')[1]] || [];
   hot.clear();
-  try {
-    for (let i = localStorage.length - 1; i >= 0; i--) {
-      const k = localStorage.key(i);
-      if (k && bases.some((b) => k.startsWith(key('api/' + b)))) localStorage.removeItem(k);
-    }
-  } catch { /* nothing cached */ }
+  dropKeys((k) => bases.some((b) => k.startsWith(key('api/' + b))));
 }
 async function get(p) {
   if (!SWR.test(p) || !user) return call('GET', p);
@@ -99,7 +129,7 @@ const del = (p) => call('DELETE', p);
 const q = encodeURIComponent;
 
 export const api = {
-  me: async () => { const m = await get('api/me'); keep('dw1:me', m); return m; },
+  me: () => get('api/me'),
   // setup
   setup: () => get('api/setup'),
   loginStart: (email, password) => post('api/setup/login/start', { email, password }),
@@ -131,8 +161,8 @@ export const api = {
   jobAction: (id, action, body) => post(`api/queue/${q(id)}/${action}`, body),
   // slicing happens in the browser: one uploaded job per slice, the G-code goes up after it
   upload: async (file) => {
-    let job = await call('POST', `api/jobs?name=${q(file.name)}&total=${file.size}`, file.slice(0, PART), true);
-    for (let at = PART; at < file.size; at += PART) job = await call('POST', `api/jobs/${q(job.id)}/model?offset=${at}&total=${file.size}`, file.slice(at, at + PART), true);
+    let job = await part('POST', `api/jobs?name=${q(file.name)}&total=${file.size}`, file.slice(0, PART));
+    for (let at = PART; at < file.size; at += PART) job = await part('POST', `api/jobs/${q(job.id)}/model?offset=${at}&total=${file.size}`, file.slice(at, at + PART));
     return job;
   },
   job: (id) => get(`api/jobs/${q(id)}`),
@@ -153,7 +183,7 @@ export const api = {
   uploadGcode: async (id, params, gcode) => {
     const bytes = typeof gcode === 'string' ? new TextEncoder().encode(gcode) : new Uint8Array(gcode.buffer ?? gcode);
     let r;
-    for (let at = 0; at < bytes.length; at += PART) r = await call('POST', `api/jobs/${q(id)}/gcode?${params}&offset=${at}&total=${bytes.length}`, bytes.slice(at, at + PART), true);
+    for (let at = 0; at < bytes.length; at += PART) r = await part('POST', `api/jobs/${q(id)}/gcode?${params}&offset=${at}&total=${bytes.length}`, bytes.slice(at, at + PART));
     return r;
   },
   queueJob: (id, body) => post(`api/jobs/${q(id)}/queue`, body),

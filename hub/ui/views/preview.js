@@ -162,6 +162,7 @@ export function gcodePreview() {
 
   async function build(res, t0) {
     R = res; T = await loadThree();
+    if (gone) return;
     try { renderer = new T.WebGLRenderer({ canvas, antialias: true, preserveDrawingBuffer: true }); }
     catch { label.textContent = 'The 3D preview needs WebGL, which this browser does not offer.'; return; }
     renderer.setClearColor(BG, 1);
@@ -238,5 +239,6 @@ export function gcodePreview() {
     } catch (e) { label.textContent = 'The 3D preview failed: ' + e.message; }
   };
   node.fail = (msg) => { label.textContent = msg; };
+  node.dispose = dispose;
   return node;
 }

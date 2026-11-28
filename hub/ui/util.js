@@ -106,7 +106,17 @@ export function modal(title, build) {
 }
 
 export const field = (label, input, hint) => h('label', { class: 'field' }, h('span', null, label), input, hint && h('small', null, hint));
-export const btn = (label, onclick, cls = '', extra = {}) => h('button', { type: 'button', class: 'btn ' + cls, onclick, ...extra }, label);
+// A handler that returns a promise keeps the button disabled until it settles: a double click must not act twice.
+export function btn(label, onclick, cls = '', extra = {}) {
+  const b = h('button', { type: 'button', class: 'btn ' + cls, ...extra }, label);
+  b.addEventListener('click', async (e) => {
+    const run = onclick(e);
+    if (typeof run?.then !== 'function') return;
+    b.disabled = true;
+    try { await run; } finally { b.disabled = false; }
+  });
+  return b;
+}
 export const pill = (text, cls = '') => h('span', { class: 'pill ' + cls }, text);
 export const empty = (text) => h('div', { class: 'empty' }, text);
 // A list says "Loading…" until its first answer; "No x yet" is only for an empty answer.

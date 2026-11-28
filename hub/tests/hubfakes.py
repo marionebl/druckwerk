@@ -281,6 +281,8 @@ class Hub:
         if secret:
             h["X-Hub-Secret"] = self.app.secret
         data = raw if raw is not None else (json.dumps(body).encode() if body is not None else None)
+        if data is not None and not any(k.lower() == "content-type" for k in h):
+            h["Content-Type"] = "application/json"
         c = http.client.HTTPConnection("127.0.0.1", self.port, timeout=20)
         c.request(method, path, data, h)
         r = c.getresponse()

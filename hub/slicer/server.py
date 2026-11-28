@@ -514,8 +514,15 @@ class Handler(BaseHTTPRequestHandler):
             self.head(200, ctype, os.fstat(f.fileno()).st_size, cache)
             shutil.copyfileobj(f, self.wfile, 1 << 20)
 
+    def require_json(self):
+        # A cross-site form can post text/plain without a preflight; only a script of our own origin sets this type.
+        if (self.headers.get("Content-Type") or "").split(";")[0].strip().lower() != "application/json":
+            raise ValueError("Content-Type must be application/json.")
+
     def json(self):
         length = int(self.headers.get("Content-Length") or 0)
+        if length:  # a call without a body (the integration's) has no type
+            self.require_json()
         if length > 8192:
             raise ValueError("Body too large.")
         body = json.loads(self.rfile.read(length) or b"{}")

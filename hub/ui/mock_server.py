@@ -225,7 +225,7 @@ def history_out(ident, q):
         jb = next((j for j in HISTORY if j["id"] == TASK_JOB.get(id_)), None)
         out.append({"id": id_, "serial": serial, "title": title, "status": status, "status_code": status, "started_at": int(started),
                     "ended_at": None if status == "running" else int(started + minutes * 60), "seconds": minutes * 60 or None,
-                    "grams": grams or None, "cover_url": f"api/history-cover/{id_}.svg" if id_ % 2 else "", "plate": 1, "design_title": "",
+                    "grams": grams or None, "cover_url": f"api/history/{id_}/cover" if id_ % 2 else "", "plate": 1, "design_title": "",
                     "printer_name": PRINTERS[serial]["name"], "job_id": None, "user_id": user, "user_name": USERS.get(user),
                     "cost": cost, "source": "druckwerk" if user else "cloud", "job": jb and job_view(jb), "when": int(started)})
         if not user:
@@ -982,7 +982,7 @@ class H(BaseHTTPRequestHandler):
             MOCK_QUEUED.append({"options": jb["options"], "name": jb["name"], "target": jb["target"], "history": str(item["id"])})
             JOBS.append(jb)
             return ok(jb)
-        r = re.fullmatch(r"api/history-cover/(\d+)\.svg", path)
+        r = re.fullmatch(r"api/history/(\d+)/cover", path)  # the hub fetches the cloud's image and serves it itself
         if r:
             if int(r.group(1)) in BROKEN_COVERS:
                 return (200, b"this is not an image", "image/png")

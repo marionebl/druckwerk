@@ -904,6 +904,319 @@ def check_plate(page, go, shot):
     page.evaluate("localStorage.removeItem('dw-variants')")  # the walks after this one slice all three
     go("#/queue", ".job")  # leave the page, so that the next New print starts fresh
 
+# ---- package 9: web UI correctness. Each check is also an --only group (the full walk stops at the engine steps without MOCK_ENGINE).
+ENGINE_STUB = """onmessage = ({ data }) => postMessage({ kind: 'result', id: data.id, result:
+  data.op === 'hello' ? { variants: ['st'] } : data.op.startsWith('settings.') ? { form: { id: 'f', options: {} }, object: { groups: [], add: [] }, issues: [] } : data.op === 'slice' ? { gcode: 'G1 X1 Y1\\n', stats: { printTimeSeconds: 600, filamentG: 5, filamentMm: 2000 }, warnings: [] } : {} });"""
+PRESETS_STUB = {"machine": {"printable_area": "0x0,256x0,256x256,0x256", "printable_height": "250"}, "process": {q: {} for q in ("good", "better", "best")},
+                "filaments": [{"name": "Stub PLA", "config": {}}]}
+WORKERS = """(() => {
+  const W = window.Worker; window.__engines = new Set();
+  window.Worker = function (u, o) {
+    const w = new W(u, o);
+    if (o && o.name === 'slicer-engine') { window.__engines.add(w); const t = w.terminate.bind(w); w.terminate = () => { window.__engines.delete(w); t(); }; }
+    return w;
+  };
+  window.Worker.prototype = W.prototype;
+})()"""
+
+
+def stub_engine(page):
+    """A slicing engine that answers at once, and a count of the engine workers that are alive (window.__engines)."""
+    import json as _json
+    ok = lambda body, ctype="application/json": (lambda route: route.fulfill(status=200, content_type=ctype, body=body))
+    c = page.context
+    c.route("**/engine/version.json", ok('{"tag":"t1"}'))
+    c.route("**/engine/t1/manifest.json", ok('{"host":{"file":"host.js"}}'))
+    c.route("**/engine/t1/host.js", ok(ENGINE_STUB, "text/javascript"))
+    c.route("**/engine/presets/*.json", ok(_json.dumps(PRESETS_STUB)))
+    c.route("**/api/engine/filament*", ok('{"filament":"Stub PLA"}'))
+    page.add_init_script(WORKERS)
+
+
+def plate_ready(page, base, ident):
+    """New print with one model on the plate and the first printer and tray chosen."""
+    fresh(page, f"{base}/?as={ident}#/new")
+    page.wait_for_selector(".drop", timeout=8000)
+    page.set_input_files("input[type=file]", files=[MODEL])
+    page.wait_for_selector(".pobj", timeout=8000)
+    page.get_by_role("button", name="Workshop H2S").click()
+    page.locator(".chip", has_text="AMS 1·1").click()
+
+
+def check_double_submit(page, base, ident, go):
+    """UI-01: a double click on a button whose handler is async acts once."""
+    if ident != "admin":
+        return
+    fresh(page, f"{base}/?as={ident}#/printers/{H2S}")
+    page.wait_for_selector("section.dry", timeout=8000)
+    posts = []
+    on = lambda r: r.method == "POST" and r.url.endswith("api/queue") and posts.append(r.url)
+    page.on("request", on)
+    page.get_by_role("button", name="Add to queue").first.dblclick()
+    page.wait_for_timeout(1000)
+    page.remove_listener("request", on)
+    assert len(posts) == 1, f"a double click on Add to queue sent {len(posts)} requests"
+
+
+def check_user_switch(page, base, ident, go):
+    """UI-02: another user on the same browser profile sees nothing of the first one, not even for a moment."""
+    if ident != "admin":
+        return
+    fresh(page, f"{base}/?as=admin#/printers")
+    page.wait_for_selector(".pcard", timeout=8000)
+    assert page.evaluate("Object.keys(localStorage).some((k) => k.startsWith('dw1:u-alex:'))"), "admin lists are cached"
+    page.evaluate("fetch('api/_mock/slow?path=api/me&path=api/printers&s=2')")
+    page.goto("about:blank")
+    page.goto(f"{base}/?as=user#/printers")
+    page.wait_for_timeout(800)
+    seen = page.evaluate("({ who: document.querySelector('.who .nm')?.textContent || '', cards: document.querySelectorAll('.pcard').length, tabs: document.querySelectorAll('.tabs a').length })")
+    bar = page.evaluate("Math.round(document.querySelector('.topbar').getBoundingClientRect().height)")
+    assert seen["who"] == "" and seen["cards"] == 0, f"at 0.8 s the second user sees the first one's page: {seen}"
+    assert seen["tabs"] >= 5, f"the frame stands while api/me loads: {seen}"
+    page.wait_for_selector(".pcard", timeout=8000)
+    assert "Lena Tester" in page.locator(".who .nm").text_content()
+    assert abs(page.evaluate("Math.round(document.querySelector('.topbar').getBoundingClientRect().height)") - bar) <= 1, "the top bar changes height when the name arrives"
+    assert not page.evaluate("Object.keys(localStorage).some((k) => k.startsWith('dw1:u-alex:'))"), "the lists of the first user are gone"
+    page.evaluate("fetch('api/_mock/slow')")
+
+
+def check_engine_leave(page, base, ident, go):
+    """UI-03: each visit to New print leaves no engine worker alive."""
+    stub_engine(page)
+    for visit in range(3):
+        fresh(page, f"{base}/?as={ident}#/new")
+        page.wait_for_selector(".drop", timeout=8000)
+        page.set_input_files("input[type=file]", files=[MODEL])
+        page.wait_for_selector(".pobj", timeout=8000)
+        page.get_by_role("button", name="Workshop H2S").click()
+        page.wait_for_selector("#engine-info[data-state=ready]", timeout=8000)
+        assert page.evaluate("window.__engines.size") == 1, "one engine runs on New print"
+        go("#/queue", ".job")
+        page.wait_for_timeout(300)
+        live = page.evaluate("window.__engines.size")
+        assert live == 0, f"live engine workers after visit {visit + 1}: {live}"
+    page.context.unroute_all()
+
+
+def check_fresh_keeps_plate(page, base, ident, go):
+    """UI-04: a cached list that the network answer changes does not mount New print again."""
+    stub_engine(page)
+    fresh(page, f"{base}/?as={ident}#/printers")
+    page.wait_for_selector(".pcard", timeout=8000)
+    key = page.evaluate("Object.keys(localStorage).find((k) => k.endsWith(':api/printers'))")
+    assert key, "the printer list is cached"
+    page.evaluate("k => localStorage.setItem(k, JSON.stringify(JSON.parse(localStorage.getItem(k)).map((p) => ({ ...p, name: p.name + ' (old)' }))))", key)  # the cache is wrong: the answer will differ
+    page.evaluate("fetch('api/_mock/slow?path=api/printers&s=2')")
+    page.goto("about:blank")
+    page.goto(f"{base}/?as={ident}#/new")
+    page.wait_for_selector(".drop", timeout=8000)
+    page.set_input_files("input[type=file]", files=[MODEL])
+    page.wait_for_selector(".pobj", timeout=8000)
+    page.wait_for_timeout(3000)  # the printers answer arrives
+    n, stale = page.locator(".pobj").count(), page.evaluate("document.querySelector('#view').classList.contains('stale')")
+    page.evaluate("fetch('api/_mock/slow')")
+    page.context.unroute_all()
+    assert n == 1, f"{n} models on the plate after the late answer"
+    assert not stale, "the page stays marked stale (its buttons stay blocked) after the late answer"
+
+
+def check_restart_reloads(page, base, ident, go):
+    """UI-05: after the restart banner the page reloads, so new view files meet a new api.js."""
+    ALLOW_502.append("api/")
+    try:
+        fresh(page, f"{base}/?as={ident}#/queue")
+        page.wait_for_selector(".job", timeout=8000)
+        page.evaluate("window.__same_page = 1")
+        page.evaluate("fetch('api/_mock/restart?s=1')")
+        page.evaluate("import('./api.js').then((m) => m.api.integration()).catch(() => {})")
+        page.wait_for_selector(".restart", timeout=3000)
+        page.wait_for_function("!window.__same_page", timeout=12000)
+        page.wait_for_selector(".job", timeout=8000)
+        assert page.locator(".restart").count() == 0
+    finally:
+        ALLOW_502.clear()
+
+
+def check_offline_text(page, base, ident, go):
+    """UI-16: no answer at all (status 0) is not called a restart."""
+    fresh(page, f"{base}/?as={ident}#/queue")
+    page.wait_for_selector(".job", timeout=8000)
+    page.evaluate("""() => { const f = window.fetch; window.fetch = (u, i) => (String(u).includes('api/integration') ? Promise.reject(new TypeError('Failed to fetch')) : f(u, i)); }""")
+    page.evaluate("import('./api.js').then((m) => m.api.integration()).catch(() => {})")
+    page.wait_for_selector(".restart", timeout=3000)
+    txt = page.locator(".restart").text_content()
+    assert "restarting" not in txt and "Cannot reach" in txt, txt
+    page.wait_for_function("!document.querySelector('.restart')", timeout=12000)  # the page reloads once the hub answers
+
+
+def check_upload_retry(page, base, ident, go):
+    """UI-12: parts of an upload that meet a restart go again, and the upload completes."""
+    ALLOW_502.append("api/")
+    try:
+        fresh(page, f"{base}/?as={ident}#/queue")
+        page.wait_for_selector(".job", timeout=8000)
+        page.evaluate("fetch('api/_mock/restart?s=1.5')")
+        out = page.evaluate("""async () => {
+          const { api } = await import('./api.js');
+          const file = new File([new Uint8Array(600 * 1024)], 'big.stl');
+          const job = await api.upload(file);
+          return job.filename;
+        }""")
+        assert out == "big.stl", out
+    finally:
+        ALLOW_502.clear()
+
+
+def check_variant_preview(page, base, ident, go):
+    """UI-09: the G-code of a variant loads once per click, not once per redraw. UI-01 on New print: Add to queue acts once."""
+    stub_engine(page)
+    plate_ready(page, base, ident)
+    page.get_by_role("button", name="Slice good, better and best").click()
+    page.wait_for_selector(".variant[aria-pressed=true]", timeout=10000)
+    page.wait_for_selector(".preview3d", timeout=8000)
+    reqs = []
+    on = lambda r: "plate.gcode" in r.url and reqs.append(r.url)
+    page.on("request", on)
+    page.get_by_role("button", name="Better", exact=False).first.click()
+    page.wait_for_timeout(300)
+    for _ in range(3):  # redraws: a chip, a text field
+        page.locator("input[maxlength='80']").fill("a name")
+        page.get_by_text("Timelapse").click()
+        page.wait_for_timeout(200)
+    page.wait_for_timeout(800)
+    page.remove_listener("request", on)
+    assert len(reqs) <= 1, f"the G-code was requested {len(reqs)} times after one variant click"
+    posts = []
+    on = lambda r: r.method == "POST" and r.url.endswith("/queue") and "api/jobs" in r.url and posts.append(r.url)
+    page.on("request", on)
+    page.get_by_role("button", name="Add Better to queue").dblclick()
+    page.wait_for_timeout(1200)
+    page.remove_listener("request", on)
+    assert len(posts) == 1, f"a double click on Add to queue sent {len(posts)} requests"
+    page.context.unroute_all()
+
+
+def check_cover_same_origin(page, base, ident, go):
+    """UI-11: history thumbnails come from the app (the cloud CDN's cross-origin image is blocked under COEP)."""
+    go("#/history", ".tl-card")
+    page.wait_for_timeout(500)
+    srcs = page.evaluate("[...document.querySelectorAll('.tl-card img')].map((i) => i.src)")
+    assert srcs, "history shows covers"
+    other = [s for s in srcs if not s.startswith(base + PREFIX)]
+    assert not other, f"covers from another origin or path: {other}"
+
+
+def check_stale_keyboard(page, base, ident, go):
+    """UI-16: while cached data is on screen a key press does not click a button."""
+    if ident != "admin":
+        return
+    fresh(page, f"{base}/?as={ident}#/printers/{H2S}")
+    page.wait_for_selector("section.dry", timeout=8000)
+    page.evaluate("document.querySelector('#view').classList.add('stale')")
+    page.get_by_role("button", name="Start drying").first.focus()
+    page.keyboard.press("Enter")
+    page.wait_for_timeout(300)
+    assert page.locator("dialog[open]").count() == 0, "a stale page started the drying dialog from the keyboard"
+    page.evaluate("document.querySelector('#view').classList.remove('stale')")
+
+
+def check_dry_focus(page, base, ident, go):
+    """UI-16: typing in the drying fields survives the 5 s redraw."""
+    if ident != "admin":
+        return
+    fresh(page, f"{base}/?as={ident}#/printers/{H2S}")
+    page.wait_for_selector("section.dry", timeout=8000)
+    page.locator("section.dry input[type=number]").first.focus()
+    page.keyboard.type("5")
+    page.evaluate("fetch('api/_mock/hook?set=camera_down&serial=%s&on=1')" % H2S)  # the printer view changes, so the page redraws
+    page.wait_for_timeout(6500)
+    page.evaluate("fetch('api/_mock/hook?set=camera_down&serial=%s&on=0')" % H2S)
+    focus = page.evaluate("document.activeElement?.dataset?.focus || ''")
+    assert focus.endswith(":temp"), f"the temperature field lost the focus: {focus!r}"
+
+
+def check_route_table(page, base, ident, go):
+    """UI-16: #/constructor is no view; the page shows the printers."""
+    fresh(page, f"{base}/?as={ident}#/printers")
+    page.wait_for_selector(".pcard", timeout=8000)
+    page.evaluate("location.hash = '#/constructor'")
+    page.wait_for_selector(".pcard", timeout=5000)
+    assert page.locator("#view .empty").count() == 0, "an unknown route fell into Object.prototype"
+
+
+def check_history_timer(page, base, ident, go):
+    """UI-16: the history list leaves no interval behind when the route changes while its filters load."""
+    if ident != "admin":
+        return
+    fresh(page, f"{base}/?as={ident}#/printers")
+    page.wait_for_selector(".pcard", timeout=8000)
+    page.evaluate("fetch('api/_mock/slow?path=api/ha/users&s=1.5')")
+    seen = []
+    on = lambda r: "api/history" in r.url and seen.append(r.url)
+    page.on("request", on)
+    page.evaluate("location.hash = '#/history'")
+    page.wait_for_timeout(300)
+    page.evaluate("location.hash = '#/queue'")
+    page.wait_for_selector(".job", timeout=5000)
+    page.wait_for_timeout(2500)
+    page.remove_listener("request", on)
+    page.evaluate("fetch('api/_mock/slow')")
+    assert not seen, f"the history view loaded after the route had changed ({len(seen)} requests)"
+
+
+def check_cache_eviction(page, base, ident, go):
+    """UI-16: a full storage drops the other cached lists; the list just read is still cached."""
+    fresh(page, f"{base}/?as={ident}#/printers")
+    page.wait_for_selector(".pcard", timeout=8000)
+    ok = page.evaluate("""async () => {
+      const { api } = await import('./api.js');
+      let n = 0;
+      for (const size of [1 << 20, 1 << 12, 1 << 6, 1]) {  // fill it up to the last byte
+        try { for (;; n++) localStorage.setItem('dw1:old:pad' + n, 'x'.repeat(size)); } catch { /* full for this size */ }
+      }
+      await api.spools();
+      return [Object.keys(localStorage).some((k) => k.endsWith(':api/spools')), Object.keys(localStorage).some((k) => k.startsWith('dw1:old:'))];
+    }""")
+    assert ok == [True, False], f"cache after a full storage: {ok}"
+
+
+def check_stl_trailing(page, base, ident, go):
+    """UI-16: a binary STL with bytes after the last triangle still loads."""
+    ok = page.evaluate("""async () => {
+      const { parseStl } = await import('./views/plate.js');
+      const bin = new Uint8Array(84 + 2 * 50 + 17), dv = new DataView(bin.buffer);  // 2 triangles, then 17 bytes of padding
+      dv.setUint32(80, 2, true);
+      for (let t = 0; t < 2; t++) for (let i = 0; i < 9; i++) dv.setFloat32(84 + t * 50 + 12 + i * 4, t * 9 + i, true);
+      return parseStl(bin.buffer).length;
+    }""")
+    assert ok == 18, f"STL with trailing bytes: {ok} coordinates"
+
+
+def check_paint_contexts(page, base, ident, go):
+    """UI-14: 20 open and close cycles of the paint dialog give no 'Too many active WebGL contexts' warning."""
+    warnings = []
+    on = lambda m: "WebGL contexts" in m.text and warnings.append(m.text)
+    page.on("console", on)
+    stub_engine(page)
+    plate_ready(page, base, ident)
+    page.locator("#os-target").wait_for(timeout=8000)
+    page.locator("details.adv summary").first.click()
+    for _ in range(20):
+        page.locator("#paint-open").click()
+        page.wait_for_selector("dialog.paint[open]", timeout=8000)
+        page.wait_for_timeout(150)
+        page.keyboard.press("Escape")
+        page.wait_for_selector("dialog.paint", state="detached", timeout=5000)
+    page.remove_listener("console", on)
+    page.context.unroute_all()
+    assert not warnings, warnings[:1]
+
+
+P9 = {"double": check_double_submit, "usercache": check_user_switch, "leave": check_engine_leave, "fresh": check_fresh_keeps_plate,
+      "restart": check_restart_reloads, "offlinetext": check_offline_text, "upload": check_upload_retry, "variant": check_variant_preview,
+      "cover": check_cover_same_origin, "stalekey": check_stale_keyboard, "dryfocus": check_dry_focus, "route": check_route_table,
+      "histtimer": check_history_timer, "evict": check_cache_eviction, "stl": check_stl_trailing, "gl": check_paint_contexts}
+
 
 def walk(page, ident, base, shot, inject):
     def go(h, wait):
@@ -971,6 +1284,9 @@ def walk(page, ident, base, shot, inject):
     if ONLY == "offline":
         check_back_online(page, base, ident)
         return
+    if ONLY in P9:
+        P9[ONLY](page, base, ident, go)
+        return
     page.wait_for_selector(".pcard")
     if inject:
         page.evaluate("fetch('/api/me')")
@@ -1014,6 +1330,10 @@ def walk(page, ident, base, shot, inject):
             check_inside_ha_panel(page, base, ident)
         check_nozzle(page, base, go, shot, ident)
         go("#/queue", ".job")
+        for fn in P9.values():
+            fn(page, base, ident, go)
+        page.goto(f"{base}/?as={ident}#/queue")
+        page.wait_for_selector(".job")
     if MOCKED and HAS_ENGINE:
         check_plate(page, go, shot)
     # new print: upload, pick printer + tray, slice 3 variants, pick
@@ -1073,7 +1393,7 @@ def main():
     ap = argparse.ArgumentParser()
     ap.add_argument("--shots")
     ap.add_argument("--scale", type=float, default=1, help="deviceScaleFactor of the screenshots")
-    ap.add_argument("--only", choices=["cache", "reslice", "panel", "download", "preview", "printerhistory", "offline", "light"], help="run one check only")
+    ap.add_argument("--only", choices=["cache", "reslice", "panel", "download", "preview", "printerhistory", "offline", "light", *P9], help="run one check only")
     ap.add_argument("--port", type=int, default=18099, help="port of the mock server")
     ap.add_argument("--inject-absolute", action="store_true")
     ap.add_argument("--base-url")

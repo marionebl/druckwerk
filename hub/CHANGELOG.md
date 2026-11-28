@@ -1,5 +1,17 @@
 # Changelog
 
+## 3.23.0 (unreleased)
+
+- Web UI: a button whose action is still running cannot be pressed again (a double click on "Add to queue" made two jobs).
+- Web UI: the page frame draws first and the name, tabs and cached lists come after `api/me` has answered. Before, the cached identity showed the previous user's name and lists to the next person on the same browser profile. The cached lists of other users are removed when the user changes, and a full storage drops the other cached lists instead of no cache at all.
+- Web UI: leaving New print stops the engine worker and frees the 3D views; a late answer for a cached list no longer mounts New print again (it removed the models); the G-code preview of a chosen variant loads once, not at each redraw; the paint dialog frees its GL context.
+- Web UI: after a Home Assistant restart the page reloads, so new view files meet the new `api.js`. A part of a model or G-code upload that meets a restart or a gateway error (status 0, 502, 503, 504) is sent again up to 3 times. A lost connection says "Cannot reach Home Assistant", not "restarting".
+- Web UI: history covers come through the app (`GET /api/history/{id}/cover`); the cloud CDN image is cross-origin and may be blocked by the page's isolation. `cover_url` of history items is now `api/history/{id}/cover`.
+- Web UI: smaller fixes: an unknown route such as `#/constructor` shows the printers; the history list sets no timer after the route changed; buttons do not act on a key press while cached data is shown; typing in the drying fields survives the redraw; STL files with bytes after the last triangle load.
+- `feedback.js` loads snapdom from `vendor/snapdom.mjs` (3.8.3, MIT) instead of jsdelivr.
+- `POST /api/feedback`: the item ends with the caller's display name ("... · from Name"), each user may send 10 items per hour (429 above), the description is at most 300000 bytes (400 above).
+- Routes that read a JSON body refuse a body without `Content-Type: application/json` (400). A form from another site can send `text/plain` without a preflight. Calls without a body are unchanged.
+
 ## 3.20.0 (unreleased)
 
 - Bridge: the live camera upstream of each printer stays open at all times (`DW_LIVE_KEEP`, on by default). A viewer gets video without the 12 to 14 s mint and keyframe wait on the H2S, and stills and fresh stills (after a light switch) come from the live frames. A dropped upstream opens again after 5 s, then up to 120 s between tries. No new upstream opens while a print is sent. Cost on a Pi 4: about one core and the camera's bit rate per printer, all the time.

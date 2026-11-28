@@ -48,10 +48,12 @@ OFFLINE_JPEG = os.path.join(os.path.dirname(os.path.abspath(__file__)), "offline
 # Entity ids the queue and the watchdog ask for: <prefix>_<suffix>. State() answers them from the bridge, so they need not
 # exist in Home Assistant (with the vendor integration installed they are its real ids).
 SENSORS = {"status": "print_status", "stage": "current_stage", "progress": "print_progress", "tray": "active_tray"}
-UI_FILES = r"(index\.html|style\.css|app\.js|api\.js|util\.js|feedback\.js|views/[a-z]+\.js|vendor/three\.module\.min\.js|vendor/mpegts\.js)"
+UI_FILES = r"(index\.html|style\.css|app\.js|api\.js|util\.js|feedback\.js|views/[a-z]+\.js|vendor/three\.module\.min\.js|vendor/mpegts\.js|vendor/snapdom\.mjs)"
 # A feedback post carries screenshots; every other route keeps the slicer's 8 KB JSON limit.
-FEEDBACK_MAX = 1500000
-MIME = {"html": "text/html; charset=utf-8", "css": "text/css; charset=utf-8", "js": "text/javascript; charset=utf-8"}
+FEEDBACK_MAX = 1500000  # the body (JSON escapes the description a second time)
+FEEDBACK_DESCRIPTION_MAX = 300000
+FEEDBACK_PER_HOUR = 10  # each item starts a Claude session
+MIME = {"html": "text/html; charset=utf-8", "css": "text/css; charset=utf-8", "js": "text/javascript; charset=utf-8", "mjs": "text/javascript; charset=utf-8"}
 MEDIA_ROOTS = ("/media", "/share")  # where a queue file may be named by absolute path (config.yaml maps media read-write)
 MEDIA_DIR = "/media/druckwerk"  # snapshots and plate images of the actions
 SLICED = re.compile(r"Metadata/plate_\d+\.gcode")
@@ -183,6 +185,7 @@ class App:
         self._cache = {}
         self.cloud_miss = {}  # task id -> (time, reason) of a failed cloud file fetch
         self._cache_lock = threading.Lock()
+        self._feedback_lock, self._feedback_sent = threading.Lock(), {}  # user id -> times of the last hour
         self._cloud_false = {}  # serial -> (first, latest) reading time of an unbroken run of offline readings
         self._saved_at = {}  # serial -> when its view was last written to status_cache.json
         self._load_views()
@@ -856,7 +859,17 @@ class App:
         limit = num(one("limit") or 100, int)
         if limit is None or not 1 <= limit <= 500:
             raise ValueError("limit must be a number from 1 to 500")
-        return self.history_items(c, one("user"), one("printer"), limit)
+        out = self.history_items(c, one("user"), one("printer"), limit)
+        for it in out["items"]:  # the cloud's CDN image would be cross-origin under COEP: the app serves it
+            if it.get("cover_url"):
+                it["cover_url"] = "api/history/%s/cover" % it["id"]
+        return out
+
+    def get_history_cover(self, h, m, q, c):
+        url = self.history_item(c, unquote(m.group(1))).get("cover_url")
+        if not url:
+            raise NotFound("no cover image for this print")
+        h.send(200, *fetch_image(url))
 
     def history_items(self, c, who, printer, limit):
         """Cloud tasks with their Druckwerk job merged in, plus finished jobs that no task explains."""
@@ -1595,6 +1608,7 @@ class App:
         """The feedback button: one item of the to-do list todo.feedback, which an HA automation turns into a Claude session."""
         length = int(h.headers.get("Content-Length") or 0)
         err = "expected {\"item\": ..., \"description\": ...} of at most %d bytes" % FEEDBACK_MAX
+        h.require_json()
         if not 0 < length <= FEEDBACK_MAX:
             if length <= 4 * FEEDBACK_MAX:  # read the rest so the client gets the 400, not a reset connection
                 h.rfile.read(length)
@@ -1606,6 +1620,16 @@ class App:
                 raise TypeError
         except (ValueError, KeyError, TypeError, AttributeError):
             raise ValueError(err)
+        if len(description.encode()) > FEEDBACK_DESCRIPTION_MAX:
+            raise ValueError("description is longer than %d bytes" % FEEDBACK_DESCRIPTION_MAX)
+        now = self.clock()
+        with self._feedback_lock:
+            sent = self._feedback_sent[c.user_id] = [t for t in self._feedback_sent.get(c.user_id, []) if now - t < 3600]
+            if len(sent) >= FEEDBACK_PER_HOUR:
+                raise HttpError(429, "at most %d feedback items per hour" % FEEDBACK_PER_HOUR)
+            sent.append(now)
+        if c.display:
+            item = "%s · from %s" % (item, c.display)
         self.ha.call_service("todo", "add_item", {"entity_id": "todo.feedback", "item": item, "description": description})
         return {"ok": True}
 
@@ -1760,6 +1784,7 @@ class App:
             ("GET", r"/api/history/([A-Za-z0-9_-]{1,40})/settings", w(self.get_history_settings)),
             ("GET", r"/api/history/([A-Za-z0-9_-]{1,40})/file", w(self.get_history_file)),
             ("GET", r"/api/history/([A-Za-z0-9_-]{1,40})/gcode", w(self.get_history_gcode)),
+            ("GET", r"/api/history/([A-Za-z0-9_-]{1,40})/cover", w(self.get_history_cover)),
             ("POST", r"/api/history/([A-Za-z0-9_-]{1,40})/queue", w(self.post_history_queue)),
             ("GET", r"/api/spools", w(self.get_spools)),
             ("GET", r"/api/spools/(\d{1,19})/prints", w(self.get_spool_prints)),

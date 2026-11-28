@@ -116,7 +116,7 @@ export async function mount(ctx, root, parts = []) {
     clear(timeline, days.map((g) => h('section', { class: 'tl-day' }, h('h2', null, g.label), g.items.some((t) => t.started_at) && axis(), h('ol', null, g.items.map((t) => entry(t, { showUser }))))));
   }
 
-  ctx.every(60000, load);
+  if (timeline.isConnected) ctx.every(60000, load);  // the route may have changed while the filters loaded: its timers are gone
 }
 
 // The 3D preview of the print's own file. Nothing loads until the settings say a file exists; a placeholder stands in until then.

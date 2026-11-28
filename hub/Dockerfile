@@ -11,9 +11,10 @@ COPY hub/externals.py /srv/
 COPY hub/hub.py /srv/
 COPY hub/ui/index.html hub/ui/style.css hub/ui/app.js hub/ui/api.js hub/ui/util.js hub/ui/feedback.js /srv/ui/
 COPY hub/ui/views /srv/ui/views
-COPY hub/ui/vendor/three.module.min.js hub/ui/vendor/mpegts.js /srv/ui/vendor/
+COPY hub/ui/vendor/three.module.min.js hub/ui/vendor/mpegts.js hub/ui/vendor/snapdom.mjs /srv/ui/vendor/
 COPY hub/ui/vendor/LICENSE-three.txt /usr/share/licenses/three/LICENSE
 COPY hub/ui/vendor/LICENSE-mpegts.txt /usr/share/licenses/mpegts.js/LICENSE
+COPY hub/ui/vendor/LICENSE-snapdom.txt /usr/share/licenses/snapdom/LICENSE
 COPY hub/app.py hub/actions.py hub/ha.py hub/filament.py hub/history.py hub/slice_settings.py hub/printer_state.py hub/progress.py hub/queue/queue_*.py /srv/
 COPY hub/entities.py hub/files.py hub/gcode_guard.py hub/integration.py hub/notify.py hub/preview.py hub/sender.py hub/watchdog.py hub/plates_inbox.py hub/offline.jpg /srv/
 COPY hub/nozzles.py /srv/

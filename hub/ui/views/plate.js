@@ -9,7 +9,8 @@ const pts = (v) => [v].flat().join(',').split(',').map((p) => p.split('x').map(N
 // STL file (binary or ASCII) to a triangle soup, 9 floats per triangle.
 export function parseStl(buf) {
   const dv = new DataView(buf);
-  if (buf.byteLength >= 84 && buf.byteLength === 84 + dv.getUint32(80, true) * 50) {  // binary: 84 bytes + 50 per triangle
+  // binary: 84 bytes + 50 per triangle; some exporters pad the end. The count of an ASCII file reads as a huge number.
+  if (buf.byteLength >= 84 && dv.getUint32(80, true) > 0 && buf.byteLength >= 84 + dv.getUint32(80, true) * 50) {
     const n = dv.getUint32(80, true), out = new Float32Array(n * 9);
     for (let t = 0; t < n; t++) for (let i = 0; i < 9; i++) out[t * 9 + i] = dv.getFloat32(84 + t * 50 + 12 + i * 4, true);
     return out;
