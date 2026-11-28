@@ -1,5 +1,10 @@
 # Changelog
 
+## 3.20.0 (unreleased)
+
+- Bridge: the live camera upstream of each printer stays open at all times (`DW_LIVE_KEEP`, on by default). A viewer gets video without the 12 to 14 s mint and keyframe wait on the H2S, and stills and fresh stills (after a light switch) come from the live frames. A dropped upstream opens again after 5 s, then up to 120 s between tries. No new upstream opens while a print is sent. Cost on a Pi 4: about one core and the camera's bit rate per printer, all the time.
+- Bridge: a still from the live upstream decodes each keyframe once. Before, each still request ran ffmpeg.
+
 ## 3.19.0 (unreleased)
 
 - Nozzle and filament change requests belong to a queue entry, and the entry is blocked until the change has happened. `POST /api/printers/<serial>/nozzle-request` and `POST /api/spools/<id>/load-request` now require `job_id` (a waiting print job; 400 without, 404 for an unknown one; only the job's owner or an admin of the printer may ask). One open request per job and kind. Older load requests without a job stay listed and can be cancelled, they block nothing.

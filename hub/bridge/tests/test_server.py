@@ -69,7 +69,7 @@ class Server:
         env = dict(os.environ, DW_DATA=self.data, DW_PORT=str(self.port), DW_HOST="127.0.0.1",
                    DW_API_BASE="http://127.0.0.1:%d" % cloud.server_port, DW_DAEMON_PORT_BASE=str(self.base),
                    DW_CERT=self.cert, DW_DAEMON_CMD=daemon_cmd, DW_BACKOFF_MIN="0.2", DW_BACKOFF_MAX="0.8",
-                   **(extra_env or {}))
+                   **{"DW_LIVE_KEEP": "0", **(extra_env or {})})
         self.log = open(self.logpath, "w")
         self.proc = subprocess.Popen([sys.executable, "-I", SERVER_PY], env=env, stdout=self.log, stderr=self.log,
                                      start_new_session=True)  # so close() can kill the daemons too
@@ -828,6 +828,46 @@ def count(path):
         return read(path).count("start")
     except OSError:
         return 0
+
+
+class KeepOpenTest(unittest.TestCase):
+    """DW_LIVE_KEEP: the bridge holds one live upstream per printer open without any viewer."""
+
+    @classmethod
+    def setUpClass(cls):
+        cls.cloud = mock_cloud.start()
+        cls.drop = os.path.join(tempfile.mkdtemp(), "drop")
+        cls.s = Server(cls.cloud, extra_env={"DW_LIVE_KEEP": "1", "DW_KEEP_TICK": "0.2", "DW_KEEP_BACKOFF_MIN": "0.5",
+                                             "DW_LIVE_IDLE": "1", "MOCK_LIVE_DROP": cls.drop})
+        login(cls.s, "a@example.com")
+        daemon_up(cls.s, cls.s.base)
+
+    @classmethod
+    def tearDownClass(cls):
+        cls.s.close()
+
+    def events(self, serial):
+        return [e for e, who in self.s.daemon(self.s.base, "/live-log") if who == serial]
+
+    def test_upstream_opens_without_a_viewer_and_reopens_after_a_drop(self):
+        for serial in ("SERIAL001", "SERIAL002"):
+            self.assertTrue(wait_for(lambda: self.events(serial) == ["connect"], 15), self.events(serial))
+        st, body = self.s.req("GET", "/api/camera/SERIAL001/snapshot")
+        self.assertEqual((st, body[:3]), (200, b"\xff\xd8\xff"), body[:200])
+        self.assertNotIn("snapshot", self.events("SERIAL001"))  # the still came from the open upstream
+        c = http.client.HTTPConnection("127.0.0.1", self.s.port, timeout=30)
+        c.request("GET", "/api/camera/SERIAL001/live")
+        r = c.getresponse()
+        self.assertEqual(r.status, 200)
+        r.read1(65536)
+        r.close()
+        c.close()
+        time.sleep(2.5)  # past DW_LIVE_IDLE: a kept upstream does not close when its last viewer leaves
+        self.assertEqual(self.events("SERIAL001"), ["connect"])
+        with open(self.drop, "w") as f:
+            f.write("SERIAL001")
+        self.assertTrue(wait_for(lambda: self.events("SERIAL001")[-1:] == ["connect"] and "drop" in self.events("SERIAL001"), 15),
+                        self.events("SERIAL001"))
 
 
 class CameraRestartTest(unittest.TestCase):

@@ -45,7 +45,12 @@ DAEMON_CMD = shlex.split(env("DW_DAEMON_CMD", "/bridge.sh"))
 BACKOFF_MIN = float(env("DW_BACKOFF_MIN", "5"))
 BACKOFF_MAX = float(env("DW_BACKOFF_MAX", "60"))
 LIVE_IDLE = float(env("DW_LIVE_IDLE", "90"))  # seconds an unused live upstream stays open for a quick reopen
-LIVE_STALL = float(env("DW_LIVE_STALL", "2"))  # a gap this long between upstream reads counts as a stall
+LIVE_STALL = float(env("DW_LIVE_STALL", "2"))
+# Keep one live upstream per printer open at all times (Mario, 2026-11-28): a viewer gets frames at once, and stills
+# come from it. Cost on a Pi 4: about one core and the camera's bit rate per printer.
+LIVE_KEEP = env("DW_LIVE_KEEP", "1") == "1"
+KEEP_TICK = float(env("DW_KEEP_TICK", "5"))
+KEEP_BACKOFF = (float(env("DW_KEEP_BACKOFF_MIN", "5")), float(env("DW_KEEP_BACKOFF_MAX", "120")))  # a gap this long between upstream reads counts as a stall
 # A camera URL timeout alone does not restart the daemon. It marks the printer as suspect. The monitor then asks the printer
 # for a full report (pushall) and restarts the daemon only if the status does not change within PROBE_WAIT seconds, or
 # /health fails for HEALTH_BAD seconds. An idle printer sends no status by itself, so passive staleness proves nothing.
@@ -836,8 +841,8 @@ def nal_types(raw, most=40):
 class Live:
     """One upstream connection to the daemon for one printer, fanned out to any number of HTTP clients."""
 
-    def __init__(self, acc, serial, qs):
-        self.acc, self.serial, self.qs = acc, serial, qs
+    def __init__(self, acc, serial, qs, keep=False):
+        self.acc, self.serial, self.qs, self.keep = acc, serial, qs, keep
         self.lock = threading.Lock()
         self.clients = set()
         self.closed = False
@@ -847,6 +852,7 @@ class Live:
         self.jpeg = None  # JPEG mode: newest part, whole
         self.gop = []  # H.264 mode: TS chunks since the last keyframe, so a joiner decodes at once
         self.psi = {}  # H.264 mode: newest PAT and PMT packet
+        self.still = (None, None)  # H.264 mode: (first chunk of a GOP, its keyframe as JPEG), one decode per keyframe
         self.idle_timer = None
         self.sock = self.proc = None
         self.t0, self.first, self.last_read = time.time(), None, None  # timing for the log line at close
@@ -1036,7 +1042,7 @@ class Live:
     def leave(self, c):
         with self.lock:
             self.clients.discard(c)
-            if not self.clients and not self.closed:
+            if not self.clients and not self.closed and not self.keep:
                 self.idle_timer = threading.Timer(LIVE_IDLE, self.close)
                 self.idle_timer.daemon = True
                 self.idle_timer.start()
@@ -1082,13 +1088,17 @@ class Live:
         with self.lock:
             if self.closed:
                 return None
-            jpeg, data = self.jpeg, b"".join(list(self.psi.values()) + self.gop)
+            jpeg, gop = self.jpeg, list(self.gop)
         if jpeg is not None:
             return jpeg
-        if not data:
+        if not gop:
             return None
+        data = b"".join(list(self.psi.values()) + gop)
         if not newest:
-            return ffmpeg_jpeg(["-f", "mpegts"], data)
+            # With an always-open upstream every still comes from here, so decode each keyframe once.
+            if self.still[0] is not gop[0]:
+                self.still = (gop[0], ffmpeg_jpeg(["-f", "mpegts"], data))
+            return self.still[1]
         with tempfile.TemporaryDirectory() as d:  # -update 1 overwrites the file with each frame: the last one stays
             out = os.path.join(d, "last.jpg")
             r = subprocess.run(["ffmpeg", "-loglevel", "error", "-f", "mpegts", "-i", "-", "-update", "1", "-c:v", "mjpeg", out],
@@ -1101,6 +1111,33 @@ class Live:
 
 lives = {}  # serial -> Live
 live_lock = threading.Lock()
+
+
+def keeper():
+    """Keeps a live upstream open for each printer of each account (LIVE_KEEP); reopens a dropped one after a backoff."""
+    retry = {}  # serial -> (not before, next backoff)
+    while True:
+        time.sleep(KEEP_TICK)
+        for acc in list(accounts.values()):
+            # Upload and video both go through the one plugin under qemu: open nothing new while a print is sent.
+            if not (acc.daemon and acc.daemon.running()) or acc.upload:
+                continue
+            for d in acc.devices():
+                serial = d.get("dev_id")
+                with live_lock:
+                    live = lives.get(serial)
+                if not serial or live:
+                    if live and live.first is not None:
+                        retry.pop(serial, None)  # it played, so the next drop retries after the shortest backoff
+                    continue
+                now = time.time()
+                at, back = retry.get(serial, (0, KEEP_BACKOFF[0]))
+                if now < at:
+                    continue
+                retry[serial] = (now + back, min(back * 2, KEEP_BACKOFF[1]))
+                with live_lock:
+                    if serial not in lives:
+                        lives[serial] = Live(acc, serial, "", keep=True)
 
 
 def get_live(h, serial):
@@ -1627,6 +1664,8 @@ def main():
         plugin = plugin_mod.from_env()
     os.makedirs(ACCOUNTS, exist_ok=True)
     load_accounts()
+    if LIVE_KEEP:
+        threading.Thread(target=keeper, daemon=True).start()
     server = ThreadingHTTPServer((env("DW_HOST", "0.0.0.0"), int(env("DW_PORT", "8098"))), Handler)
     server.daemon_threads = True
     log("listening on port %d" % server.server_address[1])
