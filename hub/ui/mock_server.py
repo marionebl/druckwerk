@@ -120,6 +120,29 @@ JOBS = [
 JOBS[1]["name"] = "Cable clips for the desk"
 
 
+def job_requests(jid):
+    """Open change requests blocking a job, as the hub's queue snapshot shows them."""
+    out = []
+    for kind, items in (("load", LOAD_REQUESTS), ("nozzle", NOZZLE_REQUESTS)):
+        for r in items:
+            if r.get("job_id") == jid:
+                wait = r["spool_label"] + " to be loaded" if kind == "load" else "%s mm %snozzle" % (r["diameter"], r["type"].replace("_", " ") + " " if r["type"] else "")
+                out.append({"id": r["id"], "kind": kind, "wait": wait, "printer": r["printer"], "user_id": r["user_id"], "user_name": r["user_name"],
+                            "note": r["note"], "created_at": r["created_at"]})
+    return out
+
+
+def request_job(b, s, uid, admin):
+    jb = next((j for j in JOBS if j["id"] == b.get("job_id") and j["state"] in ("queued", "pending_approval") and j.get("kind") != "dry"), None)
+    if not re.fullmatch(r"[0-9a-f]{12}", str(b.get("job_id") or "")):
+        raise Err(400, "job_id is required: ask from a queue entry")
+    if not jb:
+        raise Err(404, "no such waiting print job")
+    if not admin and jb["owner_user_id"] != uid:
+        raise Err(403, "rule: only the job's owner or an admin of the printer can ask for a change for it")
+    return jb
+
+
 def slice_of(quality, seconds, grams, model):
     return {"quality": quality, "process": "0.20mm Standard @BBL H2S", "filament": "Bambu PLA Basic @BBL H2S", "bed": "Textured PEI Plate",
             "tray": {"ams": "0", "id": "0", "colour": "F2F2F2", "type": "PLA"}, "seconds": seconds, "grams": grams, "model": model,
@@ -281,7 +304,7 @@ SPOOLS = [
     cloud_spool("5004", "Bambu Lab", "PLA", "PLA Matte Charcoal", "2E2E2E", None, None),
 ]
 PRICES = {"5000": 19.99, "5001": 27.5, "5002": 14.0, "5003": 32.0}
-LOAD_REQUESTS = []  # open "ask to load" requests
+LOAD_REQUESTS = []  # open "ask to load" requests (each for a queue job)
 NOZZLE_REQUESTS = []  # open "change the nozzle" requests
 SPOOLS_DOWN = {"on": False}  # test hook: the cloud library does not answer
 GRANTS = [
@@ -686,9 +709,11 @@ class H(BaseHTTPRequestHandler):
             if not admin:
                 raise Err(403, "rule: only admins of the printer may start prints")
             nxt = next((j for j in JOBS if j["id"] == b.get("job_id")), None) if r.group(2) == "start" else \
-                next((j for j in JOBS if j["state"] == "queued" and (j["target"] == s or j["target"] == "any")), None)
+                next((j for j in JOBS if j["state"] == "queued" and (j["target"] == s or j["target"] == "any") and not job_requests(j["id"])), None)
             if not nxt:
                 raise Err(409, "no job to start")
+            if job_requests(nxt["id"]):
+                raise Err(409, "This job is waiting for %s." % " and ".join(x["wait"] for x in job_requests(nxt["id"])))
             if nxt.get("kind") == "dry":
                 if b.get("confirmed") is not True:
                     raise Err(409, "confirm the start of the drying")
@@ -725,7 +750,7 @@ class H(BaseHTTPRequestHandler):
             JOBS.append(jb)
             return ok(jb)
         if path == "api/queue" and m == "GET":
-            vis = [j for j in JOBS if sees(ident, j)]
+            vis = [dict(j, requests=job_requests(j["id"])) if j["state"] in ("queued", "pending_approval") else j for j in JOBS if sees(ident, j)]
             return ok({"jobs": vis, "history": [j for j in HISTORY if sees(ident, j)], "printers": [{"serial": s} for s in visible(ident)]})
         r = re.fullmatch(r"api/queue/([0-9a-f]{12})/plate\.png", path)
         if r:
@@ -805,6 +830,16 @@ class H(BaseHTTPRequestHandler):
         if path == "api/_mock/nozzles":  # ?serial=..&d=0.4,0.6: the owner's library of a printer (hardened steel)
             PRINTERS[q["serial"][0]]["nozzles"] = [{"diameter": d, "type": "hardened_steel"} for d in q["d"][0].split(",") if d]
             return ok(PRINTERS[q["serial"][0]]["nozzles"])
+        if path == "api/_mock/installed":  # ?serial=..&d=0.4&type=..: what the printer's sensors report
+            PRINTERS[q["serial"][0]]["nozzle"] = {"diameter": q["d"][0], "type": (q.get("type") or [""])[0]}
+            return ok(PRINTERS[q["serial"][0]]["nozzle"])
+        if path == "api/_mock/settle":  # ?kind=nozzle|load: the change happened, so its requests close
+            items = NOZZLE_REQUESTS if q["kind"][0] == "nozzle" else LOAD_REQUESTS
+            for r in list(items):
+                if q["kind"][0] == "nozzle":
+                    PRINTERS[r["printer"]]["nozzle"] = {"diameter": r["diameter"], "type": r["type"]}
+                items.remove(r)
+            return ok({"closed": True})
         if path == "api/nozzle-requests" and m == "GET":
             return ok([r for r in NOZZLE_REQUESTS if admin or r["printer"] in USER_PRINTERS])
         r = re.fullmatch(r"api/nozzle-requests/([0-9a-f]{12})", path)
@@ -821,11 +856,12 @@ class H(BaseHTTPRequestHandler):
             b, s = J(), r.group(1)
             if s not in PRINTERS or not (admin or s in USER_PRINTERS):
                 raise Err(403, "rule: you have no active grant on this printer")
-            old = next((x for x in NOZZLE_REQUESTS if (x["printer"], x["diameter"], x["type"]) == (s, b.get("diameter"), b.get("type") or "")), None)
+            jb = request_job(b, s, uid, admin)
+            old = next((x for x in NOZZLE_REQUESTS if x["job_id"] == jb["id"]), None)
             if old:
                 return ok(old)
             req = {"id": secrets.token_hex(6), "printer": s, "diameter": b.get("diameter"), "type": b.get("type") or "", "note": b.get("note") or "",
-                   "job_id": b.get("job_id"), "user_id": uid, "user_name": IDENT[ident]["name"], "created_at": int(NOW())}
+                   "job_id": jb["id"], "job_name": jb["name"], "user_id": uid, "user_name": IDENT[ident]["name"], "created_at": int(NOW())}
             NOZZLE_REQUESTS.append(req)
             return ok(req)
         if path == "api/load-requests" and m == "GET":
@@ -849,11 +885,13 @@ class H(BaseHTTPRequestHandler):
                 raise Err(403, "rule: you have no active grant on this printer")
             if not PRINTERS[b["printer"]]["ams"]:
                 raise Err(400, "this printer has no AMS")
-            old = next((x for x in LOAD_REQUESTS if x["spool_id"] == sp["id"] and x["printer"] == b["printer"]), None)
+            jb = request_job(b, b["printer"], uid, admin)
+            old = next((x for x in LOAD_REQUESTS if x["job_id"] == jb["id"]), None)
             if old:
                 return ok(old)
             req = {"id": secrets.token_hex(6), "spool_id": sp["id"], "spool_label": f"{sp['brand']} {sp['type']} {sp['name']}", "colour": sp["colour"],
-                   "printer": b["printer"], "user_id": uid, "user_name": IDENT[ident]["name"], "note": b.get("note") or "", "created_at": int(NOW())}
+                   "printer": b["printer"], "job_id": jb["id"], "job_name": jb["name"], "user_id": uid, "user_name": IDENT[ident]["name"],
+                   "note": b.get("note") or "", "created_at": int(NOW())}
             LOAD_REQUESTS.append(req)
             return ok(req)
         if path == "api/spools":

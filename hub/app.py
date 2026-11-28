@@ -173,7 +173,7 @@ class App:
         self.access = Access(self.registry, self.grants, self.get_user)
         self.queue = Queue(self.registry, data_dir, self.state, self._call_service, self.get_trays, clock=clock,
                            job_allowed=self.access.job_allowed, dry=Drying(self), send_print=self.send_print,
-                           get_nozzle=self.installed_diameter)
+                           get_nozzle=self.installed_diameter, get_requests=self.job_requests)
         self.plates_inbox = None  # set by hub.py when the app has a plates token
         self.media_roots = list(MEDIA_ROOTS)
         self.media_dir = MEDIA_DIR
@@ -1435,12 +1435,55 @@ class App:
         return self.access.role(c, r["printer"]) is not None
 
     def get_load_requests(self, h, m, q, c):
-        try:
-            for acc in self.library_accounts(c):
-                self.library(acc)
-        except HttpError as e:  # the list itself needs no cloud
-            log("load requests: %s" % e)
+        self.settle_requests(fresh=True)
         return [r for r in list(self.loads.items) if self.load_request_visible(c, r)]
+
+    def settle_requests(self, fresh=False):
+        """Close requests whose job is gone or whose change happened. fresh=False reads only cached cloud data."""
+        with self.queue.lock:  # taken before the stores' locks: Queue.start holds it while it asks for requests
+            active = {j["id"] for j in self.queue.jobs if j["state"] in WAITING}
+        self.loads.drop_jobs(active)
+        self.nozzle_requests.drop_jobs(active)
+        try:
+            states = self.ha.states()
+            prefix = {p["serial"]: p["prefix"] for p in self.registry.all()}
+            self.nozzle_requests.settle(lambda serial: nozzles.installed(states, prefix.get(serial, "")))
+        except HAError as e:  # the lists need no Home Assistant
+            log("nozzle requests: %s" % e)
+        for serial in {r["printer"] for r in list(self.loads.items)}:
+            account = (self.registry.get(serial) or {}).get("account")
+            try:
+                if account:
+                    self.loads.settle(self.library(account, fetch=fresh))
+            except HttpError as e:  # the list itself needs no cloud
+                log("load requests: %s" % e)
+
+    def job_requests(self, job_id, fresh=False):
+        """The open requests blocking a job, as the queue shows them."""
+        if not any(r.get("job_id") == job_id for r in self.loads.items + self.nozzle_requests.items):
+            return []
+        self.settle_requests(fresh)
+        out = [dict(kind="load", wait="%s to be loaded" % r["spool_label"], **{k: r.get(k) for k in ("id", "printer", "user_id", "user_name", "note", "created_at")})
+               for r in self.loads.items if r.get("job_id") == job_id]
+        out += [dict(kind="nozzle", wait="%s mm %snozzle" % (r["diameter"], r["type"].replace("_", " ") + " " if r["type"] else ""),
+                     **{k: r.get(k) for k in ("id", "printer", "user_id", "user_name", "note", "created_at")})
+                for r in self.nozzle_requests.items if r.get("job_id") == job_id]
+        return out
+
+    def request_job(self, c, b, serial):
+        """The waiting print job a request is for; only its owner or an admin of the printer may ask."""
+        job_id = b.get("job_id")
+        if not (isinstance(job_id, str) and re.fullmatch("[0-9a-f]{12}", job_id)):
+            raise ValueError("job_id is required: ask from a queue entry")
+        with self.queue.lock:
+            job = next((j for j in self.queue.jobs if j["id"] == job_id and j["state"] in WAITING and j.get("kind") != "dry"), None)
+        if not job:
+            raise NotFound("no such waiting print job")
+        if serial not in self.access.serials_of(job):
+            raise ValueError("that job does not print on this printer")
+        if self.access.role(c, serial) != "admin" and job.get("owner_user_id") != c.user_id:
+            raise Forbidden("rule: only the job's owner or an admin of the printer can ask for a change for it")
+        return job
 
     def post_load_request(self, h, m, q, c):
         b = h.json()
@@ -1451,6 +1494,7 @@ class App:
         if not isinstance(note, str) or len(note) > 200:
             raise ValueError("note must be text of at most 200 characters")
         p = self.printer_access(c, serial)
+        job = self.request_job(c, b, serial)
         spool = next((s for s in self.visible_spools(c) if s["id"] == m.group(1)), None)
         if not spool:
             raise NotFound("no such spool")
@@ -1459,11 +1503,13 @@ class App:
         if spool.get("printer") == serial and spool.get("in_printer"):
             raise HttpError(409, "this spool is already in that printer")
         label = " ".join(x for x in (spool["brand"], spool["type"], spool["name"]) if x)
+        # Another job already asked for this very spool: the owner was told, so no second message.
+        told = any(r["spool_id"] == spool["id"] and r["printer"] == serial for r in self.loads.items)
         req, created = self.loads.add({
             "id": secrets.token_hex(6), "spool_id": spool["id"], "spool_label": label, "colour": spool["colour"],
-            "printer": serial, "user_id": c.user_id, "user_name": c.display or c.name, "note": note.strip(),
-            "created_at": int(self.clock())})
-        if created:
+            "printer": serial, "job_id": job["id"], "job_name": job["name"], "user_id": c.user_id,
+            "user_name": c.display or c.name, "note": note.strip(), "created_at": int(self.clock())})
+        if created and not told:
             self.emit("load_requested", serial, None, request=dict(req, printer_name=p["name"]))
         return req
 
@@ -1478,14 +1524,7 @@ class App:
 
     # -- nozzle requests: a user asks the printer's owner to change the nozzle --
     def get_nozzle_requests(self, h, m, q, c):
-        states = None
-        try:
-            states = self.ha.states()
-        except HAError as e:  # the list itself needs no Home Assistant
-            log("nozzle requests: %s" % e)
-        if states is not None:
-            prefix = {p["serial"]: p["prefix"] for p in self.registry.all()}
-            self.nozzle_requests.settle(lambda serial: nozzles.installed(states, prefix.get(serial, "")))
+        self.settle_requests()
         return [r for r in list(self.nozzle_requests.items) if self.load_request_visible(c, r)]
 
     def post_nozzle_request(self, h, m, q, c):
@@ -1494,16 +1533,17 @@ class App:
         check_nozzles([{"diameter": diameter, "type": type_}])
         if not isinstance(note, str) or len(note) > 200:
             raise ValueError("note must be text of at most 200 characters")
-        job_id = b.get("job_id") or None
-        if job_id is not None and not re.fullmatch("[0-9a-f]{12}", str(job_id)):
-            raise ValueError("job_id must be a job id")
         p = self.printer_access(c, serial)
+        job = self.request_job(c, b, serial)
         if nozzles.matches(self.installed_nozzle(p), diameter, type_):
             raise HttpError(409, "this nozzle is already in that printer")
+        same = (serial, diameter, type_)  # another job already asked for this nozzle: the owner was told
+        told = any((r["printer"], r["diameter"], r["type"]) == same for r in self.nozzle_requests.items)
         req, created = self.nozzle_requests.add({
             "id": secrets.token_hex(6), "printer": serial, "diameter": diameter, "type": type_, "note": note.strip(),
-            "job_id": job_id, "user_id": c.user_id, "user_name": c.display or c.name, "created_at": int(self.clock())})
-        if created:
+            "job_id": job["id"], "job_name": job["name"], "user_id": c.user_id, "user_name": c.display or c.name,
+            "created_at": int(self.clock())})
+        if created and not told:
             self.emit("nozzle_requested", serial, None, request=dict(req, printer_name=p["name"]))
         return req
 

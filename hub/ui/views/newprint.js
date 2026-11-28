@@ -11,7 +11,7 @@ import { objectCard } from './objectsettings.js';
 import { paintModel } from './paint.js';
 import { paintedCount } from './paintcodes.js';
 import { sliceProgress } from './progress.js';
-import { nozzleRow, chosenNozzle } from './nozzlerow.js';
+import { nozzleRow, chosenNozzle, same as sameNozzle } from './nozzlerow.js';
 
 const QUALITIES = [['good', 'Good', 'Fastest, visible layers'], ['better', 'Better', 'Balanced'], ['best', 'Best', 'Finest detail, slowest']];
 const BEDS = ['Textured PEI Plate', 'Cool Plate', 'Engineering Plate', 'High Temp Plate', 'Supertack Plate'];
@@ -34,7 +34,7 @@ const dim = (v) => (Math.round(v * 10) / 10).toString();
 export async function mount(ctx, root) {
   if (promote()) return;  // the top window is moving to this page, where threads work
   let libErr = '';
-  const [printers, spools, requests] = await Promise.all([api.printers(), api.spools().catch((e) => { libErr = e.message; return []; }), api.loadRequests().catch(() => [])]);
+  const [printers, spools] = await Promise.all([api.printers(), api.spools().catch((e) => { libErr = e.message; return []; })]);
   // tray: "unit:slot" of a loaded AMS tray; spool: id of a library spool. At most one of them is set.
   // objects: the plate (see plate.js); sel: ids of the selected ones; variants: the slices of the last run; want: the variants to slice.
   const S = { objects: [], sel: new Set(), loading: [], machine: null, machineModel: null, autoOrient: true, want: wanted(), target: null, tray: null, spool: null, bed: BEDS[0], variants: null, pick: null,
@@ -229,7 +229,6 @@ export async function mount(ctx, root) {
   function filamentPicker() {
     const ref = refPrinter(), tr = trays(), lib = library(), sp = S.spool && spoolById(S.spool);
     const hasAms = !!ref?.ams?.length;
-    const asked = sp && requests.some((r) => r.spool_id === sp.id && r.printer === ref.serial);
     const msg = !tr.length && h('p', { class: 'muted', id: 'fil-note', style: 'margin:0' }, hasAms ? 'The AMS is empty.' : 'This printer reports no AMS.',
       lib.length ? ' Choose a spool from your filament library.' : libErr ? ` Your filament library could not be read: ${libErr}` : ' There are no spools in your filament library.');
     return h('div', { class: 'stack', style: 'gap:10px' }, h('div', { class: 'tag' }, 'Filament'),
@@ -242,8 +241,9 @@ export async function mount(ctx, root) {
           swatch(x.colour, 22), `${x.brand} ${x.type}`.trim(), h('small', null, x.name + (x.grams_left != null ? ` · ${Math.round(x.grams_left)} g` : '')))))),
       sp && h('div', { class: 'row', id: 'load-note', style: 'gap:8px;flex-wrap:wrap;align-items:center' },
         h('small', { class: 'muted' }, hasAms ? `This spool is not in the AMS of ${ref.name}. It has to be loaded before the print starts.` : 'This spool is not loaded. Put it on the printer before the print starts.'),
-        hasAms && (asked ? pill('load requested', 'warn')
-          : btn('Ask to load', async () => { const r = await attempt(() => api.askLoad(sp.id, ref.serial, ''), 'Request sent'); if (r) { requests.push(r); draw(); } }, 'sm'))));
+        // Asked for once the job is queued, so the request belongs to it.
+        hasAms && h('label', { class: 'row', style: 'gap:6px;font-size:13px;cursor:pointer' },
+          h('input', { type: 'checkbox', id: 'load-ask', checked: !!S.askLoad, onchange: (e) => (S.askLoad = e.target.checked) }), 'Ask the owner to load it when queued')));
   }
 
   function engineNote() {
@@ -358,9 +358,21 @@ export async function mount(ctx, root) {
         const any = S.target.startsWith('any:');
         const r = await attempt(() => api.queueJob(v.id, { target: any ? 'any' : S.target, ...(any ? { model: S.target.slice(4) } : {}), options: S.options, ...(S.name.trim() ? { name: S.name.trim() } : {}) }));
         if (!r) return;
+        await askChanges(r);
         toast(r.state === 'pending_approval' ? 'Added. An admin needs to approve it first.' : 'Added to the queue', 'ok');
         ctx.go('#/queue');
       }, 'primary'));
+  }
+
+  // Change requests of the chosen nozzle and spool, made for the job that was just queued (it is blocked until they close).
+  async function askChanges(job) {
+    const ref = refPrinter(), nz = chosenNozzle(S, ref), sp = S.spool && spoolById(S.spool);
+    if (S.askNozzle && nz && ref.nozzle && !sameNozzle(nz, ref.nozzle)) {
+      await attempt(() => api.askNozzle(ref.serial, { diameter: nz.diameter, type: nz.type, note: (S.askNozzleNote || '').trim(), job_id: job.id }), 'Nozzle change requested');
+    }
+    if (S.askLoad && sp && ref.ams?.length && !(sp.printer === ref.serial && sp.in_printer)) {
+      await attempt(() => api.askLoad(sp.id, ref.serial, '', job.id), 'Load requested');
+    }
   }
 
   function draw() {

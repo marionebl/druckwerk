@@ -118,14 +118,17 @@ def test_a_slice_made_for_a_nozzle_carries_it_to_the_queue(hub):
 
 # -- nozzle requests --
 def ask(hub, user=USER, serial=SERIAL, **body):
-    return hub.req("POST", "/api/printers/%s/nozzle-request" % serial, dict({"diameter": "0.6", "type": "hardened_steel"}, **body), user=user)
+    if not hasattr(hub, "job"):
+        hub.job = hub.queue_job(user=USER)  # a request belongs to a queue entry
+    body = dict({"diameter": "0.6", "type": "hardened_steel", "job_id": hub.job["id"]}, **body)
+    return hub.req("POST", "/api/printers/%s/nozzle-request" % serial, {k: v for k, v in body.items() if v is not None}, user=user)
 
 
 def test_a_user_asks_and_the_request_is_listed(hub):
     install(hub)
-    status, req = ask(hub, note="for the vase", job_id="a" * 12)
+    status, req = ask(hub, note="for the vase")
     assert status == 200 and (req["printer"], req["diameter"], req["type"], req["note"]) == (SERIAL, "0.6", "hardened_steel", "for the vase")
-    assert req["user_id"] == USER and req["user_name"] == "U-USER" and req["job_id"] == "a" * 12
+    assert req["user_id"] == USER and req["user_name"] == "U-USER" and req["job_id"] == hub.job["id"] and req["job_name"] == hub.job["name"]
     assert hub.req("GET", "/api/nozzle-requests", user=USER)[1] == [req]
     assert hub.req("GET", "/api/nozzle-requests", user=ADMIN)[1] == [req]
     with open(os.path.join(hub.tmp, "data", "nozzle_requests.json")) as f:
@@ -138,18 +141,20 @@ def test_validation(hub):
     assert ask(hub, serial="NOPE")[0] == 404
     assert ask(hub, diameter="0.5")[0] == 400
     assert ask(hub, note="x" * 201)[0] == 400
-    assert ask(hub, job_id="../x")[0] == 400
+    assert ask(hub, job_id="../x")[0] == 400 and ask(hub, job_id=None)[0] == 400  # a request needs a job
+    assert ask(hub, job_id="0" * 12)[0] == 404
+    assert ask(hub, user=OTHER)[0] == 403  # not their job
     assert ask(hub, diameter="0.4")[0] == 409  # already in the printer
     assert hub.req("GET", "/api/nozzle-requests", user=USER)[1] == []
 
 
-def test_one_request_per_printer_diameter_and_type(hub):
+def test_one_open_request_per_job(hub):
     install(hub)
     first = ask(hub, note="one")[1]
-    again = ask(hub, user=OTHER, note="two")[1]
+    again = ask(hub, user=ADMIN, note="two", type="stainless_steel")[1]
     assert again["id"] == first["id"] and again["user_id"] == USER and again["note"] == "one"
-    other_type = ask(hub, type="stainless_steel")[1]
-    assert other_type["id"] != first["id"]
+    second = ask(hub, user=ADMIN, job_id=hub.queue_job()["id"])[1]  # another job may ask for the same nozzle
+    assert second["id"] != first["id"]
     assert len(hub.req("GET", "/api/nozzle-requests", user=ADMIN)[1]) == 2
 
 
@@ -199,9 +204,10 @@ def test_only_the_owner_at_home_is_notified_and_the_event_is_fired(hub):
     hub.req("PUT", "/api/integration/options", {"recipients": ACME}, secret=True)
     ask(hub, note="please")
     ask(hub)  # a duplicate raises nothing
+    ask(hub, user=ADMIN, job_id=hub.queue_job()["id"])  # the same change for another job: the owner is not told twice
     hub.app.notifier.flush()
     assert notes(hub) == [("mobile_app_cy", "U-USER asks to put a 0.6 mm hardened steel nozzle into Lab: please")]
-    (etype, data), = hub.ha.events
+    (etype, data), = [e for e in hub.ha.events if e[0] == "druckwerk_nozzle_requested"]
     assert etype == "druckwerk_nozzle_requested" and data["request"]["printer"] == SERIAL and data["request"]["printer_name"] == "Lab"
 
 

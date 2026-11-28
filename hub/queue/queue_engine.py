@@ -72,7 +72,7 @@ def _tray_ok(v):
 
 class Queue:
     def __init__(self, registry, data_dir, get_state, call_service, get_trays=None,
-                 clock=time.time, start_timeout=START_TIMEOUT, job_allowed=None, dry=None, send_print=None, get_nozzle=None):
+                 clock=time.time, start_timeout=START_TIMEOUT, job_allowed=None, dry=None, send_print=None, get_nozzle=None, get_requests=None):
         self.registry = registry
         self.path = os.path.join(data_dir, "queue.json")
         self.get_state, self.call_service = get_state, call_service
@@ -83,6 +83,8 @@ class Queue:
         self.job_allowed = job_allowed
         self.dry = dry
         self.get_nozzle = get_nozzle or (lambda serial: None)
+        # get_requests(job_id, fresh) -> open change requests [{"wait": "0.6 mm nozzle", ...}]; a job with one is blocked.
+        self.get_requests = get_requests or (lambda job_id, fresh=False: [])
         self.lock = threading.RLock()
         self.jobs, self.history = [], []
         # changing_filament lasts ~1 s, shorter than a poll; observe() latches it per serial.
@@ -293,14 +295,19 @@ class Queue:
         return (job["target"] == "any" and job["model"].lower() == printer["model"].lower()
                 and self._filaments_fit(job, serial))
 
-    def next_for(self, serial):
+    def blocked(self, job, fresh=False):
+        """Why a waiting job cannot start yet (an open request for a nozzle or spool change), else None."""
+        reqs = self.get_requests(job["id"], fresh)
+        return "This job is waiting for %s." % " and ".join(r["wait"] for r in reqs) if reqs else None
+
+    def next_for(self, serial, fresh=False):
         printer = self.registry.get(serial)
         if not printer:
             return None
         for job in self.jobs:
             # pending_approval is skipped here: only an admin's approval makes a job startable.
             if job["state"] == "queued" and self._fits(job, serial, printer) \
-                    and (not self.job_allowed or self.job_allowed(job, serial)):
+                    and (not self.job_allowed or self.job_allowed(job, serial)) and not self.blocked(job, fresh):
                 return job
         return None
 
@@ -326,9 +333,13 @@ class Queue:
                 if job["state"] != "queued" or not self._fits(job, serial, printer):
                     raise QueueError("that job is not queued or does not fit this printer")
             else:
-                job = self.next_for(serial)
-            if not job:
-                raise QueueError("no queued job fits this printer")
+                job = self.next_for(serial, fresh=True)
+                if not job:  # say why when the only fitting jobs wait for a change
+                    whys = (self.blocked(j, True) for j in self.jobs if j["state"] == "queued" and self._fits(j, serial, printer))
+                    raise QueueError(next((w for w in whys if w), "no queued job fits this printer"))
+            why = self.blocked(job, True)
+            if why:
+                raise QueueError(why)
             dry = job.get("kind") == "dry"
             if dry and confirmed is not True:
                 raise QueueError("confirm the start of the drying")
@@ -470,5 +481,7 @@ class Queue:
 
     def snapshot(self):
         with self.lock:
-            return {"jobs": list(self.jobs), "history": self.history[-HISTORY:][::-1],
+            # Blocked state travels with the job, so the view needs no second request.
+            return {"jobs": [dict(j, requests=self.get_requests(j["id"])) if j["state"] in WAITING else j for j in self.jobs],
+                    "history": self.history[-HISTORY:][::-1],
                     "printers": self.registry.all()}

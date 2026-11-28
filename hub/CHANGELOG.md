@@ -1,5 +1,13 @@
 # Changelog
 
+## 3.19.0 (unreleased)
+
+- Nozzle and filament change requests belong to a queue entry, and the entry is blocked until the change has happened. `POST /api/printers/<serial>/nozzle-request` and `POST /api/spools/<id>/load-request` now require `job_id` (a waiting print job; 400 without, 404 for an unknown one; only the job's owner or an admin of the printer may ask). One open request per job and kind. Older load requests without a job stay listed and can be cancelled, they block nothing.
+- A job with an open request cannot start: Start, start-next, the Home Assistant services and the "plate clear" notification action refuse with "This job is waiting for 0.6 mm hardened steel nozzle." (or "<spool> to be loaded"). start-next takes the first job that is not blocked. The nozzle mismatch check stays. `GET /api/queue` has `requests` on every waiting job: `[{id, kind, wait, printer, user_id, user_name, note, created_at}]`.
+- A request closes by itself when the change happened (nozzle installed; spool in that printer), when it is cancelled, or when its job leaves the queue.
+- The owner is notified once per printer and change while an identical request (same spool, or same diameter and type) is still open for another job.
+- Queue: a blocked job shows a "Blocked" pill, the reason and who asked, with Start disabled; the row keeps its height. The job page has a "Waiting for a change" card to ask (note optional) and cancel. New print: the nozzle row and the library spool offer "Ask the owner ... when queued"; the request is made for the new job. The Filament tab lists load and nozzle requests with a link to their job; "Ask to load" on a spool is gone.
+
 ## 3.18.0 (unreleased)
 
 - Nozzle library. Each printer has a list of the nozzles its owner has (0.2, 0.4, 0.6 or 0.8 mm, with a type such as hardened steel), edited in Setup. The single "Nozzle" choice of the printer form is gone: an old value becomes the first entry of the library at the first start. `PUT /api/setup/printers/{serial}` takes `nozzles: [{diameter, type?}]` instead of `nozzle`.

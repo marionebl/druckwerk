@@ -47,3 +47,21 @@ def test_start_is_refused_for_another_nozzle(make, fake):
 def test_start_is_allowed_when_it_matches_or_nothing_is_known(make, installed, need):
     job = with_nozzle(make, installed, need)
     assert make.start("S1", plate_clear=True)["id"] == job["id"]
+
+
+def test_a_job_with_an_open_change_request_is_blocked_until_it_closes(make, fake):
+    open_ = [{"id": "r1", "kind": "nozzle", "wait": "0.6 mm nozzle"}]
+    make.get_requests = lambda job_id, fresh=False: open_ if job_id == first["id"] else []
+    first = make.add("a.gcode.3mf", target="S1")
+    second = make.add("b.gcode.3mf", target="S1")
+    assert make.snapshot()["jobs"][0]["requests"] == open_ and make.snapshot()["jobs"][1]["requests"] == []
+    with pytest.raises(QueueError, match=r"^This job is waiting for 0\.6 mm nozzle\.$"):
+        make.start("S1", plate_clear=True, job_id=first["id"])
+    assert make.start("S1", plate_clear=True)["id"] == second["id"]  # start-next goes past it
+
+
+def test_start_next_says_why_when_every_fitting_job_is_blocked(make):
+    make.get_requests = lambda job_id, fresh=False: [{"wait": "Acme PLA to be loaded"}]
+    make.add("a.gcode.3mf", target="S1")
+    with pytest.raises(QueueError, match=r"^This job is waiting for Acme PLA to be loaded\.$"):
+        make.start("S1", plate_clear=True)

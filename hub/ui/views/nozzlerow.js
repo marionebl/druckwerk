@@ -1,9 +1,8 @@
 // New print: the nozzle row, one chip per nozzle of the printer's library. Its height is the same in every state.
-import { api } from '../api.js';
-import { h, btn, pill, attempt } from '../util.js';
+import { h, pill } from '../util.js';
 
 export const nozzleName = (n) => `${n.diameter} mm${n.type ? ' ' + n.type.replace(/_/g, ' ') : ''}`;
-const same = (a, b) => !!a && !!b && a.diameter === b.diameter && a.type === b.type;
+export const same = (a, b) => !!a && !!b && a.diameter === b.diameter && a.type === b.type;
 
 // The picked nozzle (of this printer), else the installed one, else the first of the library.
 export function chosenNozzle(S, ref) {
@@ -12,22 +11,16 @@ export function chosenNozzle(S, ref) {
 }
 
 export function nozzleRow(S, ref, draw) {
-  if (!S.nozzleReqs) {  // open requests: the row keeps its height while they load
-    S.nozzleReqs = [];
-    api.nozzleRequests().then((r) => { S.nozzleReqs = r; draw(); }, () => {});
-  }
   const lib = ref?.nozzles, pick = chosenNozzle(S, ref), now = ref?.nozzle || null;
-  const asked = pick && S.nozzleReqs.find((r) => r.printer === ref.serial && r.diameter === pick.diameter && r.type === pick.type);
-  const note = h('input', { type: 'text', id: 'nozzle-note', maxlength: 200, placeholder: 'Note (optional)', style: 'min-height:32px;max-width:220px' });
+  // A change is asked for once the job is queued, so the request belongs to it. The controls look the same checked or not.
+  const note = h('input', { type: 'text', id: 'nozzle-note', maxlength: 200, placeholder: 'Note (optional)', value: S.askNozzleNote || '',
+    style: 'min-height:32px;max-width:220px', oninput: (e) => (S.askNozzleNote = e.target.value) });
   let status = null;
   if (pick && same(pick, now)) status = pill('installed', 'ok');
   else if (pick && !now) status = h('small', { class: 'muted' }, 'The installed nozzle is unknown. Check it before the print starts.');
-  else if (pick && asked) status = pill('change requested', 'warn');
   else if (pick) status = [h('small', { class: 'muted' }, `The printer has ${now.diameter} mm.`), note,
-    btn('Ask owner to change nozzle', async () => {
-      const r = await attempt(() => api.askNozzle(ref.serial, { diameter: pick.diameter, type: pick.type, note: note.value.trim() }), 'Request sent');
-      if (r) { S.nozzleReqs.push(r); draw(); }
-    }, 'sm', { id: 'nozzle-ask' })];
+    h('label', { class: 'row', style: 'gap:6px;font-size:13px;cursor:pointer' }, h('input', { type: 'checkbox', id: 'nozzle-ask', checked: !!S.askNozzle, onchange: (e) => (S.askNozzle = e.target.checked) }),
+      h('span', null, 'Ask the owner to change it when queued'))];
   return h('div', { class: 'nozrow', id: 'nozzle-row' }, h('div', { class: 'tag' }, 'Nozzle'),
     h('div', { class: 'chips' },
       !lib ? h('button', { class: 'chip', disabled: true }, '…')

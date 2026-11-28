@@ -13,11 +13,12 @@ def hub(hub):
     hub.grant(USER, SERIAL)
     hub.grant(OTHER, SERIAL)
     hub.spool = hub.cloud_spool(brand="Acme", type="PLA", name="PLA Basic", colour="FF0000")
+    hub.job = hub.queue_job(user=USER)  # a request belongs to a queue entry
     return hub
 
 
-def ask(hub, user=USER, printer=SERIAL, note=None, spool=None):
-    body = {"printer": printer, **({"note": note} if note is not None else {})}
+def ask(hub, user=USER, printer=SERIAL, note=None, spool=None, job=...):
+    body = {"printer": printer, "job_id": (hub.job["id"] if job is ... else job), **({"note": note} if note is not None else {})}
     return hub.req("POST", "/api/spools/%s/load-request" % (spool or hub.spool["id"]), body, user=user)
 
 
@@ -25,6 +26,7 @@ def test_a_user_asks_and_the_request_is_listed(hub):
     status, req = ask(hub, note="for the red benchy")
     assert status == 200
     assert req["spool_id"] == hub.spool["id"] and req["printer"] == SERIAL and req["user_id"] == USER
+    assert req["job_id"] == hub.job["id"] and req["job_name"] == hub.job["name"]
     assert req["spool_label"] == "Acme PLA PLA Basic" and req["note"] == "for the red benchy" and req["user_name"] == "U-USER"
     assert hub.req("GET", "/api/load-requests", user=USER)[1] == [req]
     assert hub.req("GET", "/api/load-requests", user=ADMIN)[1] == [req]
@@ -39,18 +41,27 @@ def test_validation(hub):
     assert ask(hub, printer="NOPE")[0] == 404
     assert ask(hub, spool="999")[0] == 404
     assert ask(hub, note="x" * 201)[0] == 400
-    assert hub.req("POST", "/api/spools/%s/load-request" % hub.spool["id"], {}, user=USER)[0] == 400
+    assert hub.req("POST", "/api/spools/%s/load-request" % hub.spool["id"], {"job_id": hub.job["id"]}, user=USER)[0] == 400
+    assert ask(hub, job=None)[0] == 400 and ask(hub, job="../x")[0] == 400  # a request needs a job
+    assert ask(hub, job="0" * 12)[0] == 404  # no such job
+    assert ask(hub, user=OTHER)[0] == 403  # not their job
+    other = hub.queue_job(target=SERIAL2)
+    hub.grant(USER, SERIAL2)
+    assert ask(hub, job=other["id"])[0] == 400  # that job prints on another printer
+    assert ask(hub, printer=SERIAL2, job=other["id"])[0] == 403  # an admin's job: the user does not own it
     assert hub.req("GET", "/api/load-requests", user=USER)[1] == []
     loaded = hub.cloud_spool(type="PETG", printer=SERIAL, unit=0, slot=0)
     hub.now += 31
     assert ask(hub, spool=loaded["id"])[0] == 409  # already in that printer
 
 
-def test_the_same_spool_and_printer_returns_the_open_request(hub):
+def test_one_open_request_per_job(hub):
     first = ask(hub, note="one")[1]
-    again = ask(hub, user=OTHER, note="two")[1]
+    again = ask(hub, user=ADMIN, note="two")[1]
     assert again["id"] == first["id"] and again["user_id"] == USER and again["note"] == "one"
     assert len(hub.req("GET", "/api/load-requests", user=ADMIN)[1]) == 1
+    second = ask(hub, user=ADMIN, job=hub.queue_job()["id"])[1]  # another job may ask for the same spool
+    assert second["id"] != first["id"] and len(hub.req("GET", "/api/load-requests", user=ADMIN)[1]) == 2
 
 
 def test_a_user_without_a_grant_sees_no_requests(hub):
@@ -102,12 +113,25 @@ def test_only_owners_at_home_are_notified_and_the_event_is_fired(hub):
     hub.req("PUT", "/api/integration/options", {"recipients": RECIPIENTS}, secret=True)
     ask(hub, note="please")
     ask(hub)  # a duplicate raises nothing
+    ask(hub, user=ADMIN, job=hub.queue_job()["id"])  # the same change for another job: the owner is not told twice
     hub.app.notifier.flush()
     # Ada is an HA admin but no owner of the printer: she gets nothing.
     assert [(s, d["message"]) for s, d in notes(hub)] == [
         ("mobile_app_cy", "U-USER asks to load Acme PLA PLA Basic into Lab: please")]
-    (etype, data), = hub.ha.events
+    (etype, data), = [e for e in hub.ha.events if e[0] == "druckwerk_load_requested"]  # one, not one per job
     assert etype == "druckwerk_load_requested" and data["request"]["printer"] == SERIAL
+
+
+def test_a_different_spool_for_the_same_printer_is_a_new_notification(hub):
+    hub.ha.s["person.cy"] = st("home", user_id=OTHER)
+    hub.owner(OTHER)
+    hub.req("PUT", "/api/integration/options", {"recipients": {"person.cy": "mobile_app_cy"}}, secret=True)
+    ask(hub)
+    petg = hub.cloud_spool(type="PETG")
+    hub.now += 31  # the library is cached
+    ask(hub, user=ADMIN, job=hub.queue_job()["id"], spool=petg["id"])
+    hub.app.notifier.flush()
+    assert len(notes(hub)) == 2
 
 
 def test_the_owner_is_notified_without_a_note_and_the_owner_of_another_printer_is_not(hub):
