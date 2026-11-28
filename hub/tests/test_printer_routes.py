@@ -78,3 +78,24 @@ def test_printer_light_is_for_admins_of_the_printer(hub):
     assert hub.req("POST", url, {"on": True}, user=OTHER)[0] == 200
     hub.set_print(lights_report=[])
     assert hub.req("GET", "/api/printers", user=ADMIN)[1][0]["light"] is None
+
+
+def test_one_failed_status_call_keeps_the_printer_online_with_its_last_status(hub):
+    hub.setup_printers()
+    assert hub.req("GET", "/api/printers", user=ADMIN)[1][0]["stale"] is False
+    FakeBridge.status_fail = {SERIAL}
+    p = hub.req("GET", "/api/printers", user=ADMIN)[1][0]
+    assert (p["online"], p["status"], p["progress"], p["stale"]) == (True, "running", 42.0, False)
+    hub.now += 120
+    p = hub.req("GET", "/api/printers", user=ADMIN)[1][0]
+    assert (p["online"], p["status"], p["stale"], p["status_age"]) == (True, "running", True, 120)
+
+
+def test_a_printer_goes_offline_only_when_the_bridge_says_so(hub):
+    hub.setup_printers()
+    hub.req("GET", "/api/printers", user=ADMIN)
+    FakeBridge.status_fail = {SERIAL}
+    FakeBridge.printer_extra = {SERIAL: {"online": False}}
+    hub.now += 10  # past the 5 s reuse of the printer list
+    p = hub.req("GET", "/api/printers", user=ADMIN)[1][0]
+    assert (p["online"], p["status"], p["progress"], p["stale"]) == (False, None, None, False)

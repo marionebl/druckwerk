@@ -256,7 +256,8 @@ def test_the_picture_follows_the_last_sent_file_and_then_the_printers_task(hub):
     # an unknown task name has no file; an unknown task state falls back to the last sent file
     with_task(hub, "nothing here")
     assert me(hub)["current_print"] == {"token": None, "file_path": None, "has_preview": False}
-    FakeBridge.status_fail = {SERIAL}  # the bridge cannot say
+    FakeBridge.status_fail = {SERIAL}  # the bridge cannot say, and no earlier status is kept
+    hub.app._cache.clear()
     assert me(hub)["current_print"]["file_path"] == sent
 
 

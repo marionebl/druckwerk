@@ -5,6 +5,8 @@ Test controls by environment (they survive a restart of the mock):
   MOCK_IGNORE_PUSHALL=<file>  while the file exists a pushall changes nothing, like a plugin that stopped delivering MQTT
 The status is idle: sequence_id and t_utc change only when a pushall command arrives.
   MOCK_SNAPSHOT=<file>  while the file exists /camera/<serial>/snapshot answers a JPEG instead of the callback timeout
+  MOCK_STATUS_LOG=<file>  one line is appended at every /status call
+  MOCK_STATUS_SLOW=<file>  while the file exists /status waits the seconds written in it before it answers
   MOCK_SLOW=<seconds>  a /print for slow.gcode.3mf takes this long"""
 import base64
 import json
@@ -109,6 +111,13 @@ class Handler(BaseHTTPRequestHandler):
         elif self.path == "/prints":  # mock only: what /print received
             self.reply(200, [{"file_b64": base64.b64encode(p["file"]).decode(), "params": p["params"]} for p in s.prints])
         elif self.path.startswith("/status/") and self.path[8:] in s.serials:
+            if os.environ.get("MOCK_STATUS_LOG"):
+                with open(os.environ["MOCK_STATUS_LOG"], "a") as f:
+                    f.write("status\n")
+            slow = os.environ.get("MOCK_STATUS_SLOW", "/nonexistent")
+            if os.path.exists(slow):
+                with open(slow) as f:
+                    time.sleep(float(f.read() or 0))
             # SERIALB01 (the H2S) answers like a new-protocol printer, the others like a P1S.
             np = {"cfg": "0", "fun": "0", "aux": "0", "stat": "0"} if self.path.endswith("SERIALB01") else {}
             extra = {"fun2": "20", "ams": {"ams": DRY_UNITS}} if self.path.endswith("SERIAL001") else {}
