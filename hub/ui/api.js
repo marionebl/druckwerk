@@ -1,4 +1,7 @@
 // Every network call of the UI lives here. Paths are relative (ingress adds a path prefix).
+// A proxy in front of the app (HA ingress) can refuse request bodies of about 1 MB, so files go up in parts.
+const PART = 512 * 1024;
+
 export class ApiError extends Error {
   constructor(status, message) { super(message); this.status = status; }
 }
@@ -112,7 +115,11 @@ export const api = {
   queue: () => get('api/queue'),
   jobAction: (id, action, body) => post(`api/queue/${q(id)}/${action}`, body),
   // slicing happens in the browser: one uploaded job per slice, the G-code goes up after it
-  upload: (file) => call('POST', 'api/jobs?name=' + q(file.name), file, true),
+  upload: async (file) => {
+    let job = await call('POST', `api/jobs?name=${q(file.name)}&total=${file.size}`, file.slice(0, PART), true);
+    for (let at = PART; at < file.size; at += PART) job = await call('POST', `api/jobs/${q(job.id)}/model?offset=${at}&total=${file.size}`, file.slice(at, at + PART), true);
+    return job;
+  },
   job: (id) => get(`api/jobs/${q(id)}`),
   jobModel: async (id) => {
     const r = await fetch(`api/jobs/${q(id)}/model`);
@@ -128,7 +135,12 @@ export const api = {
   // slicing in the browser: the filament preset for a tray, and the G-code the browser made (the app packs and stores it)
   // fil: {tray} of an AMS tray, or {type, brand, name, colour, spool} of a library spool
   engineFilament: (serial, fil) => get('api/engine/filament?' + new URLSearchParams({ serial, ...fil })),
-  uploadGcode: (id, params, gcode) => call('POST', `api/jobs/${q(id)}/gcode?` + params, gcode, true),
+  uploadGcode: async (id, params, gcode) => {
+    const bytes = typeof gcode === 'string' ? new TextEncoder().encode(gcode) : new Uint8Array(gcode.buffer ?? gcode);
+    let r;
+    for (let at = 0; at < bytes.length; at += PART) r = await call('POST', `api/jobs/${q(id)}/gcode?${params}&offset=${at}&total=${bytes.length}`, bytes.slice(at, at + PART), true);
+    return r;
+  },
   queueJob: (id, body) => post(`api/jobs/${q(id)}/queue`, body),
   // filament
   spools: () => get('api/spools'),
