@@ -9,6 +9,7 @@ import aiohttp
 from homeassistant.config_entries import ConfigEntry
 from homeassistant.core import HomeAssistant
 from homeassistant.exceptions import HomeAssistantError, ServiceValidationError
+from homeassistant.helpers import issue_registry as ir
 from homeassistant.helpers.aiohttp_client import async_get_clientsession
 from homeassistant.helpers.update_coordinator import DataUpdateCoordinator, UpdateFailed
 
@@ -22,7 +23,7 @@ from .const import (
     PRESS_TIMEOUT,
     STATE_INTERVAL,
 )
-from .manifest import Manifest
+from .manifest import ISSUE_BAD_SECRET, Manifest
 
 _LOGGER = logging.getLogger(__name__)
 NETWORK_ERRORS = (aiohttp.ClientError, TimeoutError, ValueError)
@@ -70,12 +71,17 @@ class HubCoordinator(DataUpdateCoordinator[dict[str, dict[str, Any]]]):
         first = self.data is None
         try:
             doc = await self.call("GET", "/api/integration/state")
+            ir.async_delete_issue(self.hass, DOMAIN, ISSUE_BAD_SECRET)
             revision = doc.get("manifest_revision")
             if first or (revision and revision != self.manifest.revision):
                 await self.manifest.async_refresh()
             printers = dict(doc["printers"])
         except (*NETWORK_ERRORS, hub_api.HubError, AttributeError, KeyError) as err:
             self._push_options = True
+            if isinstance(err, hub_api.HubError) and err.status == 401:  # a wrong secret does not heal by itself
+                ir.async_create_issue(self.hass, DOMAIN, ISSUE_BAD_SECRET, is_fixable=False,
+                                      severity=ir.IssueSeverity.ERROR, translation_key=ISSUE_BAD_SECRET)
+                raise UpdateFailed(f"Druckwerk rejected the hub secret: {err}") from err
             raise UpdateFailed(f"Druckwerk not reachable: {err}") from err
         if self._push_options:
             try:

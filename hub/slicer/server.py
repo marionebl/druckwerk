@@ -508,8 +508,12 @@ class Handler(BaseHTTPRequestHandler):
 
     def send(self, status, body, ctype="application/json"):
         data = body if isinstance(body, bytes) else json.dumps(body).encode()
-        self.head(status, ctype, len(data), "no-store")
-        self.wfile.write(data)
+        try:
+            self.head(status, ctype, len(data), "no-store")
+            self.wfile.write(data)
+        except (BrokenPipeError, ConnectionResetError):  # the client gave up before the answer
+            self.close_connection = True
+            log("client went away: %s %s" % (self.command, urlsplit(self.path).path))
 
     def send_file(self, path, ctype, cache):
         with open(path, "rb") as f:

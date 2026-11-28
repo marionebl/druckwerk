@@ -15,6 +15,7 @@ import secrets
 import sys
 import threading
 import time
+import traceback
 import urllib.request
 import zipfile
 from urllib.parse import parse_qs, quote, unquote, urlsplit
@@ -715,6 +716,9 @@ class App:
                 return h.send(502, {"error": str(e)})
             except ValueError as e:
                 return h.send(400, {"error": str(e)})
+            except Exception:  # noqa: BLE001 - answer instead of dropping the connection
+                log("%s %s failed:\n%s" % (method, u.path, traceback.format_exc().rstrip()))
+                return h.send(500, {"error": "internal error"})
             if out is not h:
                 try:
                     self.sync()
@@ -1172,28 +1176,45 @@ class App:
             name, job["filename"], target, model,
             [{"type": f["type"], "colour": f["colour"]} for f in use["filaments"]], b.get("options"),
             name=b.get("name") or job["filename"].rsplit(".", 1)[0])
-        os.makedirs(self.share, exist_ok=True)
-        with open(job["result"], "rb") as src:
-            # Written after the job passed the access check, so a refused request leaves nothing in the share.
-            with open(os.path.join(self.share, name), "wb") as dst:
-                dst.write(src.read())
-        png = None
-        with zipfile.ZipFile(job["result"]) as z:
-            if "Metadata/plate_1.png" in z.namelist():
-                with open(os.path.join(self.data_dir, "plates", added["id"] + ".png"), "wb") as f:
-                    f.write(z.read("Metadata/plate_1.png"))
-                png = "api/queue/%s/plate.png" % added["id"]
-        self.save_settings(added["id"], job["result"])
-        tray = (job.get("settings") or {}).get("tray")
-        with self.queue.lock:
-            added.update(nozzle=job.get("nozzle") or file_nozzle(job["result"]), grams=use["grams"], filament_grams=[f["grams"] for f in use["filaments"]],
-                         print_seconds=use["seconds"], plate_png=png,
-                         slice_tray=[int(tray["ams"]), int(tray["id"])] if tray and tray.get("ams") is not None else None,
-                         slice_spool={k: tray.get(k) for k in ("spool_id", "brand", "type", "name", "colour")}
-                         if tray and tray.get("ams") is None else None,
-                         slice_job=job["id"], slice=self.slice_view(job, use))
-            self.queue._save()
+        files = [os.path.join(self.share, name), os.path.join(self.data_dir, "plates", added["id"] + ".png")]
+        try:
+            os.makedirs(self.share, exist_ok=True)
+            with open(job["result"], "rb") as src:
+                # Written after the job passed the access check, so a refused request leaves nothing in the share.
+                with open(files[0], "wb") as dst:
+                    dst.write(src.read())
+            png = None
+            with zipfile.ZipFile(job["result"]) as z:
+                if "Metadata/plate_1.png" in z.namelist():
+                    with open(files[1], "wb") as f:
+                        f.write(z.read("Metadata/plate_1.png"))
+                    png = "api/queue/%s/plate.png" % added["id"]
+            self.save_settings(added["id"], job["result"])
+            tray = (job.get("settings") or {}).get("tray")
+            with self.queue.lock:
+                added.update(nozzle=job.get("nozzle") or file_nozzle(job["result"]), grams=use["grams"], filament_grams=[f["grams"] for f in use["filaments"]],
+                             print_seconds=use["seconds"], plate_png=png,
+                             slice_tray=[int(tray["ams"]), int(tray["id"])] if tray and tray.get("ams") is not None else None,
+                             slice_spool={k: tray.get(k) for k in ("spool_id", "brand", "type", "name", "colour")}
+                             if tray and tray.get("ams") is None else None,
+                             slice_job=job["id"], slice=self.slice_view(job, use))
+                self.queue._save()
+        except BaseException:
+            self.drop_new_job(added, files)
+            raise
         return added
+
+    def drop_new_job(self, job, files):
+        """A failed step after `add` leaves no job and no file behind, as a refused start does in post_drying."""
+        with self.queue.lock:
+            if job in self.queue.jobs:
+                self.queue.jobs.remove(job)
+            self.queue._save()
+        for f in files:
+            try:
+                os.remove(f)
+            except OSError:
+                pass
 
     @staticmethod
     def slice_view(job, use):
@@ -1227,6 +1248,11 @@ class App:
     def post_queue(self, h, m, q, c):
         """POST /api/queue: the queue's own add, plus a file named by absolute path, which is copied into the share."""
         b = h.json()
+        fils, opts = b.get("filaments"), b.get("options")
+        if fils is not None and not (isinstance(fils, list) and all(isinstance(x, dict) for x in fils)):
+            raise ValueError("filaments must be a list of {type, colour}")
+        if opts is not None and not isinstance(opts, dict):
+            raise ValueError("options must be an object")
         f = b.get("file")
         api = self.access.bind(self.queue, c)
         if b.get("kind") == "dry" or not (isinstance(f, str) and f.startswith("/")):
@@ -1245,21 +1271,26 @@ class App:
         fils = b.get("filaments") or [{"type": x["type"], "colour": x["colour"]} for x in use["filaments"]]
         added = api.add(name, shown, b.get("target", "any"), b.get("model", ""), fils, b.get("options"),
                         name=b.get("name") or base)
-        self.stamp_nozzle(added, real)
-        os.makedirs(self.share, exist_ok=True)
-        with open(real, "rb") as src, open(os.path.join(self.share, name), "wb") as dst:  # after the access check
-            dst.write(src.read())
-        png = None
-        with zipfile.ZipFile(real) as z:
-            if "Metadata/plate_1.png" in z.namelist():
-                with open(os.path.join(self.data_dir, "plates", added["id"] + ".png"), "wb") as out:
-                    out.write(z.read("Metadata/plate_1.png"))
-                png = "api/queue/%s/plate.png" % added["id"]
-        self.save_settings(added["id"], real)
-        with self.queue.lock:
-            added.update(grams=use["grams"], filament_grams=[x["grams"] for x in use["filaments"]],
-                         print_seconds=use["seconds"], plate_png=png)
-            self.queue._save()
+        files = [os.path.join(self.share, name), os.path.join(self.data_dir, "plates", added["id"] + ".png")]
+        try:
+            self.stamp_nozzle(added, real)
+            os.makedirs(self.share, exist_ok=True)
+            with open(real, "rb") as src, open(files[0], "wb") as dst:  # after the access check
+                dst.write(src.read())
+            png = None
+            with zipfile.ZipFile(real) as z:
+                if "Metadata/plate_1.png" in z.namelist():
+                    with open(files[1], "wb") as out:
+                        out.write(z.read("Metadata/plate_1.png"))
+                    png = "api/queue/%s/plate.png" % added["id"]
+            self.save_settings(added["id"], real)
+            with self.queue.lock:
+                added.update(grams=use["grams"], filament_grams=[x["grams"] for x in use["filaments"]],
+                             print_seconds=use["seconds"], plate_png=png)
+                self.queue._save()
+        except BaseException:
+            self.drop_new_job(added, files)
+            raise
         return added
 
     def queue_routes_add(self, api, b):

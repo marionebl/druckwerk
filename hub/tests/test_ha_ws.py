@@ -8,7 +8,7 @@ import threading
 
 import pytest
 
-from ha import GUID, HA, HAError
+from ha import GUID, HA, HAError, HAUnavailable
 
 
 def read_exact(c, n):
@@ -131,3 +131,153 @@ def test_fire_event_posts_to_the_rest_api(monkeypatch):
     monkeypatch.setattr(ha, "_rest", lambda method, path, body=None, timeout=30: calls.append((method, path, body)))
     ha.fire_event("druckwerk_job_done", {"seq": 1})
     assert calls == [("POST", "/events/druckwerk_job_done", {"seq": 1})]
+
+
+# ---- the watcher survives a failing callback and a silent connection
+def read_any(c):
+    b0, b1 = read_exact(c, 2)
+    n = b1 & 0x7F
+    mask = read_exact(c, 4)
+    return b0 & 0x0F, bytes(b ^ mask[i % 4] for i, b in enumerate(read_exact(c, n)))
+
+
+def event(n):
+    return {"id": 1, "type": "event", "event": {"event_type": "t", "data": {"n": n}}}
+
+
+def handshake(c):
+    req = b""
+    while b"\r\n\r\n" not in req:
+        req += c.recv(1024)
+    key = [l for l in req.decode().split("\r\n") if l.lower().startswith("sec-websocket-key")][0].split(": ")[1]
+    acc = base64.b64encode(hashlib.sha1((key + GUID).encode()).digest()).decode()
+    c.sendall(("HTTP/1.1 101 Switching Protocols\r\nUpgrade: websocket\r\nConnection: Upgrade\r\n"
+               "Sec-WebSocket-Accept: %s\r\n\r\n" % acc).encode())
+    write_frame(c, {"type": "auth_required"})
+
+
+def serve(script):
+    """A fake HA that logs each connection in and hands it to script(conn, index)."""
+    srv = socket.socket()
+    srv.bind(("127.0.0.1", 0))
+    srv.listen(5)
+    conns = []
+
+    def run():
+        while True:
+            try:
+                c, _ = srv.accept()
+            except OSError:
+                return
+            handshake(c)
+            read_frame(c)
+            write_frame(c, {"type": "auth_ok"})
+            read_frame(c)  # subscribe
+            conns.append(c)
+            threading.Thread(target=script, args=(c, len(conns) - 1), daemon=True).start()
+    threading.Thread(target=run, daemon=True).start()
+    return "ws://127.0.0.1:%d/core/websocket" % srv.getsockname()[1], srv, conns
+
+
+def watch(url, callback, stop):
+    t = threading.Thread(target=HA("http://x", url, "tok").watch_events, args=("t", callback, stop), daemon=True)
+    t.start()
+    return t
+
+
+def wait_until(fn, seconds=5):
+    import time
+    end = time.time() + seconds
+    while time.time() < end and not fn():
+        time.sleep(0.02)
+    return fn()
+
+
+def test_a_failing_callback_does_not_end_the_watcher():
+    def script(c, i):
+        write_frame(c, event(1))
+        write_frame(c, event(2))
+    url, srv, _ = serve(script)
+    got, stop = [], threading.Event()
+
+    def cb(d):
+        got.append(d["n"])
+        if d["n"] == 1:
+            raise RuntimeError("boom")
+    t = watch(url, cb, stop)
+    try:
+        assert wait_until(lambda: 2 in got)
+        assert t.is_alive()
+    finally:
+        stop.set()
+        srv.close()
+
+
+def test_a_silent_connection_gets_pings_and_stays_open_while_it_answers(monkeypatch):
+    monkeypatch.setattr(HA, "IDLE", 0.2, raising=False)
+    pings = []
+
+    def script(c, i):
+        try:
+            while True:
+                op, _ = read_any(c)
+                if op == 9:
+                    pings.append(i)
+                    c.sendall(bytes([0x8A, 0]))  # pong
+        except OSError:
+            pass  # the test ended
+    url, srv, conns = serve(script)
+    stop = threading.Event()
+    t = watch(url, lambda d: None, stop)
+    try:
+        assert wait_until(lambda: len(pings) >= 3)
+        assert len(conns) == 1 and t.is_alive()  # an idle socket is normal: no reconnect
+    finally:
+        stop.set()
+        srv.close()
+
+
+def test_a_connection_that_does_not_answer_the_ping_is_replaced(monkeypatch):
+    monkeypatch.setattr(HA, "IDLE", 0.2, raising=False)
+    got = []
+
+    def script(c, i):
+        if i == 1:
+            write_frame(c, event(7))
+    url, srv, conns = serve(script)
+    stop = threading.Event()
+    watch(url, lambda d: got.append(d["n"]), stop)
+    try:
+        assert wait_until(lambda: got == [7], 10)
+        assert len(conns) == 2
+    finally:
+        stop.set()
+        srv.close()
+
+
+def test_a_stall_in_the_auth_exchange_is_unavailable_not_a_timeout():
+    srv = socket.socket()
+    srv.bind(("127.0.0.1", 0))
+    srv.listen(1)
+
+    def run():
+        c, _ = srv.accept()
+        handshake(c)  # then silence: no auth_ok
+        threading.Event().wait(2)
+    threading.Thread(target=run, daemon=True).start()
+    ha = HA("http://x", "ws://127.0.0.1:%d/core/websocket" % srv.getsockname()[1], "tok")
+    try:
+        with pytest.raises(HAUnavailable):
+            ha._connect(timeout=0.3)
+    finally:
+        srv.close()
+
+
+def test_command_turns_an_oserror_from_connect_into_haerror(monkeypatch):
+    ha = HA("http://x", "ws://x", "tok")
+
+    def broken(timeout=30):
+        raise OSError("reset")
+    monkeypatch.setattr(ha, "_connect", broken)
+    with pytest.raises(HAError):
+        ha.command("config/auth/list")
