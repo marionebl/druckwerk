@@ -3,6 +3,7 @@
 import { api } from '../api.js';
 import { h, clear, icon, btn, pill, empty, field, clock, dateTime, durSec, money, toDate, fail, loading, thumb, attempt } from '../util.js';
 import * as D from './detail.js';
+import { gcodePreview } from './preview.js';
 
 const STATUS = { finished: ['Finished', 'ok'], failed: ['Failed', 'err'], cancelled: ['Cancelled', ''], stopped: ['Stopped early', 'err'], running: ['Printing', 'ok'] };
 const dayKey = (d) => d.getFullYear() * 10000 + (d.getMonth() + 1) * 100 + d.getDate();
@@ -18,6 +19,22 @@ function dayLabel(d) {
 const startedBy = (t) => t.user_name || (t.user_id ? 'Unknown user' : t.printer_owner ? 'Printer owner: ' + t.printer_owner : 'Not started here');
 const titleOf = (t) => t.job?.name || t.title || 'Untitled print';
 const SOURCE = { job: ['Druckwerk only', 'warn'], cloud: ['Not started from Druckwerk', ''] };
+
+const DAY_TICKS = [0, 6, 12, 18, 24];
+
+// The bar of one print on its start day's 24 h axis: left and width in percent, or null when the times are missing.
+// The day's own midnights bound it (a DST day is not 24 h); a print past midnight is cut there and marked.
+function span(t, now) {
+  const s = toDate(t.started_at);
+  if (!s) return null;
+  let e = toDate(t.ended_at);
+  if (!e) e = t.status === 'running' ? now : t.seconds ? new Date(s.getTime() + t.seconds * 1000) : null;
+  if (!e || e < s) return null;
+  const d0 = new Date(s.getFullYear(), s.getMonth(), s.getDate()), d1 = new Date(s.getFullYear(), s.getMonth(), s.getDate() + 1);
+  const len = d1 - d0, cut = e > d1;
+  const left = (s - d0) / len * 100, width = ((cut ? d1 : e) - s) / len * 100;
+  return { left, width, cut };
+}
 
 export async function mount(ctx, root, parts = []) {
   if (parts[0]) return detailView(ctx, root, decodeURIComponent(parts[0]));
@@ -69,12 +86,19 @@ export async function mount(ctx, root, parts = []) {
     if (t.grams) meta.push(h('span', null, Math.round(t.grams) + ' g'));
     if (t.cost != null) meta.push(h('span', null, money(t.cost)));
     if (showUser) meta.push(h('span', { class: 'who-tag' }, icon('user', 14), startedBy(t)));
+    const sp = span(t, new Date());
     return h('li', { class: 'tl-item ' + (cls || 'plain') },
       h('a', { class: 'tl-card', href: '#/history/' + encodeURIComponent(t.id) },
         thumb(t.job?.plate_png || t.cover_url),
         h('div', { class: 'main' }, h('div', { class: 'row between' }, h('b', { class: 'ttl' }, titleOf(t)), t.source === 'job' ? pill(...SOURCE.job) : pill(label, cls)),
-          h('div', { class: 'meta' }, meta))));
+          h('div', { class: 'meta' }, meta))),
+      sp && h('div', { class: 'tl-span', title: label }, h('i', {
+        class: 'tl-bar st-' + t.status + (sp.cut ? ' cut' : ''),
+        style: `left:min(${sp.left}%, calc(100% - var(--bar-min)));width:${sp.width}%`,
+      })));
   }
+
+  const axis = () => h('div', { class: 'tl-axis', 'aria-hidden': 'true' }, DAY_TICKS.map((x) => h('span', { style: `left:${x / 24 * 100}%` }, String(x).padStart(2, '0'))));
 
   function draw(items) {
     if (!items.length) return clear(timeline, empty(admin ? 'No prints match these filters.' : 'You have no prints yet.'));
@@ -85,10 +109,25 @@ export async function mount(ctx, root, parts = []) {
       if (!g || g.key !== dayKey(d)) days.push((g = { key: dayKey(d), label: t.when ? dayLabel(d) : 'Unknown date', items: [] }));
       g.items.push(t);
     }
-    clear(timeline, days.map((g) => h('section', { class: 'tl-day' }, h('h2', null, g.label), h('ol', null, g.items.map(entry)))));
+    clear(timeline, days.map((g) => h('section', { class: 'tl-day' }, h('h2', null, g.label), g.items.some((t) => t.started_at) && axis(), h('ol', null, g.items.map(entry)))));
   }
 
   ctx.every(60000, load);
+}
+
+// The 3D preview of the print's own file. Nothing loads until the settings say a file exists; a placeholder stands in until then.
+function previewCard(id) {
+  const note = h('p', { class: 'muted', style: 'margin:0' }, 'Loading the 3D preview…');
+  const box = h('section', { class: 'card stack', style: 'gap:10px' }, h('h2', { style: 'margin:0' }, '3D preview'), note);
+  return {
+    box,
+    none: () => { note.textContent = 'No file is stored for this print, so there is no 3D preview.'; },
+    show: () => {
+      const prev = gcodePreview();
+      api.historyGcode(id).then((t) => { note.remove(); box.append(prev); return prev.load(t); })
+        .catch(() => { note.textContent = 'The 3D preview could not be loaded.'; });
+    },
+  };
 }
 
 async function detailView(ctx, root, id) {
@@ -109,6 +148,9 @@ async function detailView(ctx, root, id) {
   const used = (job?.spools_used || []).map((u) => h('a', { class: 'spoolprint', href: '#/filament/' + encodeURIComponent(u.spool_id) },
     h('span', null, spoolName(u.spool_id)), h('span', { class: 'muted' }, Math.round(u.grams * 10) / 10 + ' g')));
   const secs = t.seconds || job?.print_seconds;
+  const settings = h('div', null, h('section', { class: 'card' }, loading()));
+  const pv = previewCard(t.id);
+  const same = h('span', { style: 'display:contents' }), get = h('span', { style: 'display:contents' });
   clear(box, D.page({
     title: titleOf(t), sub: job?.name && t.title && job.name !== t.title ? 'Cloud title: ' + t.title : null,
     pills: [pill(label, cls), SOURCE[t.source] && pill(...SOURCE[t.source])],
@@ -119,11 +161,21 @@ async function detailView(ctx, root, id) {
       ['Filament', t.grams ? Math.round(t.grams) + ' g' : null], ['Cost', t.cost != null ? money(t.cost) : null],
       ['File', job?.source || job?.file],
       ['Error', (t.error || job?.error) && h('span', { style: 'color:var(--err)' }, t.error || job.error)]]),
-    blocks: [...D.settingsCards(job), D.card('Spools used', used), D.previewCard(source && job.slice_job)],
+    blocks: [...D.settingsCards(job), settings, D.card('Spools used', used), pv.box],
     actions: [
-      source && btn([icon('plus', 18), 'Print again'], () => D.printAgain(ctx, job), 'primary'),
+      same, get,
       source && btn('Reslice', () => D.reslice(ctx, job, source)),
       can && ['failed', 'cancelled'].includes(job?.state) && btn('Retry', async () => { if (await attempt(() => api.jobAction(job.id, 'retry'), 'Requeued')) ctx.go('#/queue/' + job.id); }),
     ],
   }));
+  // The settings come from the file, so they load after the page; the one primary action depends on whether the file is still there.
+  api.historySettings(t.id).then((data) => {
+    clear(settings, D.slicingCard(data, job));
+    data.preview ? pv.show() : pv.none();
+    const label = [icon('plus', 18), 'New print job with the same settings'];
+    if (data.download) get.append(h('a', { class: 'btn', href: api.historyFileUrl(t.id), download: data.download.name },
+      icon('download', 18), data.download.kind === 'model' ? 'Download model' : 'Download sliced 3MF'));
+    if (data.can_reprint) same.append(btn(label, () => D.sameJob(ctx, t.id), 'primary'));
+    else if (job) same.append(btn(label, () => D.reslice(ctx, job, source), 'primary'));
+  }).catch((e) => { pv.none(); clear(settings, D.card('Slicing settings', h('p', { class: 'muted', style: 'margin:0' }, 'Could not load the settings: ' + e.message))); });
 }
