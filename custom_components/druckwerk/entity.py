@@ -53,6 +53,11 @@ class AppEntity(CoordinatorEntity[HubCoordinator]):
         return self.hub.data.get(self.serial, {}).get("entities", {}).get(self.key) or {}
 
     @property
+    def user_id(self) -> str | None:
+        """The HA user of the running service call; the app applies that user's rules (None: admin)."""
+        return self._context.user_id if self._context else None
+
+    @property
     def available(self) -> bool:
         # A printer or descriptor the app dropped stays in the registry, unavailable.
         return (

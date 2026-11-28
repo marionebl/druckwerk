@@ -24,6 +24,7 @@ import externals
 import files
 import filament
 import history
+from httplen import content_length
 import nozzles
 import printer_state
 import progress
@@ -337,7 +338,7 @@ class App:
         conn = http.client.HTTPConnection(*self.bridge, timeout=300)
         try:
             conn.request(h.command, path + ("?" + query if query else ""),
-                         h.rfile.read(int(h.headers.get("Content-Length") or 0)) or None,
+                         h.rfile.read(content_length(h.headers)) or None,
                          {k: v for k, v in h.headers.items() if k.lower() in ("content-type",)})
             r = conn.getresponse()
         except OSError as e:
@@ -1593,7 +1594,7 @@ class App:
 
     def post_feedback(self, h, m, q, c):
         """The feedback button: one item of the to-do list todo.feedback, which an HA automation turns into a Claude session."""
-        length = int(h.headers.get("Content-Length") or 0)
+        length = content_length(h.headers)
         err = "expected {\"item\": ..., \"description\": ...} of at most %d bytes" % FEEDBACK_MAX
         if not 0 < length <= FEEDBACK_MAX:
             if length <= 4 * FEEDBACK_MAX:  # read the rest so the client gets the 400, not a reset connection
@@ -1645,7 +1646,7 @@ class App:
     def put_upload(self, h, m, q):
         self.internal_caller(h)
         try:
-            h.send(200, files.store(self.media_dir, unquote(m.group(1)), h.rfile, int(h.headers.get("Content-Length") or 0),
+            h.send(200, files.store(self.media_dir, unquote(m.group(1)), h.rfile, content_length(h.headers),
                                     q.get("overwrite") == ["1"]))
         except files.UploadError as e:
             raise HttpError(e.status, str(e))
@@ -1685,14 +1686,21 @@ class App:
 
     def post_operation(self, run):
         def route(h, m, q):
-            self.internal_caller(h)
+            c = self.internal_caller(h)
             act_as = (h.headers.get(ACT_AS_HEADER) or "").strip()
             port = h.server.server_address[1]
 
             def call(method, path, body=None, data=None, binary=False, timeout=30):
                 return self.local_call(port, act_as, method, path, body, data, binary, timeout)
+
+            def print_file(fields):
+                # Only an admin of the printer sends directly (as for the web UI); that includes force.
+                serial = fields.get("serial") or fields.get("device_id")
+                if act_as and self.access.role(c, serial) != "admin":
+                    raise Forbidden("rule: only an admin of the printer can print directly; use the queue")
+                return self.sender.print_file(fields)
             try:
-                result = run(m.group(1), h.json(), actions.Ops(call, self.media_dir, self.sender.print_file))
+                result = run(m.group(1), h.json(), actions.Ops(call, self.media_dir, print_file))
             except actions.ActionError as e:
                 raise HttpError(e.status, str(e))
             h.send(200, {"result": result})

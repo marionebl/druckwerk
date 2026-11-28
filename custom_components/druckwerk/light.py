@@ -25,7 +25,7 @@ class AppLight(AppEntity, LightEntity):
         return self.app.get("on")
 
     async def async_turn_on(self, **kwargs) -> None:
-        await self.hub.request("POST", self._command, {"on": True})
+        await self.hub.request("POST", self._command, {"on": True}, self.user_id)
 
     async def async_turn_off(self, **kwargs) -> None:
-        await self.hub.request("POST", self._command, {"on": False})
+        await self.hub.request("POST", self._command, {"on": False}, self.user_id)
