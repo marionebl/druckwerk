@@ -6,6 +6,7 @@ import json
 import os
 import queue
 import sys
+import threading
 
 from queue_registry import write_json
 
@@ -141,8 +142,12 @@ class Notifier:
         action = str(data.get("action", ""))
         if not action.startswith(ACTION_PREFIX):
             return
+        # The send can take minutes; the watcher thread must go on delivering events.
+        threading.Thread(target=self._start, args=(action[len(ACTION_PREFIX):],), name="druckwerk-start", daemon=True).start()
+
+    def _start(self, serial):
         try:
-            self.app.queue.start(action[len(ACTION_PREFIX):], plate_clear=True)
+            self.app.queue.start(serial, plate_clear=True)
             self.app.sync()
         except Exception as e:  # noqa: BLE001 - nobody waits for this; the queue shows the job's error
             log("start-next failed: %s" % e)

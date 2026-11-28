@@ -4,7 +4,7 @@ import os
 
 import pytest
 
-from hubfakes import ADMIN, OTHER, SERIAL, USER, st
+from hubfakes import ADMIN, OTHER, SERIAL, USER, st, wait_threads
 
 RECIPIENTS = {"person.ada": "notify.mobile_app_ada", "person.ben": "mobile_app_ben", "person.cy": "mobile_app_cy",
               "person.far": "mobile_app_far", "person.gone": "mobile_app_gone"}
@@ -115,6 +115,7 @@ def test_approval_needed_notifies_admins(hub):
 def test_the_notification_button_starts_the_next_job_with_plate_clear(hub):
     _, second = finish_first_job(hub)
     hub.app.notifier.on_action({"action": "DRUCKWERK_START_" + SERIAL})
+    wait_threads("druckwerk-start")
     states = {j["id"]: j["state"] for j in hub.app.queue.jobs + hub.app.queue.history}
     assert states[second["id"]] == "starting"
     assert [s["filename"] for s in hub.sent()] == ["a.gcode.3mf", "b.gcode.3mf"]
@@ -123,6 +124,7 @@ def test_the_notification_button_starts_the_next_job_with_plate_clear(hub):
 def test_other_actions_and_a_refused_start_are_ignored(hub):
     hub.app.notifier.on_action({"action": "SOMETHING_ELSE"})
     hub.app.notifier.on_action({"action": "DRUCKWERK_START_" + SERIAL})  # nothing queued: logged, not raised
+    wait_threads("druckwerk-start")
     assert hub.sent() == []
 
 

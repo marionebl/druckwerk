@@ -8,7 +8,7 @@ import re
 # the task (title or design title, extensions and case ignored) and the task started 60 s before to 15 min after the job.
 # Each task and each job is used once; the closest start wins, so two prints of one file go to the right people.
 EARLY, LATE = 60, 900
-JOB_STATES = ("starting", "printing", "done", "failed", "cancelled")
+JOB_STATES = ("sending", "starting", "printing", "done", "failed", "cancelled")
 
 
 def key(name):

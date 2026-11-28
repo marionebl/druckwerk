@@ -668,7 +668,7 @@ class Ops:
         waiting, running, approvals = {}, [], []
         for job in snap["jobs"]:
             state = job.get("state")
-            if state in ("starting", "printing"):
+            if state in ("sending", "starting", "printing"):
                 running.append(job_summary(job))
             elif state in ("queued", "pending_approval"):
                 key = job.get("target") or "any"
