@@ -132,6 +132,8 @@ class FakeBridge(BaseHTTPRequestHandler):
     library = {}  # account -> spools as the bridge's /api/filament lists them
     library_fail = None  # (status, error) that every /api/filament call answers
     library_calls = []  # (method, path, body)
+    files = {}  # path -> bytes the fake serves for a cloud 3MF download
+    file_url = None  # what GET /api/tasks/file answers (None: the cloud has no file, 502)
 
     def reply(self, code, body, ctype="application/json"):
         data = body if isinstance(body, bytes) else json.dumps(body).encode()
@@ -157,6 +159,12 @@ class FakeBridge(BaseHTTPRequestHandler):
             if serial in FakeBridge.task_fail:
                 return self.reply(502, {"error": "Bambu cloud answered HTTP 500"})
             return self.reply(200, FakeBridge.tasks.get(serial, []))
+        if self.path.startswith("/api/tasks/file?"):
+            if not FakeBridge.file_url:
+                return self.reply(502, {"error": "Bambu cloud answered HTTP 404"})
+            return self.reply(200, {"url": FakeBridge.file_url})
+        if self.path in FakeBridge.files:
+            return self.reply(200, FakeBridge.files[self.path], "application/octet-stream")
         if self.path.startswith("/api/status/"):
             serial = self.path.rsplit("/", 1)[1]
             if serial in FakeBridge.status_fail:
@@ -240,6 +248,7 @@ class Hub:
         FakeBridge.printer_extra, FakeBridge.post_answer = {}, {}
         FakeBridge.status, FakeBridge.status_fail, FakeBridge.upload = {}, set(), {}
         FakeBridge.library, FakeBridge.library_fail, FakeBridge.library_calls = {}, None, []
+        FakeBridge.files, FakeBridge.file_url = {}, None
         self.bridge = ThreadingHTTPServer(("127.0.0.1", 0), FakeBridge)
         threading.Thread(target=self.bridge.serve_forever, kwargs={"poll_interval": 0.02}, daemon=True).start()
         from app import App

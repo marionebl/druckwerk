@@ -7,6 +7,13 @@
 - A refused command puts the reported state back and shows the error. Commands to one printer go out in click order.
 - On the printer page, the switch on the camera now follows the printer's state too. Before, it was drawn once with the camera and kept the state from that moment.
 
+## 3.10.0 (unreleased)
+
+- The printer page shows the running print in 3D ("Current print in 3D"). It is the same preview as on a History print, read from that print's stored file. It loads when the cloud lists the print, up to a minute after the start. A user who is not admin of the printer sees it only for their own prints, as in History.
+- The printer page has a History card with the last 5 prints of this printer and a link "All prints on this printer".
+- History reads a filter from the URL: `#/history?printer=<serial>` (and `user=` for admins). The admin selects start from it. A user sees "One printer" and a link to all their prints.
+- This version includes the History work from the history-settings branch (PR 22) (settings, duration bars, download, 3D preview).
+
 ## 3.9.0 (unreleased)
 
 - Fix: New print failed with "HTTP 413" for a model or a G-code file above about 1 MB. A proxy between the browser and the app (Home Assistant's ingress) refuses bigger request bodies, and the app's own limit is 100 MB. The page now sends models and G-code in parts of 512 KB and the app joins them (`total` and `offset` in the query of `POST /api/jobs`, `POST /api/jobs/{id}/model` (new) and `POST /api/jobs/{id}/gcode`, see API.md). A request without `total` works as before.
@@ -29,6 +36,7 @@
 - Fix: a printer that was online showed "Printer offline". The daemon asks the printer for a full push on every status call that finds its cache older than 10 s, and an idle printer sends no updates, so the calls queued on one thread and timed out.
 - Bridge: `GET /api/status/<serial>` runs one daemon call at a time per printer, reuses an answer younger than 5 s (`DW_STATUS_CACHE`), waits 8 s for the daemon (`DW_STATUS_TIMEOUT`), and answers a failed call with the last good status up to 10 min old (`DW_STATUS_STALE`). Every answer has the header `X-Status-Age` (seconds). Only without a good status it answers 503.
 - Hub: one failed status call no longer flips a printer offline. The printer view keeps the last good status and adds `stale` (older than 60 s) and `status_age` (seconds). A printer is offline when the bridge printer list says `online: false`, or there has been no status yet. The printer card shows "status from N min ago" when stale. The queue uses a kept status for 10 min at most.
+
 ## 3.7.0 (unreleased)
 
 - The "Slice on the Pi" choice is gone. New print slices in the browser only.
@@ -43,6 +51,14 @@
 - Models that are not STL (3MF, STEP, OBJ) can no longer be sliced in the app. Slice them elsewhere and add the `.gcode.3mf` to the share.
 - The CI image test checks that the image is at most 450 MB and that `/slice` answers 404. It stores a real Bambu Studio G-code through `/gcode` instead of slicing on the server.
 - The Pi half of the slicing progress from 3.6.0 (step lines from the slicer log, `progress` on `GET /api/jobs/{id}` while the Pi slices) is gone with the Pi slicer. Browser slicing progress and the print start steps stay.
+
+- History detail shows all slicing settings of a print: Quality, Strength, Support and adhesion, Speed, Filament, Plate and bed, Printer, and an "All settings" list with every key and a search field. They are read from the sliced file (`Metadata/project_settings.config` and `slice_info.config`) by `hub/slice_settings.py`. `GET /api/history/{id}/settings` is new. The settings are saved when a job is queued, so they stay after the slicer forgot the slice.
+- One primary action on a history item: "New print job with the same settings". It queues the stored file again with the print's target and options (`POST /api/history/{id}/queue` is new). When the file is gone it opens New print with the same printer, options, quality, filament and plate; choose the model again. "Print again" is replaced by this button.
+- Prints that were not started in Druckwerk: the bridge now passes `model_id`, `profile_id` and `design_id` of the Bambu cloud task, and `GET /api/tasks/file` asks the cloud for the file URL. The hub fetches the 3MF once into `data/cloud` and reads the same settings. If the cloud gives no file, the detail says so and shows the fields of the cloud record. The cloud file request is not checked against a real account yet.
+
+- History shows how long each print took: under every entry a bar sits on the day's 00:00 to 24:00 axis, as wide as the print ran (start to end; a running print reaches to now). Colour is the status. A print past midnight is cut at 24:00 and marked, very short prints get a minimum width, and prints without times show no bar.
+- History detail has a download button for the print's model (the STL, 3MF or STEP the slicer still stores), else for the sliced 3MF (Druckwerk's, or the Bambu cloud's). With no stored file the button is not shown. `GET /api/history/{id}/file` is new and follows the same visibility as the history.
+- History detail shows the 3D preview of the print, read from the same stored file as the download (the slicer's sliced file, a file in the share, or the Bambu cloud's 3MF), so prints from the cloud have it too. It loads only when the details open, shows a placeholder while loading and when no file is stored. `GET /api/history/{id}/gcode` is new; `GET /api/history/{id}/settings` now also says `download` and `preview`.
 
 ## 3.6.0 (unreleased)
 

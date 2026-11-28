@@ -30,7 +30,8 @@ def TASKS(serial, email):
          "startTime": "2026-11-27T12:00:00Z", "endTime": None, "costTime": 0, "weight": 0, "cover": "", "plateIndex": 1, "mode": "local"},
         {"id": 102, "title": "cube-" + tag, "designTitle": "Cube", "deviceId": serial, "deviceName": "Office", "status": "failed",
          "startTime": "2026-11-27T10:00:00Z", "endTime": "2026-11-27T10:30:00Z", "costTime": 1800, "weight": 4.5,
-         "cover": "https://cdn.example/c.png", "plateIndex": 2, "mode": "cloud_file"},
+         "cover": "https://cdn.example/c.png", "plateIndex": 2, "mode": "cloud_file",
+         "modelId": "US1", "profileId": 777, "designId": 5},
         {"id": 101, "title": "old", "designTitle": "", "deviceId": serial, "deviceName": "Office", "status": 2,
          "startTime": "2026-11-26T10:00:00Z", "endTime": "2026-11-26T11:00:00Z", "costTime": 3600, "weight": 12.25,
          "cover": "", "plateIndex": 1, "mode": "cloud_file"}]
@@ -127,6 +128,11 @@ class Handler(BaseHTTPRequestHandler):
             if serial == "SERIAL002":
                 return self.reply(500, {"error": "cloud broke"})
             return self.reply(200, {"total": 3, "hits": TASKS(serial, email)[:limit]})
+        if self.path.startswith("/v1/iot-service/api/user/profile/"):
+            self.server.task_calls.append((self.path, email))
+            if self.path != "/v1/iot-service/api/user/profile/777?model_id=US1":
+                return self.reply(404, {})
+            return self.reply(200, {"url": "https://cdn.example/file.gcode.3mf"})
         self.reply(404, {})
 
     def do_PUT(self):
