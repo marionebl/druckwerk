@@ -290,7 +290,8 @@ export async function mount(ctx, root) {
     const t = rs.tray || {};
     if (S.target && t.ams == null && t.spool_id != null && spoolById(String(t.spool_id))) S.spool = String(t.spool_id);
     else if (S.target && t.ams != null && trays().some((x) => trayKey(x) === `${t.ams}:${t.id}`)) S.tray = `${t.ams}:${t.id}`;
-    api.jobModel(rs.slice_job).then((blob) => { S.file = new File([blob], rs.model || 'model.stl'); S.variants = null; S.pick = null; draw(); },
+    if (!rs.slice_job) toast('The model is no longer stored. Choose it again.', 'info');
+    else api.jobModel(rs.slice_job).then((blob) => { S.file = new File([blob], rs.model || 'model.stl'); S.variants = null; S.pick = null; draw(); },
       () => toast('The model is no longer stored. Choose it again.', 'error'));
   }
   startEngine();

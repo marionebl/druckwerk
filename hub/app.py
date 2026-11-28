@@ -26,6 +26,7 @@ import filament
 import history
 import printer_state
 import progress
+import slice_settings
 from ha import HAError, HAUnavailable
 from queue_access import Access, Caller, Forbidden, Grants, Unauthorized, caller_from_headers
 from queue_engine import WAITING, NotFound, Queue, QueueError
@@ -57,6 +58,8 @@ SPOOLS_TTL = 30  # seconds an account's cloud filament library is reused
 STALE_AFTER = 60  # seconds after which a printer view from an earlier status call is marked stale
 STATUS_STALE_MAX = 600  # seconds the queue may still act on such a view
 COVER_MAX = 5 * 1024 * 1024  # bytes of a cloud cover image
+FILE_MAX = 400 * 1024 * 1024  # bytes of a sliced 3MF fetched from the cloud
+MISS_TTL = 600  # seconds before a failed cloud file fetch is tried again
 DOMAIN_DEFAULTS = "schedule,input_boolean,binary_sensor,person"
 
 
@@ -90,6 +93,31 @@ def fetch_image(url):
     if len(data) > COVER_MAX or not ctype.startswith("image/"):
         raise HttpError(502, "cover image: not an image or too large")
     return data, ctype
+
+
+def fetch_file(url, dest):
+    """Download an http(s) URL to dest; a failure or a file over FILE_MAX is a 502 and leaves nothing."""
+    if urlsplit(url).scheme not in ("http", "https"):
+        raise HttpError(502, "cloud file: not a web address")
+    part = dest + ".part"
+    os.makedirs(os.path.dirname(dest), exist_ok=True)
+    try:
+        with urllib.request.urlopen(url, timeout=60) as r, open(part, "wb") as out:
+            size = 0
+            while True:
+                chunk = r.read(1 << 20)
+                if not chunk:
+                    break
+                size += len(chunk)
+                if size > FILE_MAX:
+                    raise HttpError(502, "cloud file: too large")
+                out.write(chunk)
+        os.replace(part, dest)
+    except (OSError, ValueError) as e:
+        raise HttpError(502, "cloud file: %s" % e)
+    finally:
+        if os.path.exists(part):
+            os.remove(part)
 
 
 class Capture:
@@ -146,6 +174,7 @@ class App:
         self.secret = self._load_secret()
         self._auto_at = None
         self._cache = {}
+        self.cloud_miss = {}  # task id -> (time, reason) of a failed cloud file fetch
         self._cache_lock = threading.Lock()
         # Events: seq starts at the boot time so it keeps growing across restarts (pollers hold the last seq they saw).
         self.seq = int(clock())
@@ -807,6 +836,160 @@ class App:
         uid = (self.registry.get(serial) or {}).get("owner")
         return uid and ((self.get_user(uid) or {}).get("name") or uid) or None
 
+    # -- settings of a history item, and a new print job with the same settings --
+    def history_item(self, c, hid):
+        """One history item as the caller may see it."""
+        for it in self.history_items(c, "", "", 500)["items"]:
+            if str(it["id"]) == hid:
+                return it
+        raise NotFound("unknown history item")
+
+    def kept_slice(self, it):
+        """The slicer's finished job for a history item while the slicer still has it, else None."""
+        sj = self.s.jobs.get(((it.get("job") or {}).get("slice_job")) or "")
+        return sj if sj and sj.get("state") == "done" and os.path.isfile(sj.get("result") or "") else None
+
+    def saved_settings_path(self, job_id):
+        return os.path.join(self.data_dir, "settings", "%s.json" % job_id)
+
+    def save_settings(self, job_id, path):
+        """Keep the parsed settings of a queued file: the slicer and the share forget the file, this is small."""
+        parsed = slice_settings.read(path)
+        if parsed:
+            os.makedirs(os.path.join(self.data_dir, "settings"), exist_ok=True)
+            with open(self.saved_settings_path(job_id), "w") as f:
+                json.dump(parsed, f)
+
+    def cloud_file(self, it):
+        """Path of the item's sliced 3MF from the Bambu cloud (fetched once, kept in data/cloud); ValueError says why not."""
+        if it["source"] == "job" or not re.fullmatch(r"\d{1,19}", str(it["id"])):
+            raise ValueError("This print has no Bambu cloud task.")
+        dest = os.path.join(self.data_dir, "cloud", "%s.gcode.3mf" % it["id"])
+        if os.path.isfile(dest):
+            return dest
+        miss = self.cloud_miss.get(it["id"])
+        if miss and self.clock() - miss[0] < MISS_TTL:
+            raise ValueError(miss[1])
+        try:
+            if not (it.get("model_id") and it.get("profile_id")):
+                raise ValueError("The Bambu cloud record of this print has no file reference (modelId, profileId).")
+            try:
+                got = self.bridge_ok("GET", "/api/tasks/file?serial=%s&model_id=%s&profile_id=%s" % (
+                    quote(it["serial"]), quote(str(it["model_id"])), quote(str(it["profile_id"]))), timeout=30)
+                fetch_file(got["url"], dest)
+            except (HttpError, KeyError, TypeError) as e:
+                raise ValueError("The Bambu cloud did not give the file (%s)." % e)
+            if not slice_settings.read(dest):
+                os.remove(dest)
+                raise ValueError("The Bambu cloud file has no slicing settings.")
+        except ValueError as e:
+            self.cloud_miss[it["id"]] = (self.clock(), str(e))
+            raise
+        return dest
+
+    def history_files(self, it):
+        """What Druckwerk still holds for a print: {'model': (path, name), 'sliced': (path, name)}, either may be missing."""
+        job, out = it.get("job") or {}, {}
+        sj = self.s.jobs.get(job.get("slice_job") or "")
+        if sj and os.path.isfile(sj.get("model") or ""):
+            out["model"] = (sj["model"], os.path.basename(sj.get("filename") or sj["model"]))
+        path = (self.kept_slice(it) or {}).get("result")
+        if not path and job.get("file") and os.path.isfile(os.path.join(self.share, os.path.basename(job["file"]))):
+            path = os.path.join(self.share, os.path.basename(job["file"]))
+        if not path:
+            try:
+                path = self.cloud_file(it)
+            except ValueError:
+                pass
+        if path:
+            out["sliced"] = (path, re.sub(r"[^A-Za-z0-9._ -]+", "_", str(it.get("title") or job.get("name") or "print")).strip("_")[:60] + ".gcode.3mf")
+        return out
+
+    def get_history_file(self, h, m, q, c):
+        """The source model, else the sliced 3MF; ?kind=sliced asks for the 3MF. Only for a print the caller may see."""
+        it = self.history_item(c, unquote(m.group(1)))
+        files = self.history_files(it)
+        want = (q.get("kind") or [""])[0]
+        path, _name = files.get("sliced" if want == "sliced" else "model") or files.get("sliced") or (None, None)
+        if not path:
+            raise NotFound("no stored file for this print")
+        with open(path, "rb") as f:
+            h.send(200, f.read(), "application/octet-stream")
+
+    def get_history_gcode(self, h, m, q, c):
+        """The first plate's G-code out of the sliced file, for the 3D preview."""
+        it = self.history_item(c, unquote(m.group(1)))
+        path = (self.history_files(it).get("sliced") or ("",))[0]
+        try:
+            with zipfile.ZipFile(path) as z:
+                names = sorted(n for n in z.namelist() if SLICED.fullmatch(n))
+                if names:
+                    return h.send(200, z.read(names[0]), "text/plain; charset=utf-8")
+        except (OSError, zipfile.BadZipFile):
+            pass
+        raise NotFound("no G-code for this print")
+
+    def get_history_settings(self, h, m, q, c):
+        it = self.history_item(c, unquote(m.group(1)))
+        job = it.get("job") or {}
+        keep = ("title", "design_title", "status_code", "plate", "seconds", "grams", "started_at", "ended_at", "model_id", "profile_id", "design_id")
+        out = {"available": False, "source": None, "reason": "", "can_reprint": False,
+               "task": {k: it[k] for k in keep if it.get(k) not in (None, "")}, "groups": [], "all": [], "plate": {}, "slicer": None}
+        path, source, sj = None, None, self.kept_slice(it)
+        if sj:
+            path, source = sj["result"], "slice"
+        elif job and os.path.isfile(self.saved_settings_path(job["id"])):
+            source = "saved"
+        if not source:
+            try:
+                path, source = self.cloud_file(it), "cloud"
+            except ValueError as e:
+                out["reason"] = str(e)
+        if source == "saved":
+            with open(self.saved_settings_path(job["id"])) as f:
+                parsed = json.load(f)
+        else:
+            parsed = path and slice_settings.read(path)
+        if parsed:
+            out.update(parsed, available=True, source=source, reason="")
+            if source == "slice" and job:
+                self.save_settings(job["id"], path)
+            out["can_reprint"] = bool(path) and self.sliced_file(path)
+        files = self.history_files(it)
+        kind = "model" if "model" in files else "sliced" if "sliced" in files else None
+        out["download"] = kind and {"kind": kind, "name": files[kind][1]}
+        out["preview"] = "sliced" in files and self.sliced_file(files["sliced"][0])
+        return out
+
+    @staticmethod
+    def sliced_file(path):
+        try:
+            with zipfile.ZipFile(path) as z:
+                return any(SLICED.fullmatch(n) for n in z.namelist())
+        except (OSError, zipfile.BadZipFile):
+            return False
+
+    def post_history_queue(self, h, m, q, c):
+        """The same file as a new queue job: the print's target and options unless the body names others."""
+        it = self.history_item(c, unquote(m.group(1)))
+        job, b = it.get("job") or {}, h.json()
+        any_ = (b.get("target") or job.get("target")) == "any"
+        body = {"target": b.get("target") or job.get("printer") or job.get("target") or it["serial"],
+                "options": b.get("options") or job.get("options") or None, "name": b.get("name") or job.get("name") or it.get("title"),
+                **({"model": b.get("model") or job.get("model")} if any_ else {})}
+        sj = self.kept_slice(it)
+        if sj:
+            self.own(c, sj["id"])
+            return self.queue_slice(c, sj, body)
+        try:
+            path = self.cloud_file(it)
+        except ValueError as e:
+            raise QueueError("No stored file for this print: %s Slice the model again." % e)
+        if not self.sliced_file(path):
+            raise QueueError("The cloud file is not sliced. Slice the model again.")
+        stem = re.sub(r"[^A-Za-z0-9_-]+", "_", str(it.get("title") or "")).strip("_")[:40] or "print"
+        return self.queue_real(c, path, body, stem + ".gcode.3mf")
+
     def get_spool_prints(self, h, m, q, c):
         """The settled prints that used one spool, newest first, as history items."""
         sid = m.group(1)
@@ -892,10 +1075,11 @@ class App:
         h.send(status, body, ctype)
 
     def queue_job(self, h, m, q, c):
-        job = self.own(c, m.group(1))
+        return self.queue_slice(c, self.own(c, m.group(1)), h.json())
+
+    def queue_slice(self, c, job, b):
         if job.get("state") != "done":
             raise QueueError("slice the model first")
-        b = h.json()
         target = b.get("target")
         if not target:
             raise ValueError("target is required: a serial or any")
@@ -918,6 +1102,7 @@ class App:
                 with open(os.path.join(self.data_dir, "plates", added["id"] + ".png"), "wb") as f:
                     f.write(z.read("Metadata/plate_1.png"))
                 png = "api/queue/%s/plate.png" % added["id"]
+        self.save_settings(added["id"], job["result"])
         tray = (job.get("settings") or {}).get("tray")
         with self.queue.lock:
             added.update(grams=use["grams"], filament_grams=[f["grams"] for f in use["filaments"]],
@@ -967,13 +1152,17 @@ class App:
             return self.queue_routes_add(api, b)
         return self.queue_sliced(api, self.resolve_media(f), b)
 
-    def queue_sliced(self, api, real, b):
+    def queue_real(self, c, real, b, shown):
+        return self.queue_sliced(self.access.bind(self.queue, c), real, b, shown)
+
+    def queue_sliced(self, api, real, b, shown=None):
         """Add a sliced .gcode.3mf at `real` to the queue (copied into the share) and return the job; b is the POST body."""
+        shown = shown or os.path.basename(real)
         use = filament.slice_usage(real)
-        base = os.path.basename(real)[:-len(".gcode.3mf")].replace("..", "_")
+        base = shown[:-len(".gcode.3mf")].replace("..", "_")
         name = base + "_" + secrets.token_hex(3) + ".gcode.3mf"
         fils = b.get("filaments") or [{"type": x["type"], "colour": x["colour"]} for x in use["filaments"]]
-        added = api.add(name, os.path.basename(real), b.get("target", "any"), b.get("model", ""), fils, b.get("options"),
+        added = api.add(name, shown, b.get("target", "any"), b.get("model", ""), fils, b.get("options"),
                         name=b.get("name") or base)
         os.makedirs(self.share, exist_ok=True)
         with open(real, "rb") as src, open(os.path.join(self.share, name), "wb") as dst:  # after the access check
@@ -984,6 +1173,7 @@ class App:
                 with open(os.path.join(self.data_dir, "plates", added["id"] + ".png"), "wb") as out:
                     out.write(z.read("Metadata/plate_1.png"))
                 png = "api/queue/%s/plate.png" % added["id"]
+        self.save_settings(added["id"], real)
         with self.queue.lock:
             added.update(grams=use["grams"], filament_grams=[x["grams"] for x in use["filaments"]],
                          print_seconds=use["seconds"], plate_png=png)
@@ -1412,6 +1602,10 @@ class App:
             ("POST", r"/api/jobs/" + JOB_ID + r"/print", self.slicer_job(self.s.post_print, self.check_print)),
             ("POST", r"/api/jobs/" + JOB_ID + r"/queue", w(self.queue_job)),
             ("GET", r"/api/history", w(self.get_history)),
+            ("GET", r"/api/history/([A-Za-z0-9_-]{1,40})/settings", w(self.get_history_settings)),
+            ("GET", r"/api/history/([A-Za-z0-9_-]{1,40})/file", w(self.get_history_file)),
+            ("GET", r"/api/history/([A-Za-z0-9_-]{1,40})/gcode", w(self.get_history_gcode)),
+            ("POST", r"/api/history/([A-Za-z0-9_-]{1,40})/queue", w(self.post_history_queue)),
             ("GET", r"/api/spools", w(self.get_spools)),
             ("GET", r"/api/spools/(\d{1,19})/prints", w(self.get_spool_prints)),
             ("POST", r"/api/spools", w(self.post_spool)),
