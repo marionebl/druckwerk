@@ -537,6 +537,38 @@ def check_printer_card(page, base, ident, go, shot):
     page.goto(f"{base}/?as={ident}")
 
 
+def check_light_instant(page, base, ident):
+    """The chamber light switch flips on click, while the command takes 3 s and the printer reports the state 6 s later;
+    it does not flip back in between. Both switches of the printer page show the same state."""
+    page.goto(f"{base}/?as={ident}#/printers/{H2S}")
+    page.wait_for_selector("section.card .light-btn")
+    page.evaluate("fetch('api/_mock/light?lag=6').then((r) => r.text())")
+    page.evaluate("fetch('api/_mock/slow?path=/light&s=3').then((r) => r.text())")
+    states = "[...document.querySelectorAll('.light-btn')].map((b) => b.getAttribute('aria-checked'))"
+    before = page.evaluate(states)
+    assert len(before) == 2 and len(set(before)) == 1, "two switches with one state: %s" % before
+    want = "false" if before[0] == "true" else "true"
+    ms = page.evaluate("""([sel, want]) => new Promise((done) => {
+        const t0 = performance.now();
+        document.querySelector(sel).click();
+        const look = () => {  // by selector: a poll may draw the card again
+            const ms = performance.now() - t0;
+            if (document.querySelector(sel)?.getAttribute('aria-checked') === want || ms > 15000) done(ms); else requestAnimationFrame(look);
+        };
+        look();
+    })""", ["section.card .light-btn", want])
+    print("light: switch shows the new state %.0f ms after the click" % ms)
+    assert ms < 150, "the switch took %.0f ms to show the new state" % ms
+    assert page.evaluate(states) == [want, want], "both switches show the new state: %s" % page.evaluate(states)
+    seen = set()
+    for _ in range(40):  # 10 s: the command answer (3 s), polls every 5 s, the report (6 s)
+        page.wait_for_timeout(250)
+        seen.update(page.evaluate(states))
+    assert seen == {want}, "the switch flipped back before the printer reported: %s" % seen
+    page.evaluate("fetch('api/_mock/slow').then((r) => r.text())")
+    page.evaluate("fetch('api/_mock/light?lag=0').then((r) => r.text())")
+
+
 def check_library_pick(page, go, shot):
     """New print for a printer with an empty AMS: the library is the list, and the chosen spool goes to the slicer."""
     hook(page, "empty_ams", P1S, 1)
@@ -598,6 +630,10 @@ def walk(page, ident, base, shot, inject):
         return
     if ONLY == "cache":
         check_cache(page, base, ident)
+        return
+    if ONLY == "light":
+        if ident == "admin":
+            check_light_instant(page, base, ident)
         return
     if ONLY == "offline":
         check_back_online(page, base, ident)
@@ -695,7 +731,7 @@ def walk(page, ident, base, shot, inject):
 def main():
     ap = argparse.ArgumentParser()
     ap.add_argument("--shots")
-    ap.add_argument("--only", choices=["cache", "reslice", "panel", "offline"], help="run one check only")
+    ap.add_argument("--only", choices=["cache", "reslice", "panel", "offline", "light"], help="run one check only")
     ap.add_argument("--port", type=int, default=18099, help="port of the mock server")
     ap.add_argument("--inject-absolute", action="store_true")
     ap.add_argument("--base-url")

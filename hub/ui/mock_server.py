@@ -69,7 +69,7 @@ PRINTERS = {
 }
 T0 = {H2S: NOW() - 58 * 60}
 # Test hooks the UI check switches: a printer whose camera answers 502, one whose AMS slots are all empty, what was sent.
-CAMERA_DOWN, EMPTY_AMS, MOCK_SLICES, MOCK_LIGHT = set(), set(), [], []
+CAMERA_DOWN, EMPTY_AMS, MOCK_SLICES, MOCK_LIGHT, LIGHT_LAG = set(), set(), [], [], [0]
 OFFLINE = set()  # test hook: these printers answer as offline
 # AMS units with a dryer, per serial; a drying unit counts down from "until".
 DRYING = {H2S: {0: {"name": "AMS 2 Pro", "lo": 45, "hi": 65, "until": None, "filament": "", "temp": None},
@@ -594,7 +594,9 @@ class H(BaseHTTPRequestHandler):
             return ok({})
         if path == "api/_mock/slices":
             return ok(MOCK_SLICES)
-        if path == "api/_mock/light":
+        if path == "api/_mock/light":  # ?lag=s delays the reported state
+            if q.get("lag"):
+                LIGHT_LAG[0] = float(q["lag"][0])
             return ok(MOCK_LIGHT)
         r = re.fullmatch(r"api/printers/([^/]+)/light", path)
         if r and m == "POST":
@@ -603,8 +605,11 @@ class H(BaseHTTPRequestHandler):
                 raise Err(404, "no such printer")
             if not admin:
                 raise Err(403, "rule: only an admin of the printer can switch its light")
-            PRINTERS[r.group(1)]["light"] = b["on"]
             MOCK_LIGHT.append({"serial": r.group(1), "on": b["on"]})
+            if LIGHT_LAG[0]:  # like the printer: its report has the new state some seconds after the command
+                threading.Timer(LIGHT_LAG[0], lambda pr=PRINTERS[r.group(1)], on=b["on"]: pr.update(light=on)).start()
+            else:
+                PRINTERS[r.group(1)]["light"] = b["on"]
             return ok({"on": b["on"]})
         r = re.fullmatch(r"api/printers/([^/]+)/(camera|cover)", path)
         if r:

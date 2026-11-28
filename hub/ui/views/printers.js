@@ -133,21 +133,41 @@ function filament(p, compact) {
   return p.ams?.length ? h('small', { class: 'muted ams-empty' }, 'AMS empty') : null;
 }
 
-// The printer reports the light a few seconds after a switch, so the answer stays on screen until then.
-const lights = new Map();
-const lightOn = (p) => { const l = lights.get(p.serial); return l && Date.now() < l.until ? l.on : p.light; };
+// The switch answers at once, like the vendor app: the wanted state shows on click and the command goes out behind it.
+// The printer reports the new state seconds later, so the wanted state stays until the report agrees or 30 s pass.
+// Commands to one printer go out in click order. A refused command puts the reported state back.
+const LIGHT_HOLD_MS = 30000;
+const lights = new Map();  // serial -> { on, until, busy, sent: Promise }
+const lightOn = (p) => {
+  const l = lights.get(p.serial);
+  if (l && Date.now() < l.until && l.on !== p.light) return l.on;
+  if (l && !l.busy) lights.delete(p.serial);
+  return p.light;
+};
+const showLight = (serial, on) => document.querySelectorAll(`.light-btn[data-serial="${CSS.escape(serial)}"]`).forEach((b) => {
+  b.setAttribute('aria-checked', String(!!on)); b.dataset.light = on ? 'on' : 'off';
+});
+function switchLight(p, b) {
+  const prev = lights.get(p.serial);
+  const on = b.getAttribute('aria-checked') !== 'true';  // what the person sees flips, also on a button drawn earlier
+  const l = { on, until: Date.now() + LIGHT_HOLD_MS, busy: true };
+  l.sent = (prev?.sent || Promise.resolve()).then(() => api.setLight(p.serial, on)).then(
+    () => { l.busy = false; l.until = Date.now() + LIGHT_HOLD_MS; },
+    (err) => {
+      l.busy = false;
+      toast(err.message, 'error');
+      if (lights.get(p.serial) !== l) return;  // a later click already decides what shows
+      lights.delete(p.serial);
+      showLight(p.serial, p.light);
+    });
+  lights.set(p.serial, l);
+  showLight(p.serial, on);
+}
 function lightButton(p) {
-  const b = h('button', { class: 'light-btn', type: 'button', role: 'switch', 'aria-label': 'Chamber light', 'aria-checked': String(!!lightOn(p)),
-    title: 'Chamber light', disabled: p.role !== 'admin', 'data-light': lightOn(p) ? 'on' : 'off',
-    onclick: async (e) => {
-      e.preventDefault(); e.stopPropagation();  // the card around it is a link
-      const on = !lightOn(p);
-      b.disabled = true;
-      try { await api.setLight(p.serial, on); lights.set(p.serial, { on, until: Date.now() + 10000 }); b.setAttribute('aria-checked', String(on)); b.dataset.light = on ? 'on' : 'off'; }
-      catch (err) { toast(err.message, 'error'); }
-      b.disabled = false;
-    } }, icon('bulb', 18));
-  return b;
+  return h('button', { class: 'light-btn', type: 'button', role: 'switch', 'aria-label': 'Chamber light', 'aria-checked': String(!!lightOn(p)),
+    title: 'Chamber light', disabled: p.role !== 'admin', 'data-light': lightOn(p) ? 'on' : 'off', 'data-serial': p.serial,
+    onclick: (e) => { e.preventDefault(); e.stopPropagation(); switchLight(p, e.currentTarget); } },  // the card around it is a link
+    icon('bulb', 18));
 }
 
 function card(p) {
@@ -203,6 +223,7 @@ async function detail(ctx, root, serial) {
     if (p.camera_url !== camUrl || !p.online) { camUrl = p.camera_url; clear(camHost, camera(p, true)); }
     const mine = queue.jobs.filter((j) => j.printer === serial || j.target === serial || (j.target === 'any' && j.model === p.model));
     draw(ctx, body, camHost, p, mine, () => { last = ''; });
+    if (p.light != null) showLight(p.serial, lightOn(p));  // the camera's switch is drawn once, with the camera
   });
 }
 

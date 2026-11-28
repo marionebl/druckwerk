@@ -1,5 +1,12 @@
 # Changelog
 
+## 3.11.0 (unreleased)
+
+- The chamber light switch answers at once. It shows the new state on click and sends the command behind it, like the vendor app. Before, the switch was disabled until the command came back (0.7 to 0.9 s on the H2S through Home Assistant, more through ingress), and a poll that drew the card again in that time showed the old state until the next poll (up to 5 s more).
+- The new state stays on screen until the printer reports it, or 30 s pass. Before, it stayed 10 s, then the switch could show the old state again until the printer's report arrived.
+- A refused command puts the reported state back and shows the error. Commands to one printer go out in click order.
+- On the printer page, the switch on the camera now follows the printer's state too. Before, it was drawn once with the camera and kept the state from that moment.
+
 ## 3.9.0 (unreleased)
 
 - Fix: New print failed with "HTTP 413" for a model or a G-code file above about 1 MB. A proxy between the browser and the app (Home Assistant's ingress) refuses bigger request bodies, and the app's own limit is 100 MB. The page now sends models and G-code in parts of 512 KB and the app joins them (`total` and `offset` in the query of `POST /api/jobs`, `POST /api/jobs/{id}/model` (new) and `POST /api/jobs/{id}/gcode`, see API.md). A request without `total` works as before.
