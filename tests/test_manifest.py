@@ -287,3 +287,28 @@ async def test_no_manifest_route_keeps_the_cache_and_warns_once(hass, app, hass_
     await tick(hass)
     assert issues(hass) == set() and "get_queue" in hass.services.async_services_for_domain("druckwerk")
     assert len(warnings) == 1
+
+
+# ---- one unknown value in the manifest
+async def test_integ03_an_unknown_value_keeps_the_old_services_and_raises_an_issue(hass, hub):
+    (entry,) = hass.config_entries.async_entries("druckwerk")
+    runtime = entry.runtime_data
+    before = set(hass.services.async_services_for_domain("druckwerk"))
+    fine = {"description": "Fine.", "response": "none", "serial_fields": [], "fields": {}}
+    bad = dict(fine, response="bogus")
+    doc = with_actions(skip_job=None, wave_fine=fine, wave_bad=bad)
+    mock_hub(hub, manifest=doc)
+    await tick(hass)
+    assert runtime.last_update_success  # the poll itself succeeds
+    assert before <= set(hass.services.async_services_for_domain("druckwerk"))  # the old services stay
+    assert issues(hass) == {"bad_manifest"}
+    assert runtime.manifest.revision != doc["revision"]  # not taken as applied: the next poll tries again
+    mock_hub(hub, manifest=dict(with_actions(wave_fine=fine), revision="fixed0000001"))
+    await tick(hass)
+    assert issues(hass) == set() and "wave_fine" in hass.services.async_services_for_domain("druckwerk")
+    mock_hub(hub, manifest=dict(doc, revision="broken000002"))
+    await tick(hass)
+    assert issues(hass) == {"bad_manifest"}
+    await hass.config_entries.async_unload(entry.entry_id)
+    await hass.async_block_till_done()
+    assert hass.services.async_services_for_domain("druckwerk") == {}  # nothing left behind, not even a half-applied one

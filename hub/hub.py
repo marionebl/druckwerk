@@ -52,7 +52,7 @@ def main():
     threading.Thread(target=app.notifier.run, args=(stop,), daemon=True).start()
     app.plates_inbox = PlatesInbox.from_options(app, env("HUB_DATA", "/data"))
     threading.Thread(target=app.plates_inbox.run, args=(stop,), daemon=True).start()
-    threading.Thread(target=ha.watch_events, args=("mobile_app_notification_action", app.notifier.on_action, stop),
+    threading.Thread(target=ha.watch_events, args=("mobile_app_notification_action", app.notifier.on_action, stop, True),
                      daemon=True).start()
 
     def announce():

@@ -1,12 +1,54 @@
 # Changelog
 
-## 3.24.0 (unreleased)
+## 3.33.0 (unreleased)
 
 - CI: the image job needs the full test workflow (`tests.yml`, now reusable), so a failing test in any of the five suites stops the push to ghcr.io. `Tests` runs the bridge, slicer, queue and app suites on Python 3.13 (the app image) and 3.14, with Node installed; a missing `node` fails the browser-module tests when `CI` is set. `push` runs only on main, and a newer push to a pull request cancels the older run.
 - CI: the push step refuses to overwrite an existing image tag (`workflow_dispatch` input `force` overrides it). The version guard is the first step of the image job. The image job also runs `check_ui.py` against the mock server for the groups that need no engine (cache, panel, download, preview, printerhistory, offline).
 - CI: a pull request that changes `custom_components/` without a new manifest version fails (`tools/check-integration-version.sh`). A weekly workflow checks that the plugin download still matches its pinned hash and that the certificate URL answers (`tools/check-externals.sh`).
 - Image build: the bridge's Rust tests run before `cargo build`, and the patch is stored as plain text (`hub/bridge/bridge.patch`). Ten camera tests need `tests/fake_bambusource.c`, which the patch lacks; they are skipped. boo-cloud and FFmpeg are fetched by commit id. The certificate (now pinned to a commit of its repository) and the three engine downloads are checked against SHA-256 values in `hub/externals.env`.
 - The base image tag no longer changes with edits of `hub/externals.py` outside `PRINTERS`. The base image is rebuilt once for this release.
+
+## 3.28.0 (unreleased)
+
+- A damaged or empty data file (`queue.json`, `printers.json`, `grants.json`, the sender, notification, price and request files) no longer stops the app at start: it is renamed to `<name>.corrupt-<time>`, one line goes to the log and the app starts with that file empty.
+- Data files are written with `fsync` before the rename, so a power loss cannot leave an empty file; a failed write removes its temp file. The saved settings of a queued file and the slicer's `job.json` use the same write.
+- A torn saved-settings file no longer gives a 400 on `GET /api/history/<id>/settings` for ever: it counts as not saved and the next source answers.
+- A running job no longer rewrites `queue.json` at every tick (360 writes per hour); it is written when the state, error or end time of a job changes.
+- Two requests for one cloud file no longer share one `.part` file: the download uses a unique temp file in the target directory and a second request waits for the first.
+
+## 3.27.0 (unreleased)
+
+- An unexpected exception in a route is answered with 500 (`internal error`) and its stack trace goes to the log. Before, the connection was dropped (for example `POST /api/grants {}`).
+- Queueing a file by path or a slice: a step that fails after the job was added (copy into the share, plate image, settings) removes the job and its files again. Before, a queued job without a file stayed. The copy still comes after the access check.
+- `POST /api/queue`: `filaments` that is not a list of objects and `options` that is not an object are a 400 (they dropped the connection).
+- Home Assistant events: the watcher no longer ends when a callback raises, or on any other exception; it logs and reconnects. The socket is no longer left without a timeout: after 60 s without a frame it sends a ping and reconnects when nothing answers. An idle socket stays open.
+- Home Assistant websocket commands: a timeout or reset during the login is "Home Assistant is restarting" (503 or the caller's fallback) instead of an uncaught `TimeoutError`; a connect error inside `command` is an `HAError`.
+- A client that closes the connection before the answer writes one log line (`client went away`), not a stack trace, in the app and the bridge.
+- A failed `turn_on` of a paused automation after a send is logged with the entity id and the error; when the send itself was refused, the job error names the entities that stay off.
+- Bridge: an exception while the daemon's output is read ends that daemon and restarts it with the usual backoff, instead of ending the restart loop for good.
+- Bridge: `watchdog: http://[HOST]:8098/api/health` in the app config, so the Supervisor restarts the app when the bridge stops answering. Needs `/api/health` to stay open for clients that are not on the loopback (package 1).
+- Integration 0.15.1: a manifest with a value it cannot apply is not applied in part. The old actions stay, a warning is logged, the repair issue "bad_manifest" is raised, and the next poll tries again (the revision is kept only after the manifest applied). Actions are tracked as they are registered, so an unload removes all of them. A 401 from the app raises the repair issue "hub_secret_rejected" (before: only "not reachable").
+
+## 3.26.0 (unreleased)
+
+- A print start uses a printer status of at most 60 s. The app reads the bridge's `X-Status-Age` and keeps the real observation time, so a cached status of the bridge no longer looks fresh (before: up to 10 min of the bridge plus the app's own cache). The tolerance of 10 min stays for the display and the ticks. A start with an older status is refused with 409 and the job stays queued.
+- One send per printer: a second send to the same printer (action, web UI or queue) gets 409 at once.
+- `print_file` also refuses a printer in `PREPARE`. The bridge gives up on its daemon after 280 s (the app waits 300 s) and answers 504 when the daemon timed out, 503 only when it was not reachable at all.
+- A queue start whose send ends in a timeout or "not reachable" fails the job (`send timed out; check the printer before you retry`) instead of leaving it queued, where a second start printed twice. A refusal (guard, model mismatch, bridge error) still keeps the job first in the queue.
+- The "Plate clear, start" button names the job (`DRUCKWERK_START_<serial>_<job id>`). It starts that job only when it is still the first queued job, the notification is at most 30 minutes old and the phone's Home Assistant user is an admin of the printer (event context user). The app keeps the sent notifications in memory, so a button from before an app restart is refused; use Start in the queue then.
+- The actions `start_next` and `start_job` confirm a drying job, so they can start one.
+- `POST /api/queue/<id>/cancel` takes `{force: true}` for admins: a `printing` job that never ends is removed as `failed` (`removed by admin`).
+- Approving an `any` job needs an admin of a printer that the job fits for its owner, not any printer of the model.
+- Printing a browser slice (`POST /api/jobs/<id>/print`) copies it to a file name with a random part, so two prints of the same name no longer overwrite each other. The copy stays while it is the printer's current file (the printer picture reads it) and is deleted when the slice is sent again; a refused send leaves no copy.
+
+## 3.22.0 (unreleased)
+
+- No call to Home Assistant, the bridge or the cloud runs while the queue lock is held. A slow send, spool settlement or cloud login no longer holds up `GET /api/queue`, `GET /api/events` or the bridge status (before: up to the 300 s send timeout).
+- New job state `sending` (visible in `GET /api/queue`, shown as "Sending" in the queue): the job holds its printer while the file goes out, so a second start is still refused, then it becomes `starting`, or goes back to `queued` with the error. A job found in `sending` after an app restart is marked failed, because the print may have begun; check the printer before a retry.
+- A tick reads the printer status once, before it takes the lock (it read it up to 4 times under the lock).
+- Settling a finished job (spools, cost) runs after the queue and sync locks are released; `job_done` follows the settlement as before.
+- The "Plate clear, start" notification button and the air-print pause run in their own short-lived thread, so a slow send or pause no longer stops the delivery of Home Assistant events or the ticker.
+- Bridge: a cloud login, its code step and the account write hold the global lock only around the account and pending lists; one lock per account keeps two logins of one account in order.
 
 ## 3.21.0 (unreleased)
 

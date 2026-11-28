@@ -45,6 +45,14 @@
     "app_too_old": {
       "title": "Update the Druckwerk app",
       "description": "The Druckwerk app is too old to offer actions and tools. Update the Druckwerk app."
+    },
+    "bad_manifest": {
+      "title": "Druckwerk app sent a manifest the integration cannot apply",
+      "description": "The Druckwerk app sent an action or tool with a value this integration does not know, so the new manifest is not applied and the actions keep their last working state. Update the Druckwerk integration in HACS and restart Home Assistant; the app and the integration may be out of step."
+    },
+    "hub_secret_rejected": {
+      "title": "Druckwerk app rejected the hub secret",
+      "description": "The Druckwerk app answered 401: the hub secret of this integration is wrong. Open the Druckwerk integration options and paste the current hub secret, or restart the app so that discovery sets it again."
     }
   },
   "entity": {

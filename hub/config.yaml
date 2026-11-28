@@ -1,5 +1,5 @@
 name: Druckwerk
-version: "3.24.0"
+version: "3.33.0"
 slug: druckwerk
 # Built and pushed by .github/workflows/hub.yml on main; HA pulls <image>:<version>.
 image: ghcr.io/marionebl/druckwerk-{arch}
@@ -17,6 +17,7 @@ homeassistant_api: true
 hassio_api: true
 map: ["share:rw", "media:rw"]
 panel_admin: false
+watchdog: http://[HOST]:8098/api/health
 options:
   plates_repo: marionebl/druckwerk-plates
 schema:
