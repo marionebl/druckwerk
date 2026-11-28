@@ -84,7 +84,7 @@ class Queue:
         self.path = os.path.join(data_dir, "queue.json")
         self.get_state, self.call_service = get_state, call_service
         self.get_start_state = get_start_state or get_state
-        # on_drop(job): the job was cancelled or left the history, so its files can go. has_file(job): the job's file still exists.
+        # on_drop(job): the job left the history, so its files can go. has_file(job): the job's file still exists.
         self.on_drop, self.has_file = on_drop, has_file
         self.send_print = send_print  # send_print(data) sends one file; raises with the refusal text
         self.get_trays = get_trays or (lambda serial: [])
@@ -133,9 +133,7 @@ class Queue:
     def _finish(self, job, state, error=None):
         job.update(state=state, error=error, finished_at=self.clock())
         self.jobs.remove(job)
-        self.history.append(job)
-        if state == "cancelled":
-            self._drop(job)
+        self.history.append(job)  # its files stay until it leaves the history: a cancelled job can be retried
 
     # -- jobs --
     def add(self, file, source="", target="any", model="", filaments=None, options=None,

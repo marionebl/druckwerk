@@ -128,10 +128,7 @@ def test_job_actions_return_the_job(hub):
     assert ok(act(hub, "skip_job", {"job_id": first["id"]}))["job"]["id"] == first["id"]
     assert ok(act(hub, "approve_job", {"job_id": pending["id"]}))["job"]["state"] == "queued"
     assert ok(act(hub, "cancel_job", {"job_id": second["id"]}))["job"]["state"] == "cancelled"
-    assert act(hub, "retry_job", {"job_id": second["id"]})[0] == 409  # the cancel removed the job's file
-    q = hub.app.queue
-    q._finish(q._find(first["id"]), "failed", "boom")  # a failed job keeps its file
-    assert ok(act(hub, "retry_job", {"job_id": first["id"]}))["job"]["state"] == "queued"
+    assert ok(act(hub, "retry_job", {"job_id": second["id"]}))["job"]["state"] == "queued"
     other = add(hub, "d.gcode.3mf", user=USER)
     assert ok(act(hub, "reject_job", {"job_id": other["id"]}))["job"]["state"] == "cancelled"
     assert act(hub, "skip_job", {"job_id": first["id"]}, user=USER)[0] == 403  # only admins skip

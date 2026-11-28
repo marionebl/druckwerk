@@ -56,7 +56,7 @@ def test_cloud_files_stay_under_the_size_limit(hub, monkeypatch):
     assert os.path.basename(path) in left and sum(os.path.getsize(os.path.join(d, n)) for n in left) <= 10000, left
 
 
-# -- QUEUE-13: files of a cancelled, rejected or aged job --
+# -- QUEUE-13: files of a job that leaves the history --
 
 def with_files(hub, job):
     """The share copy exists (queue_job made it); add the plate picture and the saved settings."""
@@ -69,21 +69,13 @@ def with_files(hub, job):
             os.path.join(app.data_dir, "settings", job["id"] + ".json")]
 
 
-def test_a_cancelled_job_leaves_no_file(hub):
+def test_a_cancelled_job_keeps_its_files_and_can_be_retried(hub):
     hub.setup_printers()
     job = hub.queue_job(file="a")
     paths = with_files(hub, job)
     assert hub.req("POST", "/api/queue/%s/cancel" % job["id"], {}, user=ADMIN)[0] == 200
-    assert [os.path.exists(p) for p in paths] == [False] * 3
-
-
-def test_a_rejected_job_leaves_no_file(hub):
-    hub.setup_printers()
-    job = hub.queue_job(file="a")
-    paths = with_files(hub, job)
-    hub.app.queue.jobs[0]["state"] = "pending_approval"
-    hub.app.queue.reject(job["id"])
-    assert [os.path.exists(p) for p in paths] == [False] * 3
+    assert [os.path.exists(p) for p in paths] == [True] * 3  # the files go when the job leaves the history
+    assert hub.req("POST", "/api/queue/%s/retry" % job["id"], {}, user=ADMIN)[0] == 200
 
 
 def test_a_failed_job_keeps_its_share_copy(hub):
@@ -110,19 +102,23 @@ def test_a_job_that_leaves_the_history_leaves_no_file(hub, monkeypatch):
     assert os.path.exists(os.path.join(hub.s.SHARE, second["file"]))
 
 
-def test_the_file_a_printer_reports_as_its_last_file_stays(hub):
+def test_the_file_a_printer_reports_as_its_last_file_stays(hub, monkeypatch):
+    import queue_engine
+    monkeypatch.setattr(queue_engine, "HISTORY", 1)
     hub.setup_printers()
-    job = hub.queue_job(file="a")
-    share = with_files(hub, job)[0]
+    first, second = hub.queue_job(file="a"), hub.queue_job(file="b")
+    share = with_files(hub, first)[0]
     hub.app.sender.results[SERIAL] = {"last_path": share}
-    assert hub.req("POST", "/api/queue/%s/cancel" % job["id"], {}, user=ADMIN)[0] == 200
-    assert os.path.exists(share)
+    for job in (first, second):
+        assert hub.req("POST", "/api/queue/%s/cancel" % job["id"], {}, user=ADMIN)[0] == 200
+    assert [j["id"] for j in hub.app.queue.history] == [second["id"]] and os.path.exists(share)
 
 
 def test_retry_of_a_cancelled_job_without_its_file_is_refused(hub):
     hub.setup_printers()
     job = hub.queue_job(file="a")
     hub.req("POST", "/api/queue/%s/cancel" % job["id"], {}, user=ADMIN)
+    os.remove(os.path.join(hub.s.SHARE, job["file"]))
     st, body = hub.req("POST", "/api/queue/%s/retry" % job["id"], {}, user=ADMIN)
     assert st == 409 and "file" in body["error"], (st, body)
     assert [j["id"] for j in hub.app.queue.history] == [job["id"]]
