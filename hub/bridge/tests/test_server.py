@@ -407,6 +407,56 @@ class FlowVariantsTest(unittest.TestCase):
             s.close()
 
 
+class StatusTest(unittest.TestCase):
+    """A daemon that answers /status slowly must not turn into 503 for the hub."""
+
+    def test_slow_daemon_gets_the_last_good_status_and_calls_are_shared(self):
+        cloud = mock_cloud.start()
+        log, slow = (tempfile.NamedTemporaryFile(delete=False).name for _ in range(2))
+        os.unlink(slow)
+        s = Server(cloud, extra_env={"MOCK_STATUS_LOG": log, "MOCK_STATUS_SLOW": slow, "DW_STATUS_CACHE": "0.5",
+                                     "DW_STATUS_TIMEOUT": "1"})
+        try:
+            login(s, "a@example.com")
+            daemon_up(s, s.base)
+            c = http.client.HTTPConnection("127.0.0.1", s.port, timeout=30)
+            c.request("GET", "/api/status/SERIAL001")
+            r = c.getresponse()
+            good = r.read()
+            self.assertEqual(r.status, 200)
+            calls = read(log).count("status")
+            c.request("GET", "/api/status/SERIAL001")  # inside the cache time: no daemon call
+            r = c.getresponse()
+            self.assertEqual((r.status, r.read()), (200, good))
+            self.assertEqual(read(log).count("status"), calls)  # the cache hit
+            time.sleep(0.7)
+            with open(slow, "w") as f:
+                f.write("3")  # over the 1 s timeout
+            results = []
+
+            def get():
+                cc = http.client.HTTPConnection("127.0.0.1", s.port, timeout=30)
+                cc.request("GET", "/api/status/SERIAL001")
+                rr = cc.getresponse()
+                results.append((rr.status, rr.getheader("X-Status-Age"), rr.read()))
+            threads = [threading.Thread(target=get) for _ in range(5)]
+            for t in threads:
+                t.start()
+            for t in threads:
+                t.join()
+            self.assertEqual([r[0] for r in results], [200] * 5)
+            self.assertTrue(all(float(r[1]) >= 0.5 and r[2] == good for r in results), results)
+            self.assertEqual(read(log).count("status") - calls, 1)  # five requests, one daemon call
+            # without any good answer the answer is still 503
+            st, _ = s.req("GET", "/api/status/SERIAL002")
+            self.assertEqual(st, 503)
+        finally:
+            s.close()
+            for f in (log, slow):
+                if os.path.exists(f):
+                    os.unlink(f)
+
+
 class SupervisorTest(unittest.TestCase):
     def test_restarts_exiting_daemon_and_masks_token_in_its_output(self):
         cloud = mock_cloud.start()

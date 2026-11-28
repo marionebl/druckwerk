@@ -471,6 +471,20 @@ def must(page, selector, msg, timeout=6000):
         raise AssertionError(msg + " (broken images: %s)" % page.evaluate(BROKEN))
 
 
+def check_back_online(page, base, ident):
+    """A printer page that saw the printer offline shows the camera again once it is back."""
+    hook = lambda on: page.evaluate(f"fetch('{PREFIX}api/_mock/hook?set=offline&serial={H2S}&on={on}')")
+    page.goto(base + PREFIX + "#/printers/" + H2S)
+    page.wait_for_selector(".cam.big")
+    hook(1)
+    page.wait_for_selector(".cam.big .off:has-text('Printer offline')", timeout=12000)
+    hook(0)
+    try:
+        page.wait_for_function("!document.querySelector('.cam.big .off') || !document.querySelector('.cam.big .off').textContent.includes('Printer offline')", timeout=12000)
+    finally:
+        hook(0)
+
+
 def check_printer_card(page, base, ident, go, shot):
     """A printer whose camera fails and whose AMS slots are all empty: a placeholder, no broken image, no tray row;
     the chamber light switch sends the command and shows the state."""
@@ -574,6 +588,9 @@ def walk(page, ident, base, shot, inject):
     if ONLY == "cache":
         check_cache(page, base, ident)
         return
+    if ONLY == "offline":
+        check_back_online(page, base, ident)
+        return
     page.wait_for_selector(".pcard")
     if inject:
         page.evaluate("fetch('/api/me')")
@@ -595,6 +612,7 @@ def walk(page, ident, base, shot, inject):
         shot("printer-offline-hms")
     if MOCKED:
         check_printer_card(page, base, ident, go, shot)
+        check_back_online(page, base, ident)
         check_start_steps(page, base, ident, go, shot)
     go("#/queue", ".job")
     shot("queue")
@@ -665,7 +683,7 @@ def walk(page, ident, base, shot, inject):
 def main():
     ap = argparse.ArgumentParser()
     ap.add_argument("--shots")
-    ap.add_argument("--only", choices=["cache", "reslice", "panel"], help="run one check only")
+    ap.add_argument("--only", choices=["cache", "reslice", "panel", "offline"], help="run one check only")
     ap.add_argument("--port", type=int, default=18099, help="port of the mock server")
     ap.add_argument("--inject-absolute", action="store_true")
     ap.add_argument("--base-url")

@@ -3,7 +3,7 @@
 
 One boocloud-bridge daemon per cloud account (the plugin holds one login per process).
 Routes: GET /, GET /api/health, POST /api/login/start, POST /api/login/code, DELETE /api/accounts/<id>,
-GET /api/printers, GET /api/status/<serial>, GET /api/ams/<serial>, GET /api/camera/<serial>/live, GET /api/tasks?serial=<serial>&limit=<n>, POST /api/print, GET /api/print-progress/<serial>,
+GET /api/printers, GET /api/status/<serial> (cached 5 s, last good answer on failure, header X-Status-Age), GET /api/ams/<serial>, GET /api/camera/<serial>/live, GET /api/tasks?serial=<serial>&limit=<n>, POST /api/print, GET /api/print-progress/<serial>,
 GET /api/camera/<serial>/snapshot (cached 30 s, header X-Snapshot-Age), GET|POST /api/filament?account=<id>, PUT|DELETE /api/filament/<id>?account=<id> (the account's cloud filament library),
 GET /api/drying/<serial>, POST /api/ams/<serial>/drying, POST /api/ams/<serial>/drying/stop.
 """
@@ -54,6 +54,12 @@ HEALTH_BAD = float(env("DW_HEALTH_BAD", "60"))
 START_GRACE = float(env("DW_START_GRACE", "180"))
 RESTART_BACKOFF = float(env("DW_RESTART_BACKOFF", "300"))  # least seconds between two restarts of this kind
 SUSPECT_TTL = float(env("DW_SUSPECT_TTL", "600"))  # a camera timeout is dropped after this long without a restart
+# /status: the daemon asks the printer for a full push on every call that finds its cache older than 10 s, and an idle printer
+# sends no updates, so calls queue up and time out. One call at a time per printer, answers under 5 s old are reused, and a
+# failed call is answered with the last good status for up to 10 min.
+STATUS_CACHE = float(env("DW_STATUS_CACHE", "5"))
+STATUS_TIMEOUT = float(env("DW_STATUS_TIMEOUT", "8"))  # under the hub's 10 s, so the hub gets our answer, not its own timeout
+STATUS_STALE = float(env("DW_STATUS_STALE", "600"))
 SNAPSHOT_CACHE = float(env("DW_SNAPSHOT_CACHE", "30"))  # seconds a good snapshot is served again
 RETRY_WINDOW = float(env("DW_RETRY_WINDOW", "60"))  # seconds a print start or command waits for a daemon that is not up
 MAX_PRINT_BODY = 50 * 1024 * 1024
@@ -477,6 +483,47 @@ def proxy(h, prefix, serial):
     except Upstream:
         return h.send(503, {"error": "daemon not reachable"})
     h.send(status, raw, ctype)
+
+
+class Stat:
+    """The newest good status of one printer. Only one request at a time asks the daemon."""
+
+    def __init__(self):
+        self.lock = threading.Lock()
+        self.raw = self.ctype = self.at = self.failure = None
+        self.runs = 0
+
+
+stats = {}  # serial -> Stat
+
+
+def status(h, serial):
+    acc = owner(serial)
+    if not acc:
+        return h.send(404, {"error": "unknown printer"})
+    st = stats.setdefault(serial, Stat())
+    seen = st.runs
+    with st.lock:
+        now = time.time()
+        if st.raw and now - st.at < STATUS_CACHE:
+            return h.send(200, st.raw, st.ctype, {"X-Status-Age": "%.1f" % (now - st.at)})
+        if st.runs == seen:  # nobody asked while we waited: ask the daemon
+            try:
+                code, raw, ctype = call("GET", acc.url("/status/" + serial), timeout=STATUS_TIMEOUT)
+                st.failure = (code, raw, ctype)
+            except Upstream as e:
+                st.failure = (503, json.dumps({"error": "daemon not reachable"}).encode(), "application/json")
+                log("[%s] status %s: %s" % (acc.id, serial, e))
+            st.runs += 1
+            if st.failure[0] == 200:
+                st.raw, st.ctype, st.at, st.failure = raw, ctype, time.time(), None
+                return h.send(200, raw, ctype, {"X-Status-Age": "0.0"})
+        # the call failed, or the request we waited for failed: the last good status, if it is not too old
+        now = time.time()
+        if st.raw and now - st.at < STATUS_STALE:
+            return h.send(200, st.raw, st.ctype, {"X-Status-Age": "%.1f" % (now - st.at)})
+        failure = st.failure
+    h.send(*failure)
 
 
 # Task status words we can justify from this repo (the printer's gcode_state names). The cloud's numeric codes are not
@@ -1398,7 +1445,7 @@ ROUTES = [
     ("GET", r"/", get_page, 0),
     ("GET", r"/api/health", get_health, 0),
     ("GET", r"/api/printers", get_printers, 0),
-    ("GET", r"/api/status/" + SER, lambda h, m, b: proxy(h, "/status/", m.group(1)), 0),
+    ("GET", r"/api/status/" + SER, lambda h, m, b: status(h, m.group(1)), 0),
     ("GET", r"/api/ams/" + SER, lambda h, m, b: proxy(h, "/ams/", m.group(1)), 0),
     ("GET", r"/api/drying/" + SER, get_drying, 0),
     ("GET", r"/api/camera/" + SER + r"/url", lambda h, m, b: camera(h, "url", m.group(1)), 0),
