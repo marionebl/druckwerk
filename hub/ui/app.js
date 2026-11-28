@@ -1,5 +1,5 @@
 // Shell: identity, hash router, tabs, polling.
-import { api, RESTARTING, setUser, newRoute } from './api.js';
+import { api, RESTARTING, setUser, newRoute, stale, cachedMe } from './api.js';
 import { h, clear, icon, fail, empty, loading } from './util.js';
 import { settle } from './views/promote.js';
 
@@ -97,26 +97,28 @@ async function route(keep) {
   if (!VIEWS[id] || (id === 'access' || id === 'setup') && !ctx.isAdmin()) id = 'printers';
   const mine = ++seq;
   tabs.querySelectorAll('a').forEach((a) => (a.getAttribute('data-id') === id ? a.setAttribute('aria-current', 'page') : a.removeAttribute('aria-current')));
-  if (!keep) { clear(main, loading()); scrollTo(0, 0); }
+  const y = scrollY;
+  if (!keep) { clear(main, loading()); scrollTo(0, 0); } else main.style.minHeight = main.offsetHeight + 'px';  // no collapse while the view is rebuilt
   toHa();
   try {
     const mod = await VIEWS[id]();
     if (mine !== seq) return;
     clear(main);
     await mod.mount(ctx, main, parts.slice(1));
+    // Decisions need fresh data: the filament view shows cached data as is.
+    main.classList.toggle('stale', stale() && id !== 'filament');
+    if (keep) scrollTo(0, y);
+    main.style.minHeight = '';
   } catch (e) {
     if (mine !== seq) return;
+    main.style.minHeight = '';
     clear(main, e.retry ? h('p', { class: 'muted' }, h('span', { class: 'spin' }), ' ', RESTARTING) : empty('Could not load this screen: ' + e.message));
     fail(e);
   }
 }
 
 let started = false;
-async function start() {
-  try { ctx.me = await api.me(); setUser(ctx.me.user_id); } catch (e) {
-    clear(app, h('main', null, e.retry ? h('p', { class: 'muted' }, h('span', { class: 'spin' }), ' ', RESTARTING) : empty('Cannot reach the hub: ' + e.message)));
-    return;
-  }
+function draw() {
   shell();
   if (!location.hash && ctx.isAdmin() && !ctx.me.setup_done) location.hash = '#/setup';
   if (!started) {
@@ -124,8 +126,26 @@ async function start() {
     addEventListener('hashchange', () => route());
     // A cached list was shown and the network answered differently: draw the view again, unless the person is in a dialog.
     addEventListener('druckwerk:fresh', () => { if (!document.querySelector('dialog[open]')) route(true); });
+    addEventListener('druckwerk:settled', () => { if (!stale()) main.classList.remove('stale'); });
   }
   route();
 }
+async function start() {
+  // With a cached identity the shell and the cached lists draw at once; the network answer redraws only when it differs.
+  const cached = cachedMe();
+  if (cached && !ctx.me) { ctx.me = cached; setUser(cached.user_id); draw(); }
+  let me;
+  try { me = await api.me(); } catch (e) {
+    if (ctx.me) return;
+    clear(app, h('main', null, e.retry ? h('p', { class: 'muted' }, h('span', { class: 'spin' }), ' ', RESTARTING) : empty('Cannot reach the hub: ' + e.message)));
+    return;
+  }
+  if (ctx.me && JSON.stringify(me) === JSON.stringify(ctx.me)) return;
+  ctx.me = me; setUser(me.user_id); draw();
+}
+// Thin bar at the top of the viewport while some request has been pending for 3 s (fixed: no layout space).
+const slowBar = h('div', { id: 'slowbar', hidden: true });
+document.body.append(slowBar);
+addEventListener('druckwerk:slow', (e) => { slowBar.hidden = e.detail <= 0; });
 settle();
 start();
