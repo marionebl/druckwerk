@@ -6,11 +6,11 @@
 - One send per printer: a second send to the same printer (action, web UI or queue) gets 409 at once.
 - `print_file` also refuses a printer in `PREPARE`. The bridge gives up on its daemon after 280 s (the app waits 300 s) and answers 504 when the daemon timed out, 503 only when it was not reachable at all.
 - A queue start whose send ends in a timeout or "not reachable" fails the job (`send timed out; check the printer before you retry`) instead of leaving it queued, where a second start printed twice. A refusal (guard, model mismatch, bridge error) still keeps the job first in the queue.
-- The "Plate clear, start" button names the job (`DRUCKWERK_START_<serial>_<job id>`). It starts that job only when it is still the first queued job, the notification is at most 30 minutes old and the phone's Home Assistant user is an admin of the printer (event context user).
+- The "Plate clear, start" button names the job (`DRUCKWERK_START_<serial>_<job id>`). It starts that job only when it is still the first queued job, the notification is at most 30 minutes old and the phone's Home Assistant user is an admin of the printer (event context user). The app keeps the sent notifications in memory, so a button from before an app restart is refused; use Start in the queue then.
 - The actions `start_next` and `start_job` confirm a drying job, so they can start one.
 - `POST /api/queue/<id>/cancel` takes `{force: true}` for admins: a `printing` job that never ends is removed as `failed` (`removed by admin`).
 - Approving an `any` job needs an admin of a printer that the job fits for its owner, not any printer of the model.
-- Printing a browser slice (`POST /api/jobs/<id>/print`) copies it to a file name with a random part and deletes the copy after the send, so two prints of the same name no longer overwrite each other.
+- Printing a browser slice (`POST /api/jobs/<id>/print`) copies it to a file name with a random part, so two prints of the same name no longer overwrite each other. The copy stays while it is the printer's current file (the printer picture reads it) and is deleted when the slice is sent again; a refused send leaves no copy.
 
 ## 3.22.0 (unreleased)
 

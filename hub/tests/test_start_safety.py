@@ -218,9 +218,25 @@ def test_two_jobs_with_the_same_name_get_two_share_files(hub):
     assert len(set(names)) == 2, names
 
 
-def test_the_share_file_of_a_print_is_deleted_after_the_send(hub):
+def test_a_sent_copy_stays_for_the_printer_picture_until_the_slice_is_sent_again(hub):
+    import os
     hub.setup_printers()
     jid = hub.sliced(owner=ADMIN)
     assert hub.req("POST", "/api/jobs/%s/print" % jid, {"confirm": True}, user=ADMIN)[0] == 200
+    first = next(iter(hub.app.sender.results.values()))["last_path"]
+    assert os.path.exists(first)  # integration.wanted and the preview read it while the print runs
+    assert hub.req("POST", "/api/jobs/%s/print" % jid, {"confirm": True}, user=ADMIN)[0] == 200
+    assert [f for f in os.listdir(hub.s.SHARE) if f.endswith(".gcode.3mf")] == [os.path.basename(
+        next(iter(hub.app.sender.results.values()))["last_path"])]
+
+
+def test_a_refused_send_leaves_no_copy(hub):
     import os
+
+    def refuse(data):
+        raise ValueError("model mismatch")
+    hub.setup_printers()
+    jid = hub.sliced(owner=ADMIN)
+    hub.s.PRINT = refuse
+    assert hub.req("POST", "/api/jobs/%s/print" % jid, {"confirm": True}, user=ADMIN)[0] == 400
     assert not [f for f in os.listdir(hub.s.SHARE) if f.endswith(".gcode.3mf")]

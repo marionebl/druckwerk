@@ -453,6 +453,7 @@ def post_print(h, m, q):
     shutil.copyfile(job["result"], dest)
     call = {"serial": job["printer"]["serial"], "file": dest, "use_ams": True, "bed_leveling": True,
             "timelapse": bool(body.get("timelapse")), "force": bool(body.get("force"))}
+    status = None
     try:
         if PRINT:  # the app sends the file itself
             try:
@@ -464,10 +465,14 @@ def post_print(h, m, q):
             status, answer = http_json("POST", CORE + "/services/druckwerk/print_file?return_response", call,
                                        {"Authorization": "Bearer " + token}, timeout=360)
     finally:
-        try:
-            os.remove(dest)  # the copy is for this send only; the next print of this slice makes its own
-        except OSError:
-            pass
+        # The printer's picture (integration, preview) reads the sent copy while it prints, so the copy of a sent
+        # print stays until this slice is sent again; a refused send leaves none.
+        old = (job.get("sent") or {}).get("file")
+        for path in ([dest] if status != 200 else []) + ([old] if status == 200 and old and old != dest else []):
+            try:
+                os.remove(path)
+            except OSError:
+                pass
     job["sent"] = {"at": time.time(), "file": dest, "status": status, "answer": answer}
     save_job(job)
     log("print %s -> %s: %s" % (os.path.basename(dest), job["printer"]["serial"], status))
