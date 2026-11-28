@@ -116,6 +116,15 @@ def test_save_settings_and_save_job_go_through_write_json(tmp_path, hub_at, monk
     assert [os.path.basename(c) for c in calls] == ["j9.json", "job.json"], calls
 
 
+
+def test_job_json_stays_readable_for_other_users(tmp_path, hub_at):
+    hub = hub_at()
+    hub.s.JOBS = str(tmp_path / "jobs")
+    os.makedirs(os.path.join(hub.s.JOBS, "s1"))
+    hub.s.save_job({"id": "s1", "state": "done"})
+    # browser_test.sh reads it as the runner user while the image writes it as root
+    assert os.stat(os.path.join(hub.s.JOBS, "s1", "job.json")).st_mode & 0o777 == 0o644
+
 class Slow(BaseHTTPRequestHandler):
     data = open(FIXTURE, "rb").read()
 

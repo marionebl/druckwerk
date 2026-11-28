@@ -111,7 +111,9 @@ def job_dir(jid):
 
 
 def save_job(job):
-    write_json(os.path.join(job_dir(job["id"]), "job.json"), job)
+    path = os.path.join(job_dir(job["id"]), "job.json")
+    write_json(path, job)
+    os.chmod(path, 0o644)  # mkstemp makes 0600; the jobs folder is shared with tests that run as another user
 
 
 def load_jobs():
