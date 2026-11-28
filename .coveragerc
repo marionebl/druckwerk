@@ -1,0 +1,14 @@
+# Subprocess measurement: the bridge and slicer servers run as child processes of their tests.
+# Use: COVERAGE_PROCESS_START=$PWD/.coveragerc coverage run -m pytest ...; coverage combine; coverage report
+[run]
+patch = subprocess
+parallel = True
+# The servers get SIGTERM from the test teardown so that they write their data.
+sigterm = True
+# include (not source) so that it works from any working directory.
+include =
+    */hub/bridge/*
+    */hub/slicer/*
+omit =
+    */tests/*
+    */engine/*

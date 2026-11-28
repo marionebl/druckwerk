@@ -732,6 +732,21 @@ def check_connecting(page, base, ident, shot=None):
         hook(0)
 
 
+def check_stale_mark(page, go, shot):
+    """A printer whose status is old shows how old on its card; a fresh one shows nothing."""
+    try:
+        hook(page, "stale", H2S, 1)
+        go("#/printers", ".pcard")
+        must(page, ".pcard:has-text('Workshop H2S'):has-text('status from 5 min ago')", "a stale printer shows the age of its status")
+        assert page.locator(".pcard:has-text('status from')").count() == 1, "only the stale printer is marked"
+        shot("printer-card-stale")
+        hook(page, "stale", H2S, 0)
+        go("#/printers", ".pcard")
+        page.wait_for_function("!document.body.textContent.includes('status from')", timeout=12000)
+    finally:
+        hook(page, "stale", H2S, 0)
+
+
 def check_live_video(page, go, shot):
     """The printer page plays the H.264 printer's live stream (the mock sends real MPEG-TS) and the video advances."""
     go("#/printers/" + H2S, ".cam.big")
@@ -1312,6 +1327,7 @@ def walk(page, ident, base, shot, inject):
         check_printer_card(page, base, ident, go, shot)
         check_back_online(page, base, ident)
         check_connecting(page, base, ident, shot)
+        check_stale_mark(page, go, shot)
         check_start_steps(page, base, ident, go, shot)
         check_live_video(page, go, shot)
     go("#/queue", ".job")
