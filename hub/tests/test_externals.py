@@ -48,8 +48,9 @@ def test_every_nozzle_has_three_qualities_and_its_own_machine_preset():
 # The vendor name may stand only in the files and lines below; everything else says "printer cloud" or "vendor slicer".
 REPO = os.path.join(os.path.dirname(os.path.abspath(__file__)), "..", "..")
 VENDOR_FILES = re.compile(r"hub/externals\.(py|env)|custom_components/druckwerk/(externals\.py|manifest\.json)"
-                          r"|hub/tests/(test_externals\.py|fixtures/gcode/.*)|hub/CHANGELOG\.md")  # the changelog is a record
-VENDOR_LINES = re.compile(r"ha-bambulab|pybambu|bambu_lab|bambu_networking|bambulab\.com"  # project, HA domain, external names, URLs
+                          r"|hub/tests/(test_externals\.py|fixtures/gcode/.*)|hub/CHANGELOG\.md"  # the changelog is a record
+                          r"|hub/bridge/bridge\.patch")  # a patch of the upstream bridge source, with its library names
+VENDOR_LINES = re.compile(r"ha-bambulab|pybambu|bambu_lab|bambu_networking|bambulab\.com|fake_bambusource\.c"  # project, HA domain, external names, URLs
                           r"|Bambu Lab (H2S|P1S|P1P|X1|A1)|\"Bambu Lab\"|Bambu (PLA|PETG)")  # data values: models, presets, brand
 
 
