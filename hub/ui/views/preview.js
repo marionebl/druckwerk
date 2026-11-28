@@ -36,6 +36,7 @@ export function gcodePreview() {
   const viewport = h('div', { class: 'viewport' }, canvas);
   const resetBtn = h('button', { type: 'button', class: 'chip', onclick: () => reset() }, 'Reset view');
   const travelBtn = h('button', { type: 'button', class: 'chip', 'aria-pressed': 'false', onclick: () => { S.travel = !S.travel; sync(); } }, 'Travel moves');
+  const modelBtn = h('button', { type: 'button', class: 'chip', 'aria-pressed': 'true', hidden: true, onclick: () => { S.model = !S.model; sync(); } }, 'Model');
   const oneBtn = h('button', { type: 'button', class: 'chip', 'aria-pressed': 'false', onclick: () => { S.one = !S.one; if (S.one) S.from = S.to; sync(); } }, 'One layer');
   const label = h('small', { class: 'muted', 'aria-live': 'polite' }, 'Loading G-code…');
   const from = h('input', { type: 'range', min: 0, max: 0, value: 0, 'aria-label': 'From layer', oninput: () => { S.from = +from.value; if (S.one || S.from > S.to) S.to = S.from; sync(); } });
@@ -46,17 +47,17 @@ export function gcodePreview() {
   const explodeNote = h('small', { class: 'muted' }, '');
   const legend = h('div', { class: 'legend' });
   const node = h('div', { class: 'stack preview3d', style: 'gap:8px' }, viewport,
-    h('div', { class: 'row tools' }, resetBtn, travelBtn, oneBtn), label, range,
+    h('div', { class: 'row tools' }, resetBtn, travelBtn, modelBtn, oneBtn), label, range,
     h('label', { class: 'explode' }, h('small', null, 'Explode'), explode, explodeNote), legend);
 
-  const S = { from: 0, to: 0, one: false, travel: false, explode: 0, off: new Set() };
-  let T, renderer, scene, camera, world, meshes = [], R = null, plateC = [0, 0], objC = new Map(), dirty = false, gone = false;
+  const S = { from: 0, to: 0, one: false, travel: false, model: true, explode: 0, off: new Set() };
+  let T, renderer, scene, camera, world, meshes = [], solids = [], solidData = null, clip = [], R = null, plateC = [0, 0], objC = new Map(), dirty = false, gone = false;
   const view = { az: HOME.az, el: HOME.el, r: 300, tx: 0, ty: 0, tz: 0 };
   let home = { ...view }, ro = null, fit = null, fitted = false;
 
   const dispose = () => {
     gone = true; live = null; ro?.disconnect();
-    for (const m of meshes) m.geometry.dispose();
+    for (const m of [...meshes, ...solids]) m.geometry.dispose();
     renderer?.dispose(); renderer?.forceContextLoss();
   };
   live = dispose;
@@ -146,7 +147,13 @@ export function gcodePreview() {
     const z = (i) => R.layers[i].toFixed(2);
     label.textContent = S.from === S.to ? `Layer ${S.from + 1} of ${nL} · Z ${z(S.from)} mm`
       : `Layers ${S.from + 1} to ${S.to + 1} of ${nL} · Z ${z(S.from)} to ${z(S.to)} mm`;
-    oneBtn.setAttribute('aria-pressed', String(S.one)); travelBtn.setAttribute('aria-pressed', String(S.travel));
+    oneBtn.setAttribute('aria-pressed', String(S.one)); travelBtn.setAttribute('aria-pressed', String(S.travel)); modelBtn.setAttribute('aria-pressed', String(S.model));
+    // The model follows the layer range: clip above the top layer and below the layer under the first one.
+    if (clip.length) { clip[0].set(new T.Vector3(0, -1, 0), R.layers[S.to] + 0.001); clip[1].set(new T.Vector3(0, 1, 0), S.from ? -R.layers[S.from - 1] : 1e6); }
+    for (const m of solids) {
+      const c = m.userData.c; m.visible = S.model;
+      m.position.set(c ? (c[0] - plateC[0]) * scale() : 0, c ? (c[1] - plateC[1]) * scale() : 0, 0);
+    }
     explodeNote.textContent = R.objects.length > 1 ? Math.round(S.explode * 100) + ' %' : 'One object on this plate';
     const k = scale();
     for (const m of meshes) {
@@ -160,12 +167,28 @@ export function gcodePreview() {
     draw();
   }
 
+  // The placed STL of each object (bed coordinates, like the G-code), as a translucent shaded mesh.
+  function addModel() {
+    const mat = new T.MeshLambertMaterial({ color: 0x9fb4c8, transparent: true, opacity: 0.5, side: T.DoubleSide, depthWrite: false, clippingPlanes: clip });
+    for (const pos of solidData) {
+      const geo = new T.BufferGeometry();
+      geo.setAttribute('position', new T.BufferAttribute(pos, 3)); geo.computeVertexNormals();
+      geo.computeBoundingBox(); const bx = geo.boundingBox, c = [(bx.min.x + bx.max.x) / 2, (bx.min.y + bx.max.y) / 2];
+      let best = null, d2 = Infinity; // follow the nearest G-code object when exploding
+      for (const oc of objC.values()) { const d = (oc[0] - c[0]) ** 2 + (oc[1] - c[1]) ** 2; if (d < d2) { d2 = d; best = oc; } }
+      const m = new T.Mesh(geo, mat); m.frustumCulled = false; m.renderOrder = 3; m.userData.c = best;
+      world.add(m); solids.push(m);
+    }
+    scene.add(new T.AmbientLight(0xffffff, 1.6)); const sun = new T.DirectionalLight(0xffffff, 2.2); sun.position.set(1, 2, 1.5); scene.add(sun);
+    modelBtn.hidden = false;
+  }
+
   async function build(res, t0) {
     R = res; T = await loadThree();
     if (gone) return;
     try { renderer = new T.WebGLRenderer({ canvas, antialias: true, preserveDrawingBuffer: true }); }
     catch { label.textContent = 'The 3D preview needs WebGL, which this browser does not offer.'; return; }
-    renderer.setClearColor(BG, 1);
+    renderer.setClearColor(BG, 1); renderer.localClippingEnabled = true; clip.push(new T.Plane(), new T.Plane());
     scene = new T.Scene(); camera = new T.PerspectiveCamera(40, 1, 1, 1000);
     world = new T.Group(); world.rotation.x = -Math.PI / 2; scene.add(world); // G-code Z is up, three.js Y is up
 
@@ -218,6 +241,7 @@ export function gcodePreview() {
     legend.replaceChildren(...used.map((f) => h('button', { type: 'button', class: 'key', 'data-f': f, 'aria-pressed': 'true',
       onclick: () => { S.off.has(f) ? S.off.delete(f) : S.off.add(f); sync(); } }, h('i', { style: `background:${color(f)}` }), f)));
     explode.disabled = R.objects.length < 2;
+    if (solidData) addModel();
     controls();
     ro = new ResizeObserver(() => { if (!node.isConnected) dispose(); else resize(); });
     ro.observe(viewport);
@@ -238,6 +262,7 @@ export function gcodePreview() {
       await build(res, t0);
     } catch (e) { label.textContent = 'The 3D preview failed: ' + e.message; }
   };
+  node.setModel = (list) => { solidData = list; if (R && !solids.length && renderer) { addModel(); sync(); } };
   node.fail = (msg) => { label.textContent = msg; };
   node.dispose = dispose;
   return node;

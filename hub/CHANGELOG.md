@@ -2,6 +2,7 @@
 
 ## 3.37.0 (unreleased)
 
+- New print: the 3D preview shows the model STL (the plate as placed, same bed frame as the G-code) as a translucent shaded mesh. The "Model" button hides it; it follows the layer range and the explode slider. History and the printer page have no STL there and show no button.
 - Phones: no page is wider than the screen any more. Long titles in History, the queue and the filament list end in an ellipsis (full text on hover and on the detail page); long words break instead of widening the page. History was 859 px wide on a 375 px phone.
 - Phones: the brand row with the settings menu is hidden (the HA app shows the app name); the tab bar stays at the bottom. The setup wizard has a button on the Access page. Desktop keeps the top bar.
 - Inside the HA app panel the page does not add safe-area padding, because the HA frontend already keeps clear of the notch and home indicator.

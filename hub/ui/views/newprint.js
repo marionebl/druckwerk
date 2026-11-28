@@ -332,6 +332,7 @@ export async function mount(ctx, root) {
     if (shown?.id !== v.id) {
       const node = gcodePreview();
       api.gcode(v.id).then((t) => node.load(t)).catch((e) => node.fail(e.message));
+      node.setModel(S.objects.map(placed)); // the plate as placed: the same bed frame as the G-code
       shown = { id: v.id, node };
     }
     const prev = shown.node;
