@@ -10,7 +10,7 @@
 - A client that closes the connection before the answer writes one log line (`client went away`), not a stack trace, in the app and the bridge.
 - A failed `turn_on` of a paused automation after a send is logged with the entity id and the error; when the send itself was refused, the job error names the entities that stay off.
 - Bridge: an exception while the daemon's output is read ends that daemon and restarts it with the usual backoff, instead of ending the restart loop for good.
-- Bridge: `watchdog: http://[HOST]:[PORT:8098]/api/health` in the app config, so the Supervisor restarts the app when the bridge stops answering. Needs `/api/health` to stay open for clients that are not on the loopback (package 1).
+- Bridge: `watchdog: http://[HOST]:8098/api/health` in the app config, so the Supervisor restarts the app when the bridge stops answering. Needs `/api/health` to stay open for clients that are not on the loopback (package 1).
 - Integration 0.15.1: a manifest with a value it cannot apply is not applied in part. The old actions stay, a warning is logged, the repair issue "bad_manifest" is raised, and the next poll tries again (the revision is kept only after the manifest applied). Actions are tracked as they are registered, so an unload removes all of them. A 401 from the app raises the repair issue "hub_secret_rejected" (before: only "not reachable").
 
 ## 3.22.0 (unreleased)

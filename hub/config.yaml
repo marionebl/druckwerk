@@ -17,7 +17,7 @@ homeassistant_api: true
 hassio_api: true
 map: ["share:rw", "media:rw"]
 panel_admin: false
-watchdog: http://[HOST]:[PORT:8098]/api/health
+watchdog: http://[HOST]:8098/api/health
 options:
   plates_repo: marionebl/druckwerk-plates
 schema:
