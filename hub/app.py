@@ -349,7 +349,7 @@ class App:
         h.close_connection = True  # HTTP/1.0 style: the body ends when we close
         h.end_headers()
         try:
-            while chunk := r.read(65536):
+            while chunk := r.read1(65536):
                 h.wfile.write(chunk)
         except OSError:
             pass  # viewer left

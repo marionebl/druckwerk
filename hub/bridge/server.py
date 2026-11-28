@@ -49,6 +49,7 @@ STATUS_SAMPLE = float(env("DW_STATUS_SAMPLE", "5"))  # seconds between monitor t
 PROBE_WAIT = float(env("DW_PROBE_WAIT", "15"))
 HEALTH_BAD = float(env("DW_HEALTH_BAD", "60"))
 START_GRACE = float(env("DW_START_GRACE", "180"))
+TERM_WAIT = float(env("DW_TERM_WAIT", "10"))  # seconds the daemon gets to end after SIGTERM before it is killed
 RESTART_BACKOFF = float(env("DW_RESTART_BACKOFF", "300"))  # least seconds between two restarts of this kind
 SUSPECT_TTL = float(env("DW_SUSPECT_TTL", "600"))  # a camera timeout is dropped after this long without a restart
 # /status: the daemon asks the printer for a full push on every call that finds its cache older than 10 s, and an idle printer
@@ -286,8 +287,13 @@ class Daemon:
     def restart(self):
         """Make the daemon reread the credentials."""
         self.wake.set()
-        if self.proc and self.proc.poll() is None:
-            self.proc.terminate()
+        p = self.proc
+        if p and p.poll() is None:
+            p.terminate()
+            # A daemon that ignores SIGTERM would keep the old credentials for good.
+            t = threading.Timer(TERM_WAIT, lambda: p.poll() is None and p.kill())
+            t.daemon = True
+            t.start()
 
     def stop(self):
         self.dead = True

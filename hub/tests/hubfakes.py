@@ -6,6 +6,7 @@ import os
 import re
 import sys
 import threading
+import time
 import zipfile
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 
@@ -174,6 +175,14 @@ class FakeBridge(BaseHTTPRequestHandler):
             return self.reply(200, FakeBridge.upload.get(self.path.rsplit("/", 1)[1], {}))
         if self.path.startswith("/api/drying/"):
             return self.reply(200, FakeBridge.drying)
+        if self.path.startswith("/api/camera/") and "trickle" in self.path:  # a slow live stream: 1 kB, a pause, 1 kB
+            self.send_response(200)
+            self.send_header("Content-Type", "video/mp2t")
+            self.end_headers()
+            self.wfile.write(b"a" * 1000)
+            self.wfile.flush()
+            time.sleep(1.5)
+            return self.wfile.write(b"b" * 1000)
         if self.path.startswith("/api/camera/"):
             return self.reply(200, b"FRAME:" + self.path.encode(), "image/jpeg")
         self.reply(404, {"error": "no"})

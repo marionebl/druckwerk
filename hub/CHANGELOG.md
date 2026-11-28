@@ -1,5 +1,15 @@
 # Changelog
 
+## 3.29.0 (unreleased)
+
+- Bridge: `Live` and the camera functions moved from `server.py` to `camera.py` (no behaviour change), so `Live` can be unit tested without a subprocess.
+- Bridge: three races in the live fan-out are closed. The idle timer closes a live upstream only when no client joined meanwhile, and removes it from the list in the same step. A client that the fan-out drops no longer ends the reader thread when its queue was emptied at the same moment. After a drop that leaves no client, the idle timer is armed. A viewer socket has a 30 s write timeout.
+- Bridge: a closed live upstream waits for its ffmpeg process (no defunct process stays) and closes its pipe.
+- Bridge: parallel stills of one keyframe share one decode.
+- Bridge: `Daemon.restart()` kills a daemon that is still running 10 s after SIGTERM (`DW_TERM_WAIT`).
+- Plugin: an install stores the zip hash and the library sizes in `<data>/plugin/<version>/.sha256`, and `installed()` compares both. Libraries of a wrong size trigger a new download. An install from an older version has no `.sha256` and is downloaded once more at the next start.
+- App: the camera proxy forwards the bridge stream as it arrives (`read1`). Before, it waited for 64 kB.
+
 ## 3.20.0 (unreleased)
 
 - Bridge: the live camera upstream of each printer stays open at all times (`DW_LIVE_KEEP`, on by default). A viewer gets video without the 12 to 14 s mint and keyframe wait on the H2S, and stills and fresh stills (after a light switch) come from the live frames. A dropped upstream opens again after 5 s, then up to 120 s between tries. No new upstream opens while a print is sent. Cost on a Pi 4: about one core and the camera's bit rate per printer, all the time.

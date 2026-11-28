@@ -148,6 +148,7 @@ class Live:
         self.psi = {}  # H.264 mode: newest PAT and PMT packet
         self.still = (None, None)  # H.264 mode: (first chunk of a GOP, its keyframe as JPEG), one decode per keyframe
         self.idle_timer = None
+        self.still_lock = threading.Lock()  # one decode at a time, so parallel stills share it
         self.sock = self.proc = None
         self.t0, self.first, self.last_read = time.time(), None, None  # timing for the log line at close
         self.stalls, self.longest, self.bytes = 0, 0.0, 0
@@ -232,7 +233,9 @@ class Live:
         while True:
             data = os.read(fd, 65536)
             if not data:
-                return self.close()
+                self.close()
+                self.proc.stdout.close()  # only this thread reads it, so closing here cannot race a read
+                return
             self.mark("ts")
             data = rest + data
             n = len(data) // TS_PACKET * TS_PACKET
@@ -306,12 +309,33 @@ class Live:
                 c.put_nowait(data)
             except queue.Full:
                 self.drop(c)  # a client that cannot keep up must not hold memory
+        if not self.clients:
+            self.arm_idle()  # its handler may be stuck in a write and never call leave()
 
     def drop(self, c):
         self.clients.discard(c)
-        while not c.empty():
-            c.get_nowait()
+        try:
+            while not c.empty():
+                c.get_nowait()
+        except queue.Empty:
+            pass  # the client's handler emptied it first
         c.put_nowait(None)
+
+    def arm_idle(self):
+        """Close after LIVE_IDLE without clients. The caller holds self.lock."""
+        if not self.closed and not self.keep and not self.idle_timer:
+            self.idle_timer = threading.Timer(LIVE_IDLE, self.idle_close)
+            self.idle_timer.daemon = True
+            self.idle_timer.start()
+
+    def idle_close(self):
+        # A client may have joined after the timer fired, so decide under the locks join() takes, and leave lives in the same step.
+        with live_lock, self.lock:
+            if self.clients or self.closed:
+                return
+            if lives.get(self.serial) is self:
+                del lives[self.serial]
+        self.close()
 
     # -- clients --
 
@@ -336,10 +360,8 @@ class Live:
     def leave(self, c):
         with self.lock:
             self.clients.discard(c)
-            if not self.clients and not self.closed and not self.keep:
-                self.idle_timer = threading.Timer(LIVE_IDLE, self.close)
-                self.idle_timer.daemon = True
-                self.idle_timer.start()
+            if not self.clients:
+                self.arm_idle()
 
     def close(self):
         with self.lock:
@@ -370,8 +392,17 @@ class Live:
             except OSError:
                 pass
             self.sock.close()
-        if self.proc and self.proc.poll() is None:
-            self.proc.kill()
+        if self.proc:
+            if self.proc.poll() is None:
+                self.proc.kill()
+            try:
+                self.proc.wait(timeout=5)  # reap it: a killed child stays defunct until waited for
+            except subprocess.TimeoutExpired:
+                log("live %s: ffmpeg did not exit after kill" % self.serial)
+            try:
+                self.proc.stdin.close()
+            except OSError:
+                pass
         self.ready.set()
 
     # -- snapshot --
@@ -390,9 +421,10 @@ class Live:
         data = b"".join(list(self.psi.values()) + gop)
         if not newest:
             # With an always-open upstream every still comes from here, so decode each keyframe once.
-            if self.still[0] is not gop[0]:
-                self.still = (gop[0], ffmpeg_jpeg(["-f", "mpegts"], data))
-            return self.still[1]
+            with self.still_lock:
+                if self.still[0] is not gop[0]:
+                    self.still = (gop[0], ffmpeg_jpeg(["-f", "mpegts"], data))
+                return self.still[1]
         with tempfile.TemporaryDirectory() as d:  # -update 1 overwrites the file with each frame: the last one stays
             out = os.path.join(d, "last.jpg")
             r = subprocess.run(["ffmpeg", "-loglevel", "error", "-f", "mpegts", "-i", "-", "-update", "1", "-c:v", "mjpeg", out],
@@ -456,6 +488,7 @@ def get_live(h, serial):
     h.send_header("Cache-Control", "no-store")
     h.end_headers()
     h.close_connection = True
+    h.connection.settimeout(30)  # a viewer that stops reading must not hold this thread
     try:
         while True:
             chunk = q.get()

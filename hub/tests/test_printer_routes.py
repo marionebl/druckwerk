@@ -170,3 +170,18 @@ def test_time_left_is_minutes_and_matches_the_finish_time():
     import printer_state
     v = printer_state.view({"gcode_state": "RUNNING", "mc_percent": 95, "mc_remaining_time": 40, "layer_num": 794, "total_layer_num": 831}, 0)
     assert (v["remaining_min"], v["end_time"]) == (40, "1970-01-01T00:40:00+00:00")
+
+
+def test_camera_proxy_forwards_the_first_bytes_at_once(hub):
+    import http.client
+    import time
+    hub.setup_printers()
+    hub.grant(USER, SERIAL)
+    c = http.client.HTTPConnection("127.0.0.1", hub.port, timeout=20)
+    c.request("GET", "/api/printers/%s/camera?protocols=trickle" % SERIAL,
+              headers={"X-Remote-User-Id": USER, "X-Remote-User-Name": USER, "X-Remote-User-Display-Name": USER})
+    t0 = time.time()
+    r = c.getresponse()
+    first = r.read1(65536)
+    assert first[:1] == b"a" and time.time() - t0 < 0.7  # the bridge pauses 1.5 s after 1 kB
+    c.close()
