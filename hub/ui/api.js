@@ -37,7 +37,7 @@ function restarting(err) {
 // cache (per HA user, localStorage) while the network answers behind it; when the answer differs the shell redraws the view
 // ('druckwerk:fresh'). Every storage call may throw (private window, blocked data): then there is no cache and nothing changes.
 const SWR = /^api\/(printers|spools|queue|history|load-requests|nozzle-requests)(\?.*)?$/;
-const RELATED = { queue: ['queue', 'history', 'printers'], jobs: ['queue', 'history'], spools: ['spools', 'load-requests'], 'load-requests': ['load-requests', 'spools'], 'nozzle-requests': ['nozzle-requests'],
+const RELATED = { history: ['queue', 'history', 'printers'], queue: ['queue', 'history', 'printers'], jobs: ['queue', 'history'], spools: ['spools', 'load-requests'], 'load-requests': ['load-requests', 'spools'], 'nozzle-requests': ['nozzle-requests'],
   printers: ['printers', 'queue', 'nozzle-requests'], setup: ['printers'], grants: ['printers'] };
 let user = '';
 const seen = new Set(), pending = new Set(), served = new Set(), hot = new Map();  // network answered / fetching / read stale this route / fresh answer waiting
@@ -103,6 +103,14 @@ export const api = {
   stopDrying: (serial, ams_id) => post(`api/printers/${q(serial)}/drying/stop`, { ams_id }),
   queueDry: (body) => post('api/queue', { ...body, kind: 'dry' }),
   history: (query) => get('api/history' + (query ? '?' + query : '')),
+  historySettings: (id) => get(`api/history/${q(id)}/settings`),
+  historyFileUrl: (id) => `api/history/${q(id)}/file`,
+  historyGcode: async (id) => {
+    const r = await fetch(`api/history/${q(id)}/gcode`);
+    if (!r.ok) throw new ApiError(r.status, 'No G-code preview');
+    return r.text();
+  },
+  historyQueue: (id) => post(`api/history/${q(id)}/queue`, {}),
   // queue
   queue: () => get('api/queue'),
   jobAction: (id, action, body) => post(`api/queue/${q(id)}/${action}`, body),
