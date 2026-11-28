@@ -449,19 +449,25 @@ def post_print(h, m, q):
     if body.get("confirm") is not True:
         return h.send(400, {"error": "Confirm the print first."})
     os.makedirs(SHARE, exist_ok=True)
-    dest = os.path.join(SHARE, print_name(job))
+    dest = os.path.join(SHARE, print_name(job).replace(".gcode.3mf", "_%s.gcode.3mf" % secrets.token_hex(3)))
     shutil.copyfile(job["result"], dest)
     call = {"serial": job["printer"]["serial"], "file": dest, "use_ams": True, "bed_leveling": True,
             "timelapse": bool(body.get("timelapse")), "force": bool(body.get("force"))}
-    if PRINT:  # the app sends the file itself
+    try:
+        if PRINT:  # the app sends the file itself
+            try:
+                status, answer = 200, PRINT(call)
+            except Exception as e:  # noqa: BLE001 - the refusal text is what the person needs
+                status, answer = getattr(e, "status", 400 if isinstance(e, ValueError) else 502), {"error": str(e)}
+        else:
+            token = env("SUPERVISOR_TOKEN", "")
+            status, answer = http_json("POST", CORE + "/services/druckwerk/print_file?return_response", call,
+                                       {"Authorization": "Bearer " + token}, timeout=360)
+    finally:
         try:
-            status, answer = 200, PRINT(call)
-        except Exception as e:  # noqa: BLE001 - the refusal text is what the person needs
-            status, answer = getattr(e, "status", 400 if isinstance(e, ValueError) else 502), {"error": str(e)}
-    else:
-        token = env("SUPERVISOR_TOKEN", "")
-        status, answer = http_json("POST", CORE + "/services/druckwerk/print_file?return_response", call,
-                                   {"Authorization": "Bearer " + token}, timeout=360)
+            os.remove(dest)  # the copy is for this send only; the next print of this slice makes its own
+        except OSError:
+            pass
     job["sent"] = {"at": time.time(), "file": dest, "status": status, "answer": answer}
     save_job(job)
     log("print %s -> %s: %s" % (os.path.basename(dest), job["printer"]["serial"], status))

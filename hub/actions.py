@@ -738,9 +738,9 @@ class Ops:
             raise ValueError(CONFIRM_TEXT)
         serial = quote(self.serial(printer), safe="")
         if job_id:
-            job = self.call("POST", f"/api/printers/{serial}/start", {"job_id": job_id, "plate_clear": True}, timeout=400)
+            job = self.call("POST", f"/api/printers/{serial}/start", {"job_id": job_id, "plate_clear": True, "confirmed": True}, timeout=400)
         else:
-            job = self.call("POST", f"/api/printers/{serial}/start-next", {"plate_clear": True}, timeout=400)
+            job = self.call("POST", f"/api/printers/{serial}/start-next", {"plate_clear": True, "confirmed": True}, timeout=400)
         return {"job": job_summary(job) if isinstance(job, dict) else job}
 
     def start_next(self, printer, plate_clear=False, confirmed_by_person=False):

@@ -221,10 +221,13 @@ class Bound:
             return self.q.edit(job_id, name, options)
         raise Forbidden("rule: users may only edit their own jobs; admins edit any job")
 
-    def cancel(self, job_id):
+    def cancel(self, job_id, force=False):
         job = self._job(job_id)
         serials = self.a.serials_of(job)
         role = self.a.best(self.c, serials)
+        if force:
+            self._need_admin(serials, "only an admin of the job's printer can remove a started job")
+            return self.q.cancel(job_id, force=True)
         if role == "admin" or (role == "user" and job.get("owner_user_id") == self.c.user_id):
             return self.q.cancel(job_id)
         raise Forbidden("rule: users may only cancel their own jobs; admins cancel any job")
@@ -237,7 +240,11 @@ class Bound:
         return self.q.retry(job_id)
 
     def approve(self, job_id):
-        self._need_admin(self.a.serials_of(self._job(job_id)), "only an admin of the job's printer can approve")
+        job = self._job(job_id)
+        serials = self.a.serials_of(job)
+        # An any job runs only where its owner has a grant: its approver must administer such a printer.
+        fits = [s for s in serials if self.a.job_allowed(job, s)] or serials
+        self._need_admin(fits, "only an admin of a printer that the job fits can approve")
         return self.q.approve(job_id)
 
     def reject(self, job_id):

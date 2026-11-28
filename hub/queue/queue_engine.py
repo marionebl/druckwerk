@@ -1,6 +1,7 @@
 """Multi-printer print queue. Home Assistant I/O is injected so tests can use fakes.
 
 get_state(entity_id) -> str | None          fresh state of the vendor integration's sensor
+get_start_state(entity_id) -> str | None (optional)   the same for a start: None when the status is too old (default: get_state)
 call_service(domain, service, data) -> any  raises on refusal (pausing and resuming automations)
 send_print(data) -> any                     sends one file to a printer; raises on refusal, the message is kept on the job
 get_trays(serial) -> [{"type": "PLA", "colour": "#RRGGBB"}]   loaded AMS trays
@@ -21,6 +22,8 @@ HISTORY = 200
 STARTABLE = {"idle", "finish", "failed"}  # print status values that allow a new job
 NOT_A_TRAY = {"none", "unknown", "unavailable", ""}
 START_TIMEOUT = 600
+START_STATUS_AGE = 60  # seconds a print start may rely on a printer status
+SEND_LOST = "send timed out; check the printer before you retry"  # the file may have reached the printer
 # Send-time print options with the defaults of the bridge before they existed. TRI options also take "auto".
 OPTIONS = {"timelapse": False, "bed_leveling": True, "use_ams": True, "flow_cali": True, "vibration_cali": True,
            "layer_inspect": False, "nozzle_offset_cali": False, "bed_type": "auto", "ext_change_assist": False}
@@ -73,10 +76,12 @@ def _tray_ok(v):
 
 class Queue:
     def __init__(self, registry, data_dir, get_state, call_service, get_trays=None,
-                 clock=time.time, start_timeout=START_TIMEOUT, job_allowed=None, dry=None, send_print=None, get_nozzle=None, get_requests=None):
+                 clock=time.time, start_timeout=START_TIMEOUT, job_allowed=None, dry=None, send_print=None, get_nozzle=None, get_requests=None,
+                 get_start_state=None):
         self.registry = registry
         self.path = os.path.join(data_dir, "queue.json")
         self.get_state, self.call_service = get_state, call_service
+        self.get_start_state = get_start_state or get_state
         self.send_print = send_print  # send_print(data) sends one file; raises with the refusal text
         self.get_trays = get_trays or (lambda serial: [])
         self.clock, self.start_timeout = clock, start_timeout
@@ -226,11 +231,16 @@ class Queue:
             self._save()
             return job
 
-    def cancel(self, job_id):
+    def cancel(self, job_id, force=False):
+        """force (the access layer allows it to admins only) removes a printing job the printer never reports as ended."""
         with self.lock:
             job = self._find(job_id)
             if job["state"] == "drying":
                 raise QueueError("this job is drying; stop it first")
+            if force and job["state"] == "printing":
+                self._finish(job, "failed", "removed by admin")
+                self._save()
+                return job
             if job["state"] not in WAITING:
                 raise QueueError("a started job runs on the printer; stop it there")
             self._finish(job, "cancelled")
@@ -325,7 +335,9 @@ class Queue:
         printer = self.registry.get(serial)
         if not printer:
             raise NotFound("unknown printer")
-        status = self.get_state(self.registry.entities(serial)["print_status"])
+        status = self.get_start_state(self.registry.entities(serial)["print_status"])
+        if status is None:  # None is also what an unreadable sensor gives; the person can only wait or look
+            raise QueueError("the status of the printer is older than %d s or unknown; try again in a moment" % START_STATUS_AGE)
         with self.lock:
             if self._busy(serial):
                 raise QueueError("this printer already has a job starting, printing or drying")
@@ -355,10 +367,15 @@ class Queue:
             self.seen_change[serial] = False
             self._save()
         try:
-            err = self._send_dry(serial, job) if dry else self._send(printer, serial, job)
+            err, unsure = self._send_dry(serial, job) if dry else self._send(printer, serial, job)
         except BaseException as e:  # a bad request: nothing was sent
             self._unreserve(job, str(e))
             raise
+        if unsure:  # a timeout: the file may be on the printer, a second send could print twice
+            with self.lock:
+                self._finish(job, "failed", SEND_LOST)
+                self._save()
+            raise QueueError(SEND_LOST)
         if err:
             self._unreserve(job, err)  # stays first in the queue
             raise QueueError(err)
@@ -381,14 +398,14 @@ class Queue:
 
     def _send_dry(self, serial, job):
         if not self.dry:
-            return "drying is not available"
+            return "drying is not available", False
         try:
             self.dry.start(serial, dict(job["dry"]))
-            return None
+            return None, False
         except ValueError:  # the bridge refused the values: a bad request, not a busy printer
             raise
         except Exception as e:  # the bridge's refusal text is the useful part
-            return str(e) or e.__class__.__name__
+            return str(e) or e.__class__.__name__, False
 
     def stop_dry(self, job_id):
         """Stop the AMS and end the job; if the bridge cannot stop it, the job stays so nobody starts a print on a hot AMS."""
@@ -405,7 +422,7 @@ class Queue:
             return job
 
     def _send(self, printer, serial, job):
-        """Returns an error text, or None. Paused entities come back even when the send fails."""
+        """Returns (error text or None, unsure). unsure: the send ended in a timeout. Paused entities come back either way."""
         paused = [e for e in printer["pause_entities"] if self.get_state(e) == "on"]
         try:
             for e in paused:
@@ -419,9 +436,9 @@ class Queue:
                 if k not in data and o.get(k, OPTIONS[k]) != OPTIONS[k]:
                     data[k] = o[k]
             self.send_print(data)
-            return None
+            return None, False
         except Exception as e:  # the guard's refusal text is the useful part
-            return str(e) or e.__class__.__name__
+            return str(e) or e.__class__.__name__, bool(getattr(e, "unsure", False))
         finally:
             for e in paused:
                 try:

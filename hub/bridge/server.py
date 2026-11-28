@@ -69,6 +69,7 @@ STATUS_CACHE = float(env("DW_STATUS_CACHE", "5"))
 STATUS_TIMEOUT = float(env("DW_STATUS_TIMEOUT", "8"))  # under the hub's 10 s, so the hub gets our answer, not its own timeout
 STATUS_STALE = float(env("DW_STATUS_STALE", "600"))
 SNAPSHOT_CACHE = float(env("DW_SNAPSHOT_CACHE", "30"))  # seconds a good snapshot is served again
+PRINT_DAEMON_TIMEOUT = float(env("DW_PRINT_TIMEOUT", "280"))  # seconds; the app waits 300 s, so the bridge answers first
 RETRY_WINDOW = float(env("DW_RETRY_WINDOW", "60"))  # seconds a print start or command waits for a daemon that is not up
 MAX_PRINT_BODY = 50 * 1024 * 1024
 MAX_SMALL_BODY = 8192
@@ -1344,8 +1345,10 @@ def post_print(h, m, body):
                              ("params", None, "application/json", json.dumps(params).encode())])
     acc.upload = {"serial": serial, "stage": "create", "percent": None}
     try:
-        status, answer, actype = call_daemon(acc, "POST", "/print", {"Content-Type": ctype}, data, timeout=300)
-    except Upstream:
+        status, answer, actype = call_daemon(acc, "POST", "/print", {"Content-Type": ctype}, data, timeout=PRINT_DAEMON_TIMEOUT)
+    except Upstream as e:
+        if not e.refused:  # a timeout or a cut connection: the file may have reached the printer, the caller must not send it again
+            return h.send(504, {"error": "daemon did not answer in time; the print may have started"})
         return h.send(503, {"error": "daemon not reachable"})
     finally:
         acc.upload = None
