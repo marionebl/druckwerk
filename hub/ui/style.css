@@ -181,6 +181,9 @@ dialog.modal > .body { padding: 8px 20px 20px; display: grid; gap: 14px; }
 .pcard .trays.flat { display: flex; flex-wrap: wrap; gap: 4px; }
 .pcard .trays.flat .tray { width: 54px; }
 .pcard .tray { padding: 4px 2px; }
+/* Empty slots keep the percent row, so every tray is as tall as a loaded one and the labels line up. */
+.tray { align-content: start; }
+.tray .pc { min-height: 1.45em; }
 
 /* HMS */
 .hms { display: flex; gap: 12px; padding: 12px 14px; border-radius: var(--radius); background: var(--err-soft); border: 1px solid color-mix(in srgb, var(--err) 40%, transparent); color: var(--err); align-items: flex-start; }
