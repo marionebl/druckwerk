@@ -24,12 +24,14 @@ import externals
 import files
 import filament
 import history
+import nozzles
 import printer_state
 import progress
+from gcode_guard import file_nozzle
 from ha import HAError, HAUnavailable
 from queue_access import Access, Caller, Forbidden, Grants, Unauthorized, caller_from_headers
 from queue_engine import WAITING, NotFound, Queue, QueueError
-from queue_registry import Registry
+from queue_registry import Registry, check_nozzles
 from integration import JPEG_PRODUCTS, Integration
 from notify import Notifier
 from sender import Sender
@@ -135,10 +137,12 @@ class App:
         self.registry = Registry(data_dir)
         self.prices = filament.Prices(data_dir)
         self.loads = filament.LoadRequests(data_dir)
+        self.nozzle_requests = nozzles.NozzleRequests(data_dir)
         self.grants = Grants(self.registry, data_dir, self._grant_state, clock)
         self.access = Access(self.registry, self.grants, self.get_user)
         self.queue = Queue(self.registry, data_dir, self.state, self._call_service, self.get_trays, clock=clock,
-                           job_allowed=self.access.job_allowed, dry=Drying(self), send_print=self.send_print)
+                           job_allowed=self.access.job_allowed, dry=Drying(self), send_print=self.send_print,
+                           get_nozzle=self.installed_diameter)
         self.plates_inbox = None  # set by hub.py when the app has a plates token
         self.media_roots = list(MEDIA_ROOTS)
         self.media_dir = MEDIA_DIR
@@ -344,6 +348,18 @@ class App:
     def entity(self, p, key):
         return "sensor.%s_%s" % (p["prefix"], SENSORS[key])
 
+    def installed_nozzle(self, p):
+        """The nozzle in the printer ({"diameter", "type"}), read from its sensors every time; None when they cannot say."""
+        try:
+            return nozzles.installed(self.ha.states(), p["prefix"])
+        except HAError:
+            return None
+
+    def installed_diameter(self, serial):
+        p = self.registry.get(serial)
+        now = p and self.installed_nozzle(p)
+        return now["diameter"] if now else None
+
     def bridge_print(self, serial):
         try:
             status, data = self.bridge_json("GET", "/api/status/" + serial, timeout=10)
@@ -416,6 +432,7 @@ class App:
         tray = b.get("active_tray")
         job = next((j for j in self.queue.jobs if j.get("printer") == serial and j["state"] in ("starting", "printing")), None)
         start, start_job = self.start_steps(serial, v, job)
+        now = self.installed_nozzle(p)
         return {
             "serial": serial, "name": p["name"], "model": p["model"], "role": role,
             "online": v is not None and b["status"] != "offline",
@@ -435,6 +452,7 @@ class App:
             "ams": self.ams(serial, status=v), "external": b.get("external"), "hms": b.get("hms", []),
             "current_job": dict(job) if job else None,
             "start": start, "start_job": start_job,
+            "nozzle": now, "nozzles": nozzles.library(p, now),
             "queue_length": sum(1 for j in self.queue.jobs if j["state"] in WAITING and serial in self.access.serials_of(j)),
         }
 
@@ -516,7 +534,7 @@ class App:
             name = d.get("name") or serial
             prefix = self.default_prefix(serial, name)
             self.registry.put(serial, name=name, model=d.get("dev_product_name") or d.get("dev_model_name") or "",
-                              account=d.get("account"), prefix=prefix, plate_type="", nozzle="", pause_entities=[],
+                              account=d.get("account"), prefix=prefix, plate_type="", pause_entities=[],
                               electricity_kwh_price=0)
             log("registered printer %s as %s" % (serial, prefix))
             self.grants.migrate_owners()  # an older "all printers" owner grant applies to the new printer
@@ -657,7 +675,7 @@ class App:
     @staticmethod
     def config_view(p):
         return {"serial": p["serial"], "name": p["name"], "model": p["model"], "account": p["account"],
-                "ha_prefix": p["prefix"], "plate": p["plate_type"], "nozzle": p["nozzle"],
+                "ha_prefix": p["prefix"], "plate": p["plate_type"], "nozzles": p["nozzles"],
                 "pause_entities": p["pause_entities"], "electricity_kwh_price": p.get("electricity_kwh_price") or 0,
                 "owner": p.get("owner") or ""}
 
@@ -685,7 +703,7 @@ class App:
         prefix = str(b.get("ha_prefix") or "").strip() or self.default_prefix(serial, b.get("name") or serial)
         model = (known and (known.get("dev_product_name") or known.get("dev_model_name"))) or old["model"]
         p = self.registry.put(serial, name=b.get("name"), model=model, account=known["account"] if known else old["account"],
-                              prefix=prefix, plate_type=b.get("plate") or "", nozzle=b.get("nozzle") or "",
+                              prefix=prefix, plate_type=b.get("plate") or "", nozzles=b["nozzles"] if "nozzles" in b else old and old["nozzles"],
                               pause_entities=b.get("pause_entities") or [], electricity_kwh_price=price, owner=owner)
         return self.config_view(p)
 
@@ -920,7 +938,7 @@ class App:
                 png = "api/queue/%s/plate.png" % added["id"]
         tray = (job.get("settings") or {}).get("tray")
         with self.queue.lock:
-            added.update(grams=use["grams"], filament_grams=[f["grams"] for f in use["filaments"]],
+            added.update(nozzle=job.get("nozzle") or file_nozzle(job["result"]), grams=use["grams"], filament_grams=[f["grams"] for f in use["filaments"]],
                          print_seconds=use["seconds"], plate_png=png,
                          slice_tray=[int(tray["ams"]), int(tray["id"])] if tray and tray.get("ams") is not None else None,
                          slice_spool={k: tray.get(k) for k in ("spool_id", "brand", "type", "name", "colour")}
@@ -975,6 +993,7 @@ class App:
         fils = b.get("filaments") or [{"type": x["type"], "colour": x["colour"]} for x in use["filaments"]]
         added = api.add(name, os.path.basename(real), b.get("target", "any"), b.get("model", ""), fils, b.get("options"),
                         name=b.get("name") or base)
+        self.stamp_nozzle(added, real)
         os.makedirs(self.share, exist_ok=True)
         with open(real, "rb") as src, open(os.path.join(self.share, name), "wb") as dst:  # after the access check
             dst.write(src.read())
@@ -990,13 +1009,20 @@ class App:
             self.queue._save()
         return added
 
-    @staticmethod
-    def queue_routes_add(api, b):
+    def queue_routes_add(self, api, b):
         if b.get("kind") == "dry":
             return api.add_dry(b.get("target"), b.get("ams_id"), b.get("temp"), b.get("hours"), b.get("filament", ""),
                                name=b.get("name"))
-        return api.add(b.get("file"), b.get("source", ""), b.get("target", "any"), b.get("model", ""),
-                       b.get("filaments"), b.get("options"), name=b.get("name"))
+        job = api.add(b.get("file"), b.get("source", ""), b.get("target", "any"), b.get("model", ""),
+                      b.get("filaments"), b.get("options"), name=b.get("name"))
+        self.stamp_nozzle(job, os.path.join(self.share, job["file"]))
+        return job
+
+    def stamp_nozzle(self, job, path, diameter=None):
+        """Keep the nozzle a file was sliced for on its job (None when the file does not say)."""
+        with self.queue.lock:
+            job["nozzle"] = diameter or file_nozzle(path)
+            self.queue._save()
 
     def post_drying(self, h, m, q, c):
         """Dry now: a queue job that starts at once, so the busy checks and the queue view are the same as for a queued one."""
@@ -1211,6 +1237,46 @@ class App:
         self.loads.remove(r["id"])
         return {"removed": r["id"]}
 
+    # -- nozzle requests: a user asks the printer's owner to change the nozzle --
+    def get_nozzle_requests(self, h, m, q, c):
+        states = None
+        try:
+            states = self.ha.states()
+        except HAError as e:  # the list itself needs no Home Assistant
+            log("nozzle requests: %s" % e)
+        if states is not None:
+            prefix = {p["serial"]: p["prefix"] for p in self.registry.all()}
+            self.nozzle_requests.settle(lambda serial: nozzles.installed(states, prefix.get(serial, "")))
+        return [r for r in list(self.nozzle_requests.items) if self.load_request_visible(c, r)]
+
+    def post_nozzle_request(self, h, m, q, c):
+        serial, b = m.group(1), h.json()
+        diameter, type_, note = str(b.get("diameter") or ""), b.get("type") or "", b.get("note") or ""
+        check_nozzles([{"diameter": diameter, "type": type_}])
+        if not isinstance(note, str) or len(note) > 200:
+            raise ValueError("note must be text of at most 200 characters")
+        job_id = b.get("job_id") or None
+        if job_id is not None and not re.fullmatch("[0-9a-f]{12}", str(job_id)):
+            raise ValueError("job_id must be a job id")
+        p = self.printer_access(c, serial)
+        if nozzles.matches(self.installed_nozzle(p), diameter, type_):
+            raise HttpError(409, "this nozzle is already in that printer")
+        req, created = self.nozzle_requests.add({
+            "id": secrets.token_hex(6), "printer": serial, "diameter": diameter, "type": type_, "note": note.strip(),
+            "job_id": job_id, "user_id": c.user_id, "user_name": c.display or c.name, "created_at": int(self.clock())})
+        if created:
+            self.emit("nozzle_requested", serial, None, request=dict(req, printer_name=p["name"]))
+        return req
+
+    def delete_nozzle_request(self, h, m, q, c):
+        r = next((x for x in self.nozzle_requests.items if x["id"] == m.group(1)), None)
+        if not r or not self.load_request_visible(c, r):
+            raise NotFound("no such nozzle request")
+        if r["user_id"] != c.user_id and self.access.role(c, r["printer"]) != "admin":
+            raise Forbidden("rule: only the requester or an admin of the printer can cancel this request")
+        self.nozzle_requests.remove(r["id"])
+        return {"removed": r["id"]}
+
     # -- HA lookups, events --
     def get_ha_users(self, h, m, q, c):
         return self.ha_users()
@@ -1419,6 +1485,9 @@ class App:
             ("DELETE", r"/api/spools/(\d{1,19})", w(self.delete_spool)),
             ("POST", r"/api/spools/(\d{1,19})/load-request", w(self.post_load_request)),
             ("GET", r"/api/load-requests", w(self.get_load_requests)),
+            ("POST", r"/api/printers/" + SERIAL + r"/nozzle-request", w(self.post_nozzle_request)),
+            ("GET", r"/api/nozzle-requests", w(self.get_nozzle_requests)),
+            ("DELETE", r"/api/nozzle-requests/([0-9a-f]{12})", w(self.delete_nozzle_request)),
             ("DELETE", r"/api/load-requests/([0-9a-f]{12})", w(self.delete_load_request)),
             ("GET", r"/api/ha/users", w(self.get_ha_users, "ha_admin")),
             ("GET", r"/api/ha/entities", w(self.get_ha_entities, "ha_admin")),

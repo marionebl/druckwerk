@@ -29,7 +29,7 @@ def test_login_is_proxied_to_the_bridge(hub):
 
 
 def test_put_and_delete_printer(hub):
-    body = {"name": "Lab", "ha_prefix": "lab_h2s", "plate": "High Temp Plate", "nozzle": "0.4",
+    body = {"name": "Lab", "ha_prefix": "lab_h2s", "plate": "High Temp Plate", "nozzles": [{"diameter": "0.4", "type": "hardened_steel"}],
             "pause_entities": ["automation.snap"], "electricity_kwh_price": 0.3}
     st, p = hub.req("PUT", "/api/setup/printers/" + SERIAL, body, user=ADMIN)
     assert st == 200 and p["model"] == "H2S" and p["ha_prefix"] == "lab_h2s" and p["account"] == "a_x"
@@ -76,7 +76,7 @@ def test_printers_register_themselves(hub):
     st, printers = hub.req("GET", "/api/printers", user=ADMIN)
     assert [p["serial"] for p in printers] == [SERIAL, SERIAL2]
     assert hub.app.registry.get(SERIAL) == {"serial": SERIAL, "name": "Lab", "model": "H2S", "account": "a_x", "prefix": "lab_h2s",
-                                            "plate_type": "", "nozzle": "", "pause_entities": [], "electricity_kwh_price": "", "owner": ""}
+                                            "plate_type": "", "nozzles": [], "pause_entities": [], "electricity_kwh_price": "", "owner": ""}
     assert hub.app.registry.get(SERIAL2)["prefix"] == "other"
     assert hub.app.config_view(hub.app.registry.get(SERIAL))["electricity_kwh_price"] == 0  # the registry stores 0 as ""
     assert hub.req("GET", "/api/me", user=ADMIN)[1]["setup_done"] is True

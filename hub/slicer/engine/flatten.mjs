@@ -1,5 +1,5 @@
 // usage: node flatten.mjs <profileSet.ts> <profile set dir> <printers.json> <out dir>
-// Writes <out>/<model>.json per printer: its machine preset, the process preset of each quality and every filament
+// Writes <out>/<model>.json per printer (0.4 mm) and <out>/<model>-<diameter>.json per other nozzle: its machine preset, the process preset of each quality and every filament
 // preset that names the printer, all flattened by the engine's own flattenPreset.
 import fs from 'node:fs';
 import path from 'node:path';
@@ -27,7 +27,9 @@ const list = (v) => (Array.isArray(v) ? v : String(v ?? '').split(';').map((s) =
 const first = (v) => list(v)[0] ?? '';
 const filamentNames = new Set([...Object.keys(vendor.presets.filament), ...Object.keys(library.presets.filament)]);
 
-for (const [model, cfg] of Object.entries(printers)) {
+const variants = Object.entries(printers).flatMap(([model, { nozzles = {}, ...cfg }]) =>
+  [[model, '0.4', cfg], ...Object.entries(nozzles).map(([d, n]) => [model, d, n])]);
+for (const [model, diameter, cfg] of variants) {
   const machine = flattenPreset('machine', cfg.preset, sources);
   const process = Object.fromEntries(
     Object.entries(cfg.quality).map(([quality, name]) => [quality, flattenPreset('process', name, sources)]),
@@ -43,6 +45,7 @@ for (const [model, cfg] of Object.entries(printers)) {
     filaments.push({ name, id: first(config.filament_id), type: first(config.filament_type), n: printersOf.length, config });
   }
   if (!filaments.length) throw new Error(`no filament preset names ${cfg.preset}`);
-  fs.writeFileSync(path.join(outDir, `${model}.json`), JSON.stringify({ model, machine, process, filaments }));
-  console.log(`${model}: ${machine.name}, ${Object.keys(process).length} processes, ${filaments.length} filaments`);
+  const file = diameter === '0.4' ? model : `${model}-${diameter}`;
+  fs.writeFileSync(path.join(outDir, `${file}.json`), JSON.stringify({ model, machine, process, filaments }));
+  console.log(`${file}: ${machine.name}, ${Object.keys(process).length} processes, ${filaments.length} filaments`);
 }

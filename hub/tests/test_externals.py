@@ -29,3 +29,12 @@ def test_env_matches_python():
 
 def test_plugin_net_lib_is_one_of_the_libs():
     assert externals.PLUGIN_NET_LIB in externals.PLUGIN_LIBS
+
+
+def test_every_nozzle_has_three_qualities_and_its_own_machine_preset():
+    for model, cfg in externals.PRINTERS.items():
+        assert set(cfg["quality"]) == {"good", "better", "best"}
+        for d, n in cfg["nozzles"].items():
+            assert d != "0.4" and n["preset"] == "Bambu Lab %s %s nozzle" % (model, d)  # 0.4 is the model's own entry
+            assert set(n["quality"]) == {"good", "better", "best"}
+            assert all(q.endswith("%s nozzle" % d) for q in n["quality"].values()), (model, d)

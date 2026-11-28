@@ -78,6 +78,12 @@ class Notifier:
                 note = (": " + r["note"]) if r.get("note") else ""
                 self.notify_owners(serial, "%s asks to load %s into %s%s" % (
                     r.get("user_name") or "Someone", r.get("spool_label"), r.get("printer_name") or serial, note))
+            elif etype == "nozzle_requested":
+                r = event.get("request") or {}
+                note = (": " + r["note"]) if r.get("note") else ""
+                self.notify_owners(serial, "%s asks to put a %s mm %snozzle into %s%s" % (
+                    r.get("user_name") or "Someone", r.get("diameter"), r.get("type", "").replace("_", " ") + " " if r.get("type") else "",
+                    r.get("printer_name") or serial, note))
             elif etype == "approval_needed":
                 self.notify_admins(serial, "%s needs approval to %s %s" % (
                     job.get("owner_name") or "Someone", "dry" if job.get("kind") == "dry" else "print",
@@ -110,7 +116,7 @@ class Notifier:
     def notify_owners(self, serial, message):
         ids = self.owner_ids(serial)
         if not ids:
-            log("load request for %s: the printer has no owner to notify" % serial)
+            log("request for %s: the printer has no owner to notify" % serial)
             return
         self.push(ids, message)
 

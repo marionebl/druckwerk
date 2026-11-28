@@ -21,6 +21,12 @@ PRESETS = {"model": "H2S", "machine": {"name": "Bambu Lab H2S 0.4 nozzle", "prin
                          {"name": "Generic PLA", "id": "GFL99", "type": "PLA", "n": 9, "config": {"name": "Generic PLA"}}]}
 
 
+PRESETS_06 = dict(PRESETS, machine={"name": "Bambu Lab H2S 0.6 nozzle", "printable_area": ["0x0", "350x0", "350x320", "0x320"]},
+                  process={q: {"name": "proc06 " + q} for q in ("good", "better", "best")},
+                  filaments=PRESETS["filaments"] + [{"name": "Acme PA-CF @BBL H2S 0.6 nozzle", "id": "GFN05", "type": "PA-CF", "n": 1,
+                                                    "config": {"required_nozzle_HRC": ["40"]}}])
+
+
 def free_port():
     with socket.socket() as s:
         s.bind(("127.0.0.1", 0))
@@ -42,6 +48,7 @@ def app(tmp_path):
     mport, sport = free_port(), free_port()
     (tmp_path / "engine" / "presets").mkdir(parents=True)
     (tmp_path / "engine" / "presets" / "H2S.json").write_text(json.dumps(PRESETS))
+    (tmp_path / "engine" / "presets" / "H2S-0.6.json").write_text(json.dumps(PRESETS_06))
     (tmp_path / "engine" / "version.json").write_text('{"tag": "t"}')
     (tmp_path / "engine" / "t").mkdir()
     (tmp_path / "engine" / "t" / "engine-mt.wasm").write_bytes(b"\0asm")
@@ -160,3 +167,50 @@ def test_upload_keeps_the_model_and_the_server_does_not_slice(app):
     assert call(base, "GET", "/api/jobs/000000000000/model")[0] == 404
     assert call(base, "POST", "/api/jobs/%s/slice" % jid)[0] == 404  # no body: the server answers 404 without reading one
     assert call(base, "POST", "/api/jobs?name=a.exe", raw=b"x")[0] == 400
+
+
+def slice_with(app, **query):
+    base, _, tmp = app
+    jid = json.loads(call(base, "POST", "/api/jobs?name=Fan.stl", raw=b"solid x")[1])["id"]
+    status, raw = call(base, "POST", "/api/jobs/%s/gcode?%s" % (jid, gcode_query(**query)), raw=b"G1 X1\n")
+    return status, raw, job_result(tmp, jid) if status == 200 else None
+
+
+def packed(path):
+    with zipfile.ZipFile(path) as z:
+        return z.read("Metadata/slice_info.config").decode(), json.loads(z.read("Metadata/project_settings.config"))
+
+
+def test_a_slice_uses_the_presets_of_its_nozzle(app):
+    status, raw, path = slice_with(app, nozzle="0.6", filament="Acme PETG HF @BBL H2S")
+    assert status == 200, raw
+    job = json.loads(raw)
+    info, settings = packed(path)
+    assert job["nozzle"] == "0.6" and job["settings"]["printer"] == "Bambu Lab H2S 0.6 nozzle"
+    assert job["settings"]["process"] == "0.24mm Balanced Quality @BBL H2S 0.6 nozzle"
+    assert settings["printer_settings_id"] == "Bambu Lab H2S 0.6 nozzle" and settings["print_settings_id"] == "proc06 better"
+    assert 'key="nozzle_diameters" value="0.6"' in info
+
+
+def test_a_slice_without_a_nozzle_is_the_04_slice(app):
+    status, raw, path = slice_with(app)
+    job = json.loads(raw)
+    info, settings = packed(path)
+    assert status == 200 and job["nozzle"] == "0.4" and settings["printer_settings_id"] == "Bambu Lab H2S 0.4 nozzle"
+    assert 'key="nozzle_diameters" value="0.4"' in info
+
+
+def test_a_nozzle_without_profiles_is_refused(app):
+    assert slice_with(app, nozzle="0.5")[0] == 400
+    assert call(app[0], "GET", "/api/engine/filament?serial=H2S0001&tray=0:0&nozzle=0.5")[0] == 400
+
+
+def test_filament_presets_come_from_the_nozzles_file_and_hardened_ones_skip_stainless(app):
+    base = app[0]
+    cf = "/api/engine/filament?serial=H2S0001&type=PA-CF&brand=Acme&name=PA-CF&colour=112233&nozzle=0.6"
+    assert json.loads(call(base, "GET", cf)[1]) == {"filament": "Acme PA-CF @BBL H2S 0.6 nozzle"}  # only the 0.6 file has it
+    assert json.loads(call(base, "GET", cf + "&nozzle_type=hardened_steel")[1]) == {"filament": "Acme PA-CF @BBL H2S 0.6 nozzle"}
+    status, raw = call(base, "GET", cf + "&nozzle_type=stainless_steel")
+    assert status == 400 and b"needs a hardened steel nozzle" in raw
+    plain = "/api/engine/filament?serial=H2S0001&tray=0:0&nozzle=0.6&nozzle_type=stainless_steel"
+    assert call(base, "GET", plain)[0] == 200  # PETG does not need one

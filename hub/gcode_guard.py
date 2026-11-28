@@ -19,6 +19,7 @@ from externals import GCODE_MODEL_PREFIX
 
 _PLATE = re.compile(r"Metadata/plate_(\d+)\.gcode")
 _MODEL = re.compile(r"^;\s*printer_model\s*=\s*(.*?)\s*$")
+_NOZZLE = re.compile(r"^;\s*nozzle_diameter\s*=\s*([\d.]+)")
 _E = re.compile(r"\bE(-?\d*\.?\d+)")
 _S = re.compile(r"\bS(-?\d*\.?\d+)")
 _LOAD = re.compile(r"^M620\s+S(\d+)A\b")
@@ -36,6 +37,24 @@ def _norm(model: str) -> str:
 
 def same_model(a: str, b: str) -> bool:
     return _norm(a) == _norm(b)
+
+
+def file_nozzle(path: str) -> str | None:
+    """The `; nozzle_diameter` of the first plate as "0.4" (the first extruder's when there are two), or None."""
+    try:
+        with zipfile.ZipFile(path) as z:
+            plates = sorted((n for n in z.namelist() if _PLATE.fullmatch(n)), key=lambda n: int(_PLATE.fullmatch(n).group(1)))
+            with z.open(plates[0]) as fh:
+                for raw in fh:
+                    line = raw.decode("utf-8", "replace")
+                    if line.startswith("; EXECUTABLE_BLOCK_START"):
+                        return None
+                    m = _NOZZLE.match(line)
+                    if m:
+                        return "%g" % float(m.group(1))
+    except (zipfile.BadZipFile, OSError, IndexError, ValueError):
+        pass
+    return None
 
 
 def file_model(path: str) -> str | None:

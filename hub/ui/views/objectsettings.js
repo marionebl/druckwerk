@@ -18,7 +18,7 @@ const SUPPORT_KEYS = /^(support_|tree_support|enable_support$)/;
 
 const first = (v) => (Array.isArray(v) ? v[0] : v);
 
-// ctx: {engine(), model, quality, bed, filament} for the engine requests; S.obj is the object's settings, kept by the caller.
+// ctx: {engine(), model, nozzle, quality, bed, filament} for the engine requests; S.obj is the object's settings, kept by the caller.
 export function objectCard(S, ctx, { onChange, onPaint, paintSummary }) {
   const box = h('section', { class: 'card stack', id: 'object-settings' });
   let form = S.ovForm || null, view = S.ovView || null, busy = Promise.resolve(), process = null, notice = '';
@@ -48,7 +48,7 @@ export function objectCard(S, ctx, { onChange, onPaint, paintSummary }) {
 
   async function load() {
     if (!eng()) return;
-    process = (await loadPresets(ctx.model)).process[ctx.quality];
+    process = (await loadPresets(ctx.model, ctx.nozzle)).process[ctx.quality];
     take(await call('settings.view', { form: form?.id }));
     render();
   }

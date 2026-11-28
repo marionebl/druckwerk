@@ -12,7 +12,7 @@ export async function mount(ctx, root, parts = []) {
   if (parts[0]) return detailView(ctx, root, decodeURIComponent(parts[0]));
   const state = { dragging: null };
   const list = h('div', { class: 'stack' }, loading());
-  let data = null, names = {}, models = {}, starts = {}, last = '';
+  let data = null, names = {}, models = {}, starts = {}, installed = {}, last = '';
 
   root.append(h('div', { class: 'page-head' }, h('div', null, h('h1', null, 'Queue'),
     h('div', { class: 'sub' }, ctx.isAdmin() ? 'All jobs' : 'Jobs on your printers', ' · finished prints are under ', h('a', { href: '#/history' }, 'History'))),
@@ -21,6 +21,15 @@ export async function mount(ctx, root, parts = []) {
   const isAdminFor = (j) => ctx.me.is_admin || (j.target === 'any' ? ctx.managesAny() : ctx.canManage(j.target));
   const isOwn = (j) => j.owner_user_id === ctx.me.user_id;
   const label = (target) => (target === 'any' ? 'Any compatible printer' : names[target] || target);
+
+  // Why a waiting job cannot start: its nozzle is not the one in the printer. An unknown installed nozzle never blocks.
+  function nozzleWhy(j) {
+    if (!j.nozzle || j.kind === 'dry') return '';
+    const serials = j.target === 'any' ? Object.keys(models).filter((s) => models[s] === j.model) : [j.target];
+    const have = serials.map((s) => installed[s]);
+    if (!have.length || have.some((d) => !d || Number(d) === Number(j.nozzle))) return '';
+    return `This job needs a ${j.nozzle} mm nozzle; the printer has ${have[0]} mm.`;
+  }
 
   async function act(j, action, body, ok) {
     if (await attempt(() => api.jobAction(j.id, action, body), ok)) refresh();
@@ -93,7 +102,8 @@ export async function mount(ctx, root, parts = []) {
       h('button', { class: 'icon-btn', 'aria-label': 'Move up', disabled: idx === 0, onclick: () => step(j, group, -1) }, icon('up')),
       h('button', { class: 'icon-btn', 'aria-label': 'Move down', disabled: idx === group.length - 1, onclick: () => step(j, group, 1) }, icon('down')));
     if (pending && admin) acts.push(btn('Approve', () => act(j, 'approve', undefined, 'Approved'), 'sm primary'), btn('Reject', () => act(j, 'reject', undefined, 'Rejected'), 'sm danger'));
-    if (waiting && admin) acts.push(btn('Start', () => startDialog(j), 'sm'), btn('Skip', () => act(j, 'skip', undefined, 'Skipped'), 'sm'),
+    const why = waiting ? nozzleWhy(j) : '';
+    if (waiting && admin) acts.push(btn('Start', () => startDialog(j), 'sm', { disabled: !!why, title: why || null }), btn('Skip', () => act(j, 'skip', undefined, 'Skipped'), 'sm'),
       j.kind !== 'dry' && btn('Move…', () => moveDialog(j), 'sm'));
     if (j.state === 'drying' && admin) acts.push(btn('Stop drying', () => act(j, 'stop', undefined, 'Drying stopped'), 'sm danger'));
     if (['queued', 'pending_approval', 'starting', 'printing'].includes(j.state) && (admin || own)) acts.push(btn('Cancel', () => act(j, 'cancel', undefined, 'Cancelled'), 'sm danger'));
@@ -101,7 +111,8 @@ export async function mount(ctx, root, parts = []) {
       canOrder && waiting ? h('div', { class: 'grip', title: 'Drag to reorder', 'aria-hidden': 'true' }, icon('grip')) : h('div', { class: 'pos' }, waiting ? idx + 1 : ''),
       j.kind === 'dry' ? h('div', { class: 'thumb' }, '♨') : thumb(j.plate_png),
       h('div', { class: 'main' },
-        h('div', { class: 'row between' }, h('span', { class: 'title' }, h('a', { href: '#/queue/' + j.id }, j.name || j.source || j.file)), pill(stl, cls)),
+        h('div', { class: 'row between' }, h('span', { class: 'title' }, h('a', { href: '#/queue/' + j.id }, j.name || j.source || j.file)),
+          h('span', { class: 'row', style: 'gap:6px' }, why && h('span', { title: why, 'data-nozzle-pill': j.nozzle }, pill(`needs ${j.nozzle} nozzle`, 'warn')), pill(stl, cls))),
         h('div', { class: 'sub' },
           h('span', { class: 'row', style: 'gap:6px' }, h('span', { class: 'avatar' }, (j.owner_name || '?')[0].toUpperCase()), j.owner_name, own && ' (you)'),
           j.grams != null && h('span', null, j.grams.toFixed(0) + ' g'),
@@ -150,8 +161,9 @@ export async function mount(ctx, root, parts = []) {
       const [q, ps] = await Promise.all([api.queue(), api.printers()]);
       names = Object.fromEntries(ps.map((p) => [p.serial, p.name]));
       models = Object.fromEntries(ps.map((p) => [p.serial, p.model]));
+      installed = Object.fromEntries(ps.map((p) => [p.serial, p.nozzle?.diameter]));
       starts = Object.fromEntries(ps.filter((p) => p.start && p.start_job).map((p) => [p.start_job, p.start]));
-      const sig = JSON.stringify([q.jobs, names, starts]);
+      const sig = JSON.stringify([q.jobs, names, starts, installed]);
       if (sig === last || state.dragging || document.querySelector('dialog[open]')) return;
       last = sig; data = q; draw();
     } catch (e) { if (!data) clear(list, empty('Could not load the queue: ' + e.message)); }

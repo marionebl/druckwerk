@@ -40,6 +40,15 @@ JOB_ID = r"([0-9a-f]{12})"
 
 # Preset names per printer model (dev_product_name) live in externals.py. Quality = process profile.
 PRINTERS = externals.PRINTERS
+
+
+def printer_cfg(model, nozzle="0.4"):
+    """Presets of a model for a nozzle diameter ("0.4" is the model's own entry); None when there are none."""
+    cfg = PRINTERS.get(model)
+    if not cfg or nozzle in ("", "0.4"):
+        return cfg
+    n = cfg.get("nozzles", {}).get(nozzle)
+    return dict(cfg, **n) if n else None
 BEDS = ["Cool Plate", "Engineering Plate", "High Temp Plate", "Textured PEI Plate", "Supertack Plate"]
 
 jobs = {}
@@ -276,8 +285,11 @@ def pick(h, body):
         return h.send(400, {"error": "Unknown printer."})
     except (OSError, RuntimeError) as e:
         return h.send(502, {"error": str(e)})
+    cfg = printer_cfg(printer["model"], body.get("nozzle") or "0.4")
+    if not cfg:
+        return h.send(400, {"error": "No profiles for a %s mm nozzle on this printer." % body["nozzle"]})
     quality, bed = body.get("quality"), body.get("bed") or printer["bed"]
-    if quality not in PRINTERS[printer["model"]]["quality"] or bed not in BEDS:
+    if quality not in cfg["quality"] or bed not in BEDS:
         return h.send(400, {"error": "Unknown quality or plate."})
     tray = tray_of(printer, body)
     if not tray:
@@ -298,8 +310,8 @@ def tray_of(printer, body):
             "colour": "#" + (colour if len(colour) == 6 else "C8C8C8"), "spool_id": str(body.get("spool") or "") or None}
 
 
-def presets_of(model):
-    with open(os.path.join(ENGINE, "presets", model + ".json")) as f:
+def presets_of(model, nozzle="0.4"):
+    with open(os.path.join(ENGINE, "presets", model + ("" if nozzle in ("", "0.4") else "-" + nozzle) + ".json")) as f:
         return json.load(f)
 
 
@@ -332,13 +344,19 @@ def get_filament(h, m, q):
         tray = tray_of(printer, arg)
         if not tray:
             raise StopIteration
-        f = choose_filament(presets_of(printer["model"])["filaments"], tray)
+        nozzle = arg.get("nozzle") or "0.4"
+        if not printer_cfg(printer["model"], nozzle):
+            return h.send(400, {"error": "No profiles for a %s mm nozzle on this printer." % nozzle})
+        f = choose_filament(presets_of(printer["model"], nozzle)["filaments"], tray)
     except StopIteration:
         return h.send(400, {"error": "Pick a printer and a loaded AMS tray or a library spool."})
     except (OSError, RuntimeError) as e:
         return h.send(502, {"error": str(e)})
     if not f:
         return h.send(400, {"error": "No filament preset for %s (%s)." % (tray["name"], tray["type"])})
+    # A preset that wants a hardened nozzle (required_nozzle_HRC above the plain steel value) is refused for a stainless one.
+    if arg.get("nozzle_type") == "stainless_steel" and max(map(int, f["config"].get("required_nozzle_HRC") or [0])) > 3:
+        return h.send(400, {"error": "%s needs a hardened steel nozzle." % f["name"].split(" @")[0]})
     h.send(200, {"filament": f["name"]})
 
 
@@ -377,9 +395,10 @@ def post_gcode(h, m, q):
     if not picked:
         return
     printer, quality, bed, tray = picked
-    cfg = PRINTERS[printer["model"]]
+    nozzle = arg.get("nozzle") or "0.4"
+    cfg = printer_cfg(printer["model"], nozzle)
     try:
-        presets = presets_of(printer["model"])
+        presets = presets_of(printer["model"], nozzle)
         filament = next(x for x in presets["filaments"] if x["name"] == arg.get("filament"))
         seconds, grams, metres = int(float(arg["seconds"])), float(arg["grams"]), float(arg.get("metres") or 0)
     except (OSError, StopIteration, KeyError, ValueError):
@@ -389,8 +408,8 @@ def post_gcode(h, m, q):
     os.makedirs(out)
     result = os.path.join(out, os.path.splitext(os.path.basename(job["model"]))[0] + ".gcode.3mf")
     pack.pack(result, gcode, {"machine": presets["machine"], "process": presets["process"][quality]},
-              filament, bed, cfg["model_id"], tray["colour"], seconds, grams, metres, job["filename"])
-    job.update(state="done", result=result, info=slice_info(result), quality=quality, error=None, sent=None,
+              filament, bed, cfg["model_id"], tray["colour"], seconds, grams, metres, job["filename"], nozzle or "0.4")
+    job.update(state="done", result=result, info=slice_info(result), quality=quality, nozzle=nozzle, error=None, sent=None,
                printer={k: printer[k] for k in ("serial", "name", "model")},
                settings={"printer": cfg["preset"], "process": cfg["quality"][quality], "filament": filament["name"],
                          "bed": bed, "tray": tray},

@@ -64,14 +64,15 @@ export function placeOnBed(pos, machine) {
   return pos;
 }
 
-// The presets of a printer model, loaded once. Per request they are cut to what the engine needs.
-export async function loadPresets(model) {
-  return (cache.presets[model] ||= await (await fetch(`engine/presets/${model}.json`)).json());
+// The presets of a printer model and nozzle (0.4 mm is the model's own file), loaded once. Per request they are cut to what the engine needs.
+export async function loadPresets(model, nozzle = '0.4') {
+  const file = nozzle === '0.4' ? model : `${model}-${nozzle}`;
+  return (cache.presets[file] ||= await (await fetch(`engine/presets/${file}.json`)).json());
 }
 
 // The flattened configs of a variant. Orca refuses PETG on its default Cool Plate, so the plate must be set.
-export async function variantConfigs(model, quality, bed, filamentName) {
-  const presets = await loadPresets(model);
+export async function variantConfigs(model, quality, bed, filamentName, nozzle = '0.4') {
+  const presets = await loadPresets(model, nozzle);
   const filament = presets.filaments.find((f) => f.name === filamentName);
   if (!filament) throw new Error('No filament preset ' + filamentName);
   return { machine: { ...presets.machine, curr_bed_type: bed }, process: { ...presets.process[quality], curr_bed_type: bed }, filament: filament.config };
@@ -79,11 +80,11 @@ export async function variantConfigs(model, quality, bed, filamentName) {
 
 // Settings service of the engine (settings.view, settings.edit). Configs travel once per engine and then by hash.
 export async function settingsCall(eng, ctx, op, params) {
-  const { model, quality, bed, filament } = ctx;
-  const c = await variantConfigs(model, quality, bed, filament);
+  const { model, quality, bed, filament, nozzle = '0.4' } = ctx;
+  const c = await variantConfigs(model, quality, bed, filament, nozzle);
   eng.sent ||= new Set();
   const ref = (kind, hash, config) => (eng.sent.has(hash) ? { hash } : { hash, config });
-  const refs = { machine: ref('m', `m:${model}:${bed}`, c.machine), process: ref('p', `p:${model}:${quality}:${bed}`, c.process), filament: ref('f', `f:${model}:${filament}`, c.filament) };
+  const refs = { machine: ref('m', `m:${model}-${nozzle}:${bed}`, c.machine), process: ref('p', `p:${model}-${nozzle}:${quality}:${bed}`, c.process), filament: ref('f', `f:${model}-${nozzle}:${filament}`, c.filament) };
   const body = { presets: refs, env: { mode: 'expert', vendor: 'BBL', filamentCount: 1 }, ...params };
   try {
     const r = await eng.request(op, body);
@@ -107,9 +108,10 @@ export function effectiveObjectConfig(config, process, paint) {
 // opts: file, jobId, model, serial, fil, bed, quality, onProgress, objectConfig (ConfigPatch), paint ({positions, states} from paint.js).
 // Returns the job and the slice time.
 export async function sliceVariant(eng, opts) {
-  const { file, jobId, model, serial, fil, bed, quality } = opts;  // fil: {tray} or a library spool, see api.engineFilament
+  const { file, jobId, model, serial, bed, quality } = opts, nozzle = opts.nozzle || '0.4';
+  const fil = { ...opts.fil, nozzle, ...(opts.nozzleType && { nozzle_type: opts.nozzleType }) };  // fil: {tray} or a library spool, see api.engineFilament
   const [{ filament: name }, buf] = await Promise.all([api.engineFilament(serial, fil), file.arrayBuffer()]);
-  const c = await variantConfigs(model, quality, bed, name);
+  const c = await variantConfigs(model, quality, bed, name, nozzle);
   const { machine, process } = c;
   const painted = opts.paint ? toObjectPaint(opts.paint.states) : null;
   // Painted triangles are numbered in the refined mesh that the painter made, so that mesh goes to the engine.
