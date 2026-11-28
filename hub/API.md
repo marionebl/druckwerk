@@ -149,8 +149,8 @@ Two base URLs: `hub_url` is the app on port 8099 (every route below). `bridge_ur
 | `PUT /api/upload/<name>` | Store an uploaded print file. |
 | `GET /api/integration/printers/<serial>/image` | The picture of the current print (PNG). |
 | `GET /api/integration/printers/<serial>/snapshot` | The camera still (JPEG). |
-| `POST /api/integration/printers/<serial>/light` | Switch the chamber light. |
-| `POST /api/integration/printers/<serial>/rfid` | Make the AMS read a slot's tag again. |
+| `POST /api/integration/printers/<serial>/light` | Switch the chamber light. With `X-Druckwerk-Act-As`: admin of the printer only (403 otherwise). |
+| `POST /api/integration/printers/<serial>/rfid` | Make the AMS read a slot's tag again. With `X-Druckwerk-Act-As`: admin of the printer only (403 otherwise). |
 | `POST /api/queue/<id>/cancel`, `POST /api/queue/<id>/reorder` | The existing queue routes, used by the todo entity. |
 
 `<serial>` matches `[A-Za-z0-9_-]{1,40}`.

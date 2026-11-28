@@ -1671,15 +1671,22 @@ class App:
                 return h.send(200, f.read(), "image/jpeg")
         self.proxy(h, "/api/camera/%s/snapshot" % serial)
 
+    def admin_caller(self, h, serial, what):
+        """An integration route that changes a printer: the act-as user must be an admin of it, as in the web UI."""
+        c = self.internal_caller(h)
+        if (h.headers.get(ACT_AS_HEADER) or "").strip() and self.access.role(c, serial) != "admin":
+            raise Forbidden("rule: only an admin of the printer can " + what)
+        return c
+
     def post_light(self, h, m, q):
-        self.internal_caller(h)
+        self.admin_caller(h, m.group(1), "switch its light")
         on = h.json().get("on")
         if not isinstance(on, bool):
             raise ValueError('Body must be {"on": true|false}.')
         h.send(200, self.bridge_ok("POST", "/api/light/" + m.group(1), {"on": on}, timeout=60))
 
     def post_rfid(self, h, m, q):
-        self.internal_caller(h)
+        self.admin_caller(h, m.group(1), "re-read its AMS slots")
         b = h.json()
         h.send(200, self.bridge_ok("POST", "/api/rfid/" + m.group(1),
                                    {"ams_id": b.get("ams_id", 0), "slot_id": b.get("slot_id")}, timeout=60))

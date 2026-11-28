@@ -4,7 +4,7 @@
 
 - Bridge (port 8098): only the app on loopback may use it. Other clients get 403, except `GET /api/camera/<serial>/live` (go2rtc cannot send a header) and `GET /api/health`, which no longer lists account email addresses for them. Before, any client in the Home Assistant network could print, pause and delete a cloud account.
 - `druckwerk.print_file` obeys the calling user: with a user id only an admin of the printer (HA admin or printer owner) may send, and only they can use `force`. A call without a user stays admin.
-- Integration 0.15.0: the to-do list, the chamber light and the buttons send the HA user id (`X-Druckwerk-Act-As`), so the app's rules apply to them. The upload route answers 401 and counts a failed login for a secret with a byte that is not UTF-8 (it was a 500).
+- Integration 0.15.0: the to-do list, the chamber light and the buttons send the HA user id (`X-Druckwerk-Act-As`), so the app's rules apply to them. The light and the slot re-read need an admin of the printer (HA admin or owner), as in the web UI. The upload route answers 401 and counts a failed login for a secret with a byte that is not UTF-8 (it was a 500).
 - A negative or non-numeric `Content-Length` is a 400 in the bridge and the app (the app read until the client closed). The bridge has a read timeout of 30 s, the app of 120 s.
 - The login daemon and ffmpeg of the bridge start with `PATH`, `HOME`, `LANG` and `TZ` only; they no longer get `SUPERVISOR_TOKEN`.
 - An empty `HUB_INGRESS_IPS` uses the default ingress address 172.30.32.2. Before, it made each network client a trusted ingress gateway.
