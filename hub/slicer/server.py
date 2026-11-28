@@ -21,11 +21,12 @@ from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from urllib.parse import parse_qs, urlsplit
 
 HERE = os.path.dirname(os.path.abspath(__file__))
-for _d in (HERE, os.path.dirname(HERE)):  # python -I drops the script dir; the repo keeps externals.py one level up
+for _d in (HERE, os.path.dirname(HERE), os.path.join(os.path.dirname(HERE), "queue")):  # python -I drops the script dir; the repo keeps externals.py one level up
     sys.path.insert(0, _d)
 import externals  # noqa: E402
 from httplen import content_length  # noqa: E402
 import pack  # noqa: E402
+from queue_registry import write_json  # noqa: E402
 
 env = os.environ.get
 JOBS = env("SLICER_JOBS", "/data/jobs")
@@ -110,8 +111,9 @@ def job_dir(jid):
 
 
 def save_job(job):
-    with open(os.path.join(job_dir(job["id"]), "job.json"), "w") as f:
-        json.dump(job, f)
+    path = os.path.join(job_dir(job["id"]), "job.json")
+    write_json(path, job)
+    os.chmod(path, 0o644)  # mkstemp makes 0600; the jobs folder is shared with tests that run as another user
 
 
 def load_jobs():
@@ -449,19 +451,30 @@ def post_print(h, m, q):
     if body.get("confirm") is not True:
         return h.send(400, {"error": "Confirm the print first."})
     os.makedirs(SHARE, exist_ok=True)
-    dest = os.path.join(SHARE, print_name(job))
+    dest = os.path.join(SHARE, print_name(job).replace(".gcode.3mf", "_%s.gcode.3mf" % secrets.token_hex(3)))
     shutil.copyfile(job["result"], dest)
     call = {"serial": job["printer"]["serial"], "file": dest, "use_ams": True, "bed_leveling": True,
             "timelapse": bool(body.get("timelapse")), "force": bool(body.get("force"))}
-    if PRINT:  # the app sends the file itself
-        try:
-            status, answer = 200, PRINT(call)
-        except Exception as e:  # noqa: BLE001 - the refusal text is what the person needs
-            status, answer = getattr(e, "status", 400 if isinstance(e, ValueError) else 502), {"error": str(e)}
-    else:
-        token = env("SUPERVISOR_TOKEN", "")
-        status, answer = http_json("POST", CORE + "/services/druckwerk/print_file?return_response", call,
-                                   {"Authorization": "Bearer " + token}, timeout=360)
+    status = None
+    try:
+        if PRINT:  # the app sends the file itself
+            try:
+                status, answer = 200, PRINT(call)
+            except Exception as e:  # noqa: BLE001 - the refusal text is what the person needs
+                status, answer = getattr(e, "status", 400 if isinstance(e, ValueError) else 502), {"error": str(e)}
+        else:
+            token = env("SUPERVISOR_TOKEN", "")
+            status, answer = http_json("POST", CORE + "/services/druckwerk/print_file?return_response", call,
+                                       {"Authorization": "Bearer " + token}, timeout=360)
+    finally:
+        # The printer's picture (integration, preview) reads the sent copy while it prints, so the copy of a sent
+        # print stays until this slice is sent again; a refused send leaves none.
+        old = (job.get("sent") or {}).get("file")
+        for path in ([dest] if status != 200 else []) + ([old] if status == 200 and old and old != dest else []):
+            try:
+                os.remove(path)
+            except OSError:
+                pass
     job["sent"] = {"at": time.time(), "file": dest, "status": status, "answer": answer}
     save_job(job)
     log("print %s -> %s: %s" % (os.path.basename(dest), job["printer"]["serial"], status))
@@ -508,8 +521,12 @@ class Handler(BaseHTTPRequestHandler):
 
     def send(self, status, body, ctype="application/json"):
         data = body if isinstance(body, bytes) else json.dumps(body).encode()
-        self.head(status, ctype, len(data), "no-store")
-        self.wfile.write(data)
+        try:
+            self.head(status, ctype, len(data), "no-store")
+            self.wfile.write(data)
+        except (BrokenPipeError, ConnectionResetError):  # the client gave up before the answer
+            self.close_connection = True
+            log("client went away: %s %s" % (self.command, urlsplit(self.path).path))
 
     def send_file(self, path, ctype, cache):
         with open(path, "rb") as f:

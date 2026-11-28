@@ -2,8 +2,10 @@
 import json
 import os
 import re
+import sys
 import tempfile
 import threading
+import time
 
 NOZZLE_SIZES = ("0.2", "0.4", "0.6", "0.8")  # mm, the sizes Bambu printers take
 FIELDS = ("name", "model", "account", "prefix", "plate_type", "nozzles", "pause_entities", "electricity_kwh_price", "owner")  # owner: HA user id or ""
@@ -22,11 +24,31 @@ def check_nozzles(nozzles):
 
 
 def write_json(path, data):
-    # Write-then-rename so a crash never leaves a half-written queue file.
+    # Write-then-rename, with fsync first: after a power loss the rename must not point at an empty file.
     fd, tmp = tempfile.mkstemp(dir=os.path.dirname(path), suffix=".tmp")
-    with os.fdopen(fd, "w") as f:
-        json.dump(data, f, indent=1)
-    os.replace(tmp, path)
+    try:
+        with os.fdopen(fd, "w") as f:
+            json.dump(data, f, indent=1)
+            f.flush()
+            os.fsync(f.fileno())
+        os.replace(tmp, path)
+    except BaseException:
+        if os.path.exists(tmp):
+            os.remove(tmp)
+        raise
+
+
+def read_json(path, default):
+    """The file's JSON; a missing file or a damaged one (set aside as <name>.corrupt-<time>) gives the default."""
+    try:
+        with open(path) as f:
+            return json.load(f)
+    except FileNotFoundError:
+        return default
+    except (ValueError, KeyError):
+        os.replace(path, "%s.corrupt-%d" % (path, time.time()))
+        print("druckwerk: %s is damaged; moved aside, starting empty" % path, file=sys.stderr, flush=True)
+        return default
 
 
 class Registry:
@@ -34,22 +56,16 @@ class Registry:
         self.path = os.path.join(data_dir, "printers.json")
         self.lock = threading.RLock()
         os.makedirs(data_dir, exist_ok=True)
-        self.printers = {}
-        if os.path.exists(self.path):
-            with open(self.path) as f:
-                self.printers = json.load(f)
-            old = [p for p in self.printers.values() if "nozzle" in p]
-            for p in old:  # the single nozzle of earlier versions becomes the library's first entry
-                p["nozzles"] = p.get("nozzles") or ([{"diameter": p["nozzle"], "type": ""}] if p["nozzle"] in NOZZLE_SIZES else [])
-                del p["nozzle"]
-            if old:
-                write_json(self.path, self.printers)
+        self.printers = read_json(self.path, {})
+        old = [p for p in self.printers.values() if "nozzle" in p]
+        for p in old:  # the single nozzle of earlier versions becomes the library's first entry
+            p["nozzles"] = p.get("nozzles") or ([{"diameter": p["nozzle"], "type": ""}] if p["nozzle"] in NOZZLE_SIZES else [])
+            del p["nozzle"]
+        if old:
+            write_json(self.path, self.printers)
         # Serials an admin removed: auto-registration skips them. Own file, so printers.json keeps its format.
         self.removed_path = os.path.join(data_dir, "removed_printers.json")
-        self.removed = []
-        if os.path.exists(self.removed_path):
-            with open(self.removed_path) as f:
-                self.removed = json.load(f)
+        self.removed = read_json(self.removed_path, [])
 
     def put(self, serial, **fields):
         serial = str(serial or "").strip()

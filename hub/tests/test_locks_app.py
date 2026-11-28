@@ -90,7 +90,9 @@ def test_a_blocked_send_from_the_notification_does_not_stop_the_next_event(hub):
     queue_two(hub)
     inside, release = blocker(hub.app.queue, "send_print")
     t0 = time.time()
-    hub.app.notifier.on_action({"action": "DRUCKWERK_START_" + SERIAL})
+    jid = hub.app.queue.jobs[0]["id"]
+    hub.app.notifier.pushed[(SERIAL, jid)] = hub.now  # as the notification of a finished job records it
+    hub.app.notifier.on_action({"action": "DRUCKWERK_START_%s_%s" % (SERIAL, jid)}, ADMIN)
     assert time.time() - t0 < LIMIT  # on_action returned while the send still runs
     assert inside.wait(5)
     release.set()

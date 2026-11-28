@@ -2,16 +2,16 @@
 
 App.emit() queues an event; run() sends it from its own thread so a slow Home Assistant never holds up a request.
 """
-import json
 import os
 import queue
 import sys
 import threading
 
-from queue_registry import write_json
+from queue_registry import read_json, write_json
 
 EVENT_PREFIX = "druckwerk_"  # bus event type: druckwerk_<event type>
-ACTION_PREFIX = "DRUCKWERK_START_"  # notification button action: DRUCKWERK_START_<serial>
+ACTION_PREFIX = "DRUCKWERK_START_"  # notification button action: DRUCKWERK_START_<serial>_<job id>
+ACTION_MAX_AGE = 30 * 60  # seconds a button works; the plate may have been used since
 TITLE = "Druckwerk"
 
 
@@ -24,10 +24,9 @@ class Notifier:
         self.app = app
         self.path = os.path.join(app.data_dir, "integration.json")
         self.todo = queue.SimpleQueue()
+        self.pushed = {}  # (serial, job id) -> time of the notification; a button works only for a notification made here
         self.options = {"recipients": {}}
-        if os.path.exists(self.path):
-            with open(self.path) as f:
-                self.options.update(json.load(f))
+        self.options.update(read_json(self.path, {}))
 
     # -- options the integration pushes
     def set_options(self, body):
@@ -72,8 +71,10 @@ class Notifier:
             if etype == "job_done":
                 nxt = self.next_job(serial, exclude=job.get("id"))
                 if nxt:
+                    self.pushed = {k: t for k, t in self.pushed.items() if self.app.clock() - t < ACTION_MAX_AGE}
+                    self.pushed[(serial, nxt["id"])] = self.app.clock()
                     self.notify_admins(serial, "Plate clear? Start next: %s" % (nxt.get("name") or nxt.get("file")),
-                                       [{"action": ACTION_PREFIX + serial, "title": "Plate clear, start"}])
+                                       [{"action": "%s%s_%s" % (ACTION_PREFIX, serial, nxt["id"]), "title": "Plate clear, start"}])
             elif etype == "load_requested":
                 r = event.get("request") or {}
                 note = (": " + r["note"]) if r.get("note") else ""
@@ -137,17 +138,27 @@ class Notifier:
             except Exception as e:  # noqa: BLE001 - one broken phone must not stop the others
                 log("cannot notify %s: %s" % (person, e))
 
-    def on_action(self, data):
-        """A button on a notification was pressed (HA event mobile_app_notification_action)."""
+    def on_action(self, data, user_id=None):
+        """A button on a notification was pressed (HA event mobile_app_notification_action).
+        user_id: the Home Assistant user of the phone that sent the event (the event's context)."""
         action = str(data.get("action", ""))
         if not action.startswith(ACTION_PREFIX):
             return
+        serial, _, job_id = action[len(ACTION_PREFIX):].rpartition("_")
         # The send can take minutes; the watcher thread must go on delivering events.
-        threading.Thread(target=self._start, args=(action[len(ACTION_PREFIX):],), name="druckwerk-start", daemon=True).start()
+        threading.Thread(target=self._start, args=(serial, job_id, user_id), name="druckwerk-start", daemon=True).start()
 
-    def _start(self, serial):
+    def _start(self, serial, job_id, user_id):
         try:
-            self.app.queue.start(serial, plate_clear=True)
+            made = self.pushed.get((serial, job_id))
+            if made is None or self.app.clock() - made > ACTION_MAX_AGE:
+                raise ValueError("the notification is unknown or older than %d min" % (ACTION_MAX_AGE // 60))
+            if user_id not in self.admin_ids(serial):  # also refuses an event without a user
+                raise ValueError("the phone's user is no admin of the printer")
+            nxt = self.next_job(serial)
+            if not nxt or nxt["id"] != job_id:
+                raise ValueError("the job is no longer the first in the queue")
+            self.app.queue.start(serial, plate_clear=True, job_id=job_id)
             self.app.sync()
         except Exception as e:  # noqa: BLE001 - nobody waits for this; the queue shows the job's error
             log("start-next failed: %s" % e)

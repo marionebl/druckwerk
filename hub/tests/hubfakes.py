@@ -138,6 +138,7 @@ class FakeBridge(BaseHTTPRequestHandler):
     printer_extra = {}  # serial -> fields merged into GET /api/printers (print_status, live)
     status = {}  # serial -> the `print` object GET /api/status/<serial> answers (default: DEFAULT_PRINT)
     status_fail = set()  # serials whose status answers 503
+    status_age = {}  # serial -> seconds the bridge says its answer is old (header X-Status-Age)
     upload = {}  # serial -> what GET /api/print-progress/<serial> answers
     post_answer = {}  # path -> (status, body) instead of the usual answer
     library = {}  # account -> spools as the bridge's /api/filament lists them
@@ -146,10 +147,12 @@ class FakeBridge(BaseHTTPRequestHandler):
     files = {}  # path -> bytes the fake serves for a cloud 3MF download
     file_url = None  # what GET /api/tasks/file answers (None: the cloud has no file, 502)
 
-    def reply(self, code, body, ctype="application/json"):
+    def reply(self, code, body, ctype="application/json", headers=None):
         data = body if isinstance(body, bytes) else json.dumps(body).encode()
         self.send_response(code)
         self.send_header("Content-Type", ctype)
+        for k, v in (headers or {}).items():
+            self.send_header(k, v)
         self.send_header("Content-Length", str(len(data)))
         self.end_headers()
         self.wfile.write(data)
@@ -180,7 +183,8 @@ class FakeBridge(BaseHTTPRequestHandler):
             serial = self.path.rsplit("/", 1)[1]
             if serial in FakeBridge.status_fail:
                 return self.reply(503, {"error": "no status from the printer"})
-            return self.reply(200, {"print": FakeBridge.status.get(serial, DEFAULT_PRINT.get(serial, {}))})
+            return self.reply(200, {"print": FakeBridge.status.get(serial, DEFAULT_PRINT.get(serial, {}))},
+                              headers={"X-Status-Age": str(FakeBridge.status_age.get(serial, 0.0))})
         if self.path.startswith("/api/print-progress/"):
             return self.reply(200, FakeBridge.upload.get(self.path.rsplit("/", 1)[1], {}))
         if self.path.startswith("/api/drying/"):
@@ -258,6 +262,7 @@ class Hub:
         FakeBridge.drying, FakeBridge.drying_fail = [], {}
         FakeBridge.printer_extra, FakeBridge.post_answer = {}, {}
         FakeBridge.status, FakeBridge.status_fail, FakeBridge.upload = {}, set(), {}
+        FakeBridge.status_age = {}
         FakeBridge.library, FakeBridge.library_fail, FakeBridge.library_calls = {}, None, []
         FakeBridge.files, FakeBridge.file_url = {}, None
         self.bridge = ThreadingHTTPServer(("127.0.0.1", 0), FakeBridge)
@@ -341,9 +346,8 @@ class Hub:
     def grant(self, user, printer=SERIAL, **kw):
         return self.app.grants.add(user, printer, **kw)
 
-    def sliced(self, owner=USER):
+    def sliced(self, owner=USER, jid="a1b2c3d4e5f6"):
         """A finished slice job as the slicer app keeps it, with the real slice_info.config."""
-        jid = "a1b2c3d4e5f6"
         d = self.tmp / "jobs" / jid
         d.mkdir(parents=True, exist_ok=True)
         result = make_3mf(d / "result.gcode.3mf")

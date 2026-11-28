@@ -8,6 +8,7 @@ import shlex
 import signal
 import socket
 import stat
+import struct
 import subprocess
 import sys
 import tempfile
@@ -418,6 +419,25 @@ class FlowVariantsTest(unittest.TestCase):
             self.assertEqual(s.req("POST", "/api/login/start", {"email": "a@x.org"})[0], 400)
         finally:
             s.close()
+
+
+class PrintTimeoutTest(unittest.TestCase):
+    """A daemon that does not answer a print in time gives 504, not 503: the file may be on the printer."""
+
+    def test_a_slow_daemon_gives_504_and_the_default_waits_less_than_the_app(self):
+        cloud = mock_cloud.start()
+        s = Server(cloud, extra_env={"MOCK_SLOW": "3", "DW_PRINT_TIMEOUT": "1"})
+        try:
+            s.json("POST", "/api/login/start", {"email": "a@example.com", "password": "pw"})
+            s.json("POST", "/api/login/code", {"code": "123456"})
+            st, d = s.json("POST", "/api/print", {"serial": "SERIAL001", "filename": "slow.gcode.3mf",
+                                                  "file_b64": base64.b64encode(b"x").decode()})
+            self.assertEqual(st, 504)
+            self.assertIn("may have started", d["error"])
+        finally:
+            s.close()
+        src = open(SERVER_PY).read()
+        self.assertIn('env("DW_PRINT_TIMEOUT", "280")', src)  # the app's own timeout is 300 s
 
 
 class LoginLockTest(unittest.TestCase):
@@ -1063,6 +1083,57 @@ class DaemonOutageTest(unittest.TestCase):
         self.assertEqual((st, json.loads(data)), (503, {"error": "daemon not reachable"}))
         self.assertGreaterEqual(time.time() - t0, 3.4)
         os.unlink(self.gate)
+
+
+class DaemonLoopErrorTest(unittest.TestCase):
+    """An exception while the daemon's output is read must not end the restart loop."""
+
+    def test_a_line_that_note_progress_cannot_parse_restarts_the_daemon(self):
+        cloud = mock_cloud.start()
+        tmp = tempfile.TemporaryDirectory()
+        mark = os.path.join(tmp.name, "mark")
+        wrapper = os.path.join(tmp.name, "wrapper.py")
+        with open(wrapper, "w") as f:
+            f.write("import os, sys, time\n"
+                    "if not os.path.exists(%r):\n"
+                    "    open(%r, 'w').close()\n"
+                    # a code with 5000 digits: int() refuses it, so note_progress raises
+                    "    print('print progress stage=\"Upload\" code=' + '9' * 5000, flush=True)\n"
+                    "    time.sleep(600)\n"
+                    "os.execv(sys.executable, [sys.executable, '-I', %r, sys.argv[1], sys.argv[2]])\n"
+                    % (mark, mark, os.path.join(HERE, "mock_daemon.py")))
+        s = Server(cloud, "%s %s" % (sys.executable, wrapper))
+        try:
+            login(s, "a@example.com")
+            self.assertTrue(daemon_up(s, s.base), s.logtext())
+            self.assertIn("loop error: ValueError", s.logtext())
+            self.assertEqual(s.json("GET", "/api/health")[1]["accounts"][0]["daemon"]["running"], True)
+        finally:
+            s.close()
+            tmp.cleanup()
+
+
+class ClientGoneTest(unittest.TestCase):
+    """A client that closes before the answer is not an error of the bridge."""
+
+    def test_a_closed_socket_leaves_one_log_line_and_no_traceback(self):
+        cloud = mock_cloud.start()
+        s = Server(cloud, extra_env={"MOCK_SLOW": "1.5"})
+        try:
+            login(s, "a@example.com")
+            daemon_up(s, s.base)
+            body = json.dumps({"serial": "SERIAL001", "filename": "slow.gcode.3mf", "file_b64": base64.b64encode(b"x").decode()})
+            sock = socket.create_connection(("127.0.0.1", s.port))
+            sock.sendall(("POST /api/print HTTP/1.1\r\nHost: x\r\nContent-Length: %d\r\n\r\n%s" % (len(body), body)).encode())
+            time.sleep(0.4)
+            sock.setsockopt(socket.SOL_SOCKET, socket.SO_LINGER, struct.pack("ii", 1, 0))  # close with a reset
+            sock.close()
+            self.assertTrue(wait_for(lambda: "client went away" in s.logtext(), 5), s.logtext())
+            time.sleep(0.5)
+            self.assertNotIn("Traceback", s.logtext())
+            self.assertEqual(s.logtext().count("client went away"), 1)
+        finally:
+            s.close()
 
 
 class MigrationTest(unittest.TestCase):

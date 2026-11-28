@@ -71,7 +71,8 @@ def test_job_done_with_a_next_job_asks_admins_who_are_home_to_start_it(hub):
     assert [s for s, _ in sent] == ["mobile_app_ada", "mobile_app_cy"]
     data = sent[0][1]
     assert data["title"] == "Druckwerk" and data["message"] == "Plate clear? Start next: Second"
-    assert data["data"] == {"actions": [{"action": "DRUCKWERK_START_" + SERIAL, "title": "Plate clear, start"}]}
+    second = hub.app.queue.jobs[0]["id"]
+    assert data["data"] == {"actions": [{"action": "DRUCKWERK_START_%s_%s" % (SERIAL, second), "title": "Plate clear, start"}]}
 
 
 def test_no_notification_without_a_next_job_or_recipients(hub):
@@ -112,18 +113,70 @@ def test_approval_needed_notifies_admins(hub):
         ("mobile_app_ada", "U-USER needs approval to print Benchy", {}), ("mobile_app_cy", "U-USER needs approval to print Benchy", {})]
 
 
-def test_the_notification_button_starts_the_next_job_with_plate_clear(hub):
-    _, second = finish_first_job(hub)
-    hub.app.notifier.on_action({"action": "DRUCKWERK_START_" + SERIAL})
+def button(hub, second, user=ADMIN):
+    """Press the button of the notification for `second`, as the phone's owner `user`."""
+    hub.app.notifier.on_action({"action": "DRUCKWERK_START_%s_%s" % (SERIAL, second["id"])}, user)
     wait_threads("druckwerk-start")
-    states = {j["id"]: j["state"] for j in hub.app.queue.jobs + hub.app.queue.history}
-    assert states[second["id"]] == "starting"
+
+
+def states(hub):
+    return {j["id"]: j["state"] for j in hub.app.queue.jobs + hub.app.queue.history}
+
+
+def test_the_notification_button_starts_the_notified_job_with_plate_clear(hub):
+    _, second = finish_first_job(hub)
+    hub.app.notifier.flush()
+    button(hub, second)
+    assert states(hub)[second["id"]] == "starting"
     assert [s["filename"] for s in hub.sent()] == ["a.gcode.3mf", "b.gcode.3mf"]
 
 
+def test_the_button_starts_no_job_after_a_reorder(hub):
+    _, second = finish_first_job(hub)
+    hub.app.notifier.flush()
+    third = hub.req("POST", "/api/queue", {"file": "c.gcode.3mf", "target": SERIAL}, user=ADMIN)[1]
+    hub.req("POST", "/api/queue/%s/reorder" % third["id"], {"position": 0}, user=ADMIN)
+    button(hub, second)
+    assert states(hub)[second["id"]] == "queued" and states(hub)[third["id"]] == "queued"
+    assert [s["filename"] for s in hub.sent()] == ["a.gcode.3mf"]
+
+
+def test_the_button_expires_after_30_minutes(hub):
+    _, second = finish_first_job(hub)
+    hub.app.notifier.flush()
+    hub.now += 30 * 60 + 1
+    button(hub, second)
+    assert states(hub)[second["id"]] == "queued" and len(hub.sent()) == 1
+
+
+def test_the_button_works_just_inside_30_minutes(hub):
+    _, second = finish_first_job(hub)
+    hub.app.notifier.flush()
+    hub.now += 30 * 60 - 1
+    button(hub, second)
+    assert states(hub)[second["id"]] == "starting"
+
+
+def test_the_button_needs_an_admin_of_the_printer(hub):
+    _, second = finish_first_job(hub)
+    hub.app.notifier.flush()
+    button(hub, second, USER)  # a user without a grant
+    button(hub, second, None)  # the event came without a user
+    assert states(hub)[second["id"]] == "queued" and len(hub.sent()) == 1
+    button(hub, second, OTHER)  # the printer's owner
+    assert states(hub)[second["id"]] == "starting"
+
+
+def test_a_button_of_an_unknown_notification_is_ignored(hub):
+    _, second = finish_first_job(hub)  # no notification was made for it: flush() not called
+    button(hub, second)
+    assert states(hub)[second["id"]] == "queued" and len(hub.sent()) == 1
+
+
 def test_other_actions_and_a_refused_start_are_ignored(hub):
-    hub.app.notifier.on_action({"action": "SOMETHING_ELSE"})
-    hub.app.notifier.on_action({"action": "DRUCKWERK_START_" + SERIAL})  # nothing queued: logged, not raised
+    hub.app.notifier.on_action({"action": "SOMETHING_ELSE"}, ADMIN)
+    hub.app.notifier.on_action({"action": "DRUCKWERK_START_" + SERIAL}, ADMIN)  # the old form: refused
+    hub.app.notifier.on_action({"action": "DRUCKWERK_START_%s_abcdef123456" % SERIAL}, ADMIN)  # nothing queued
     wait_threads("druckwerk-start")
     assert hub.sent() == []
 

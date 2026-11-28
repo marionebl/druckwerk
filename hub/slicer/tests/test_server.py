@@ -104,7 +104,8 @@ def test_browser_gcode_becomes_a_normal_slice(app):
         assert z.read("Metadata/plate_1.gcode") == gcode and 'value="O1S"' in z.read("Metadata/slice_info.config").decode()
     assert settings["curr_bed_type"] == "High Temp Plate"  # Orca refuses PETG without a plate
     assert call(base, "POST", "/api/jobs/%s/print" % jid, {"confirm": True})[0] == 200  # the stored file prints like any slice
-    assert json.loads(call(mock, "GET", "/calls")[1])[0]["body"]["file"].endswith("Fan_better_h2s.gcode.3mf")
+    sent = json.loads(call(mock, "GET", "/calls")[1])[0]["body"]["file"]
+    assert os.path.basename(sent).startswith("Fan_better_h2s_") and sent.endswith(".gcode.3mf")  # random part, one file per print
 
 
 def job_result(tmp, jid):
