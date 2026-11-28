@@ -73,7 +73,7 @@ export async function sameJob(ctx, id) {
   if (r) ctx.go('#/queue/' + r.id);
 }
 
-const FROM = { slice: 'Read from the sliced file.', saved: 'Saved when the job was queued.', cloud: 'Read from the file of the Bambu cloud task.' };
+const FROM = { slice: 'Read from the sliced file.', saved: 'Saved when the job was queued.', cloud: 'Read from the file of the printer cloud task.' };
 const TASK_FACTS = [['title', 'Title'], ['design_title', 'Design title'], ['plate', 'Plate'], ['status_code', 'Status code'], ['model_id', 'modelId'],
   ['profile_id', 'profileId'], ['design_id', 'designId']];
 
@@ -82,7 +82,7 @@ export function slicingCard(data, job) {
   if (!data.available) {
     const rec = facts(TASK_FACTS.map(([k, l]) => [l, data.task?.[k]]));
     return card('Slicing settings', h('p', { class: 'muted', style: 'margin:0' }, 'No slicing settings for this print. ' + (data.reason || '')),
-      rec && h('h3', { style: 'margin:6px 0 0' }, 'What the Bambu cloud record has'), rec);
+      rec && h('h3', { style: 'margin:6px 0 0' }, 'What the printer cloud record has'), rec);
   }
   const groups = data.groups.map((g) => h('section', { class: 'sgroup' }, h('h3', null, g.title),
     facts(g.rows.map((r) => [r.label, r.unit ? `${r.value} ${r.unit}` : r.value]))));

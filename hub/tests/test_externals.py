@@ -1,7 +1,11 @@
 """externals.env (read by shell scripts) must agree with externals.py (read by Python)."""
 import os
+import re
 import shlex
+import subprocess
 import sys
+
+import pytest
 
 sys.path.insert(0, os.path.join(os.path.dirname(os.path.abspath(__file__)), ".."))
 import externals  # noqa: E402
@@ -39,3 +43,25 @@ def test_every_nozzle_has_three_qualities_and_its_own_machine_preset():
             assert d != "0.4" and n["preset"] == "Bambu Lab %s %s nozzle" % (model, d)  # 0.4 is the model's own entry
             assert set(n["quality"]) == {"good", "better", "best"}
             assert all(q.endswith("%s nozzle" % d) for q in n["quality"].values()), (model, d)
+
+
+# The vendor name may stand only in the files and lines below; everything else says "printer cloud" or "vendor slicer".
+REPO = os.path.join(os.path.dirname(os.path.abspath(__file__)), "..", "..")
+VENDOR_FILES = re.compile(r"hub/externals\.(py|env)|custom_components/druckwerk/(externals\.py|manifest\.json)"
+                          r"|hub/tests/(test_externals\.py|fixtures/gcode/.*)|hub/CHANGELOG\.md"  # the changelog is a record
+                          r"|hub/bridge/bridge\.patch")  # a patch of the upstream bridge source, with its library names
+VENDOR_LINES = re.compile(r"ha-bambulab|pybambu|bambu_lab|bambu_networking|bambulab\.com|fake_bambusource\.c"  # project, HA domain, external names, URLs
+                          r"|Bambu Lab (H2S|P1S|P1P|X1|A1)|\"Bambu Lab\"|Bambu (PLA|PETG)")  # data values: models, presets, brand
+
+
+def test_the_vendor_name_stands_only_in_allowed_places():
+    try:
+        out = subprocess.run(["git", "grep", "-i", "-n", "bambu"], cwd=REPO, capture_output=True, text=True, check=False).stdout
+    except OSError:
+        pytest.skip("git is not available")
+    hits = []
+    for line in out.splitlines():
+        path, _, rest = line.split(":", 2)
+        if not VENDOR_FILES.fullmatch(path) and not VENDOR_LINES.search(rest):
+            hits.append(line[:160])
+    assert not hits, "avoidable vendor name:\n" + "\n".join(hits)

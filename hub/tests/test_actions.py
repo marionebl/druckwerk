@@ -1,7 +1,6 @@
 """Actions and LLM tools of the integration: the real app behind its HTTP routes, fake HA and bridge."""
 import json
 import os
-import time
 
 import pytest
 

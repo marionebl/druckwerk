@@ -7,7 +7,7 @@ import tempfile
 import threading
 import time
 
-NOZZLE_SIZES = ("0.2", "0.4", "0.6", "0.8")  # mm, the sizes Bambu printers take
+NOZZLE_SIZES = ("0.2", "0.4", "0.6", "0.8")  # mm, the sizes the printers take
 FIELDS = ("name", "model", "account", "prefix", "plate_type", "nozzles", "pause_entities", "electricity_kwh_price", "owner")  # owner: HA user id or ""
 
 

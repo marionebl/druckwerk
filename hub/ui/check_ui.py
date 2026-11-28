@@ -475,13 +475,13 @@ def check_history_details(page, base, ident, go, shot):
         assert "Not started here" in body and "Print options" not in body, "a cloud-only print shows what the cloud knows"
         page.wait_for_selector("h2:has-text('Slicing settings')")
         body = page.locator(".detail").text_content()
-        assert "No slicing settings for this print" in body and "What the Bambu cloud record has" in body and "profileId" in body and "4711" in body, "cloud-only without a file: the record's fields and the reason"
+        assert "No slicing settings for this print" in body and "What the printer cloud record has" in body and "profileId" in body and "4711" in body, "cloud-only without a file: the record's fields and the reason"
         assert page.get_by_role("button", name="New print job with the same settings").count() == 0, "no file and no job: no new print job"
         assert page.locator(".detail-img.ph").count() == 1 and page.locator(".detail-img img").count() == 0, "a broken cover leaves the placeholder box"
         shot("history-cloud-only")
         fresh(page, f"{base}/?as={ident}#/history/{TASK_OWNED_CLOUD}")  # the cloud gave a file: settings and the same action as for a Druckwerk print
         page.wait_for_selector(".sgroup", timeout=8000)
-        assert "Read from the file of the Bambu cloud task." in page.locator(".detail").text_content()
+        assert "Read from the file of the printer cloud task." in page.locator(".detail").text_content()
         page.get_by_role("button", name=SAME).click()
         page.wait_for_function("() => /^#\\/queue\\/[0-9a-f]{12}$/.test(location.hash)", timeout=5000)
         page.wait_for_selector("h1:has-text('Slicer plate 3')")
@@ -1371,7 +1371,7 @@ def walk(page, ident, base, shot, inject):
     go("#/filament", ".spool")
     shot("filament")
     assert page.locator(".spool").count() == 5, "the cloud library lists five spools: %d" % page.locator(".spool").count()
-    assert page.locator("h3", has_text="Not loaded").count() == 1 and page.get_by_text("Bambu Cloud filament library").count() == 1, "not-loaded group and the subtitle"
+    assert page.locator("h3", has_text="Not loaded").count() == 1 and page.get_by_text("printer cloud filament library").count() == 1, "not-loaded group and the subtitle"
     if MOCKED:
         assert "unknown" in page.locator(".spool", has_text="Matte Charcoal").text_content(), "a spool without grams says unknown"
         assert "of 1000 g" in page.locator(".spool", has_text="PLA Basic White").text_content()

@@ -1,7 +1,7 @@
 // New print: put one or more STL files on the plate, pick printer + filament, set per-object settings, slice the chosen
 // variants side by side, choose, queue.
 import { api } from '../api.js';
-import { h, clear, icon, btn, pill, field, swatch, empty, attempt, toast, fail, durSec, money, hex } from '../util.js';
+import { h, clear, icon, btn, pill, field, swatch, empty, attempt, toast, fail, durSec, money } from '../util.js';
 import { gcodePreview } from './preview.js';
 import { warm, sliceVariant, loadPresets, parseStl } from './browserslice.js';
 import { plateView } from './plateview.js';

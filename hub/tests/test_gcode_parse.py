@@ -1,5 +1,5 @@
 """The 3D preview's G-code parser (hub/ui/views/gcodeparse.js), run with node on real slicer output and on small hand-made files.
-Fixtures are the header and first layer cut from real Bambu Studio and OrcaSlicer files."""
+Fixtures are the header and first layer cut from real vendor slicer and OrcaSlicer files."""
 import json
 import os
 import math
@@ -25,8 +25,8 @@ def fixture(name):
     return (FIX / name).read_text(encoding="latin-1")
 
 
-def test_bambu_plate_finds_every_object_and_the_h2s_plate():
-    text = fixture("bambu_multi_object.gcode")
+def test_h2s_plate_finds_every_object_and_the_h2s_plate():
+    text = fixture("h2s_multi_object.gcode")
     labels = set(re.findall(r"; start printing object, unique label id: (\d+)", text))
     r = parse(text)
     assert len(labels) == 13 and r["objects"] == len(labels)
@@ -47,7 +47,7 @@ def test_orca_markers_count_each_object_once():
 
 
 def test_arc_fitted_file_has_no_objects_and_arcs_become_many_segments():
-    text = fixture("bambu_arcs.gcode")
+    text = fixture("h2s_arcs.gcode")
     arcs = len(re.findall(r"^G[23] .*E", text, re.M))
     r = parse(text)
     assert r["objects"] == 0 and arcs > 100

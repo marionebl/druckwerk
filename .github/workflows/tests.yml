@@ -40,6 +40,9 @@ jobs:
       - name: Install (3.14 with Home Assistant)
         if: matrix.python == '3.14'
         run: pip install -r requirements-test.txt
+      - name: Lint
+        if: matrix.python == '3.14'
+        run: pip install ruff && ruff check custom_components hub tests tools
       - name: Install (3.13 as in the app image, no Home Assistant)
         if: matrix.python == '3.13'
         run: pip install pytest pillow

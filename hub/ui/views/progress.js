@@ -2,7 +2,7 @@
 import { api } from '../api.js';
 import { h, clear, icon } from '../util.js';
 
-const LABEL = { upload: 'Upload to the Bambu cloud', download: 'Printer downloads the plate', prepare: 'Printer prepares', print: 'Printing' };
+const LABEL = { upload: 'Upload to the printer cloud', download: 'Printer downloads the plate', prepare: 'Printer prepares', print: 'Printing' };
 const STAGE = {
   auto_bed_leveling: 'Leveling the bed', heatbed_preheating: 'Heating the bed', sweeping_xy_mech_mode: 'Checking the axes',
   changing_filament: 'Loading filament', heating_hotend: 'Heating the nozzle', calibrating_extrusion: 'Calibrating extrusion',

@@ -1,4 +1,4 @@
-// Per-object print settings, as in Bambu Studio's object list: the common ones are always there, every other
+// Per-object print settings, as in the vendor slicer's object list: the common ones are always there, every other
 // object setting of OrcaSlicer is added from a list. The form, the rules (greyed rows, warnings) and the values that
 // an edit changes along with it all come from the engine's settings service (settings.view and settings.edit).
 import { h, clear, btn, pill, toast } from '../util.js';

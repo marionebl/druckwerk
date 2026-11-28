@@ -2,7 +2,6 @@
 // Finished jobs live in History (one list for cloud tasks and jobs).
 import { api } from '../api.js';
 import { h, clear, icon, btn, pill, empty, modal, field, attempt, dateTime, money, loading, thumb, durSec, toast, staleNote } from '../util.js';
-import { nozzleName } from './nozzlerow.js';
 import * as D from './detail.js';
 import { stepsView, watchStart } from './progress.js';
 

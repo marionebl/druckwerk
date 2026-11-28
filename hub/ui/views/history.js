@@ -1,4 +1,4 @@
-// History: the one list of prints. The Bambu cloud's tasks are the truth, enriched with the Druckwerk job where one matches;
+// History: the one list of prints. The printer cloud's tasks are the truth, enriched with the Druckwerk job where one matches;
 // a job the cloud never saw is listed too. Grouped by day; admins can filter by user and printer. #/history/<id> is one print.
 import { api } from '../api.js';
 import { h, clear, icon, btn, pill, empty, field, clock, dateTime, durSec, money, toDate, fail, loading, thumb, attempt, staleNote } from '../util.js';

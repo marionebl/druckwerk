@@ -12,6 +12,7 @@ import urllib.request
 
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))  # python -I drops the script dir
 import slicer_server as s
+import watchdog
 from app import App, log
 from ha import HA
 from plates_inbox import PlatesInbox
@@ -40,14 +41,14 @@ def hostname():
 
 
 def main():
-    ha = HA(s.CORE, env("HUB_HA_WS", "ws://supervisor/core/websocket"), env("SUPERVISOR_TOKEN", ""))
+    ha = HA(env("SLICER_CORE_URL", "http://supervisor/core/api"), env("HUB_HA_WS", "ws://supervisor/core/websocket"), env("SUPERVISOR_TOKEN", ""))
     app = App(ha, env("HUB_DATA", "/data"), s.SHARE, BRIDGE, s, hostname, int(env("SLICER_PORT", "8099")),
               ui_dir=env("HUB_UI", os.path.join(os.path.dirname(os.path.abspath(__file__)), "ui")),
               trusted_ips=ingress_ips())
     app.install()
 
     stop = threading.Event()
-    threading.Thread(target=app.run_ticker, args=(stop,), daemon=True).start()
+    threading.Thread(target=app.run_ticker, args=(stop, watchdog.CHECK_EVERY), daemon=True).start()
     threading.Thread(target=ha.watch_state_changes, args=(app.on_state, stop), daemon=True).start()
     threading.Thread(target=app.notifier.run, args=(stop,), daemon=True).start()
     app.plates_inbox = PlatesInbox.from_options(app, env("HUB_DATA", "/data"))

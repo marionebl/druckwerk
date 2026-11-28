@@ -88,9 +88,9 @@ def test_user_reorder_keeps_other_jobs_at_their_indices(make, acc):
     grant(acc, "u1")
     grant(acc, "u2")
     u1, u2 = acc.as_("u1"), acc.as_("u2")
-    a = u1.add(F("a"), target="S1")
+    u1.add(F("a"), target="S1")
     b = u2.add(F("b"), target="S1")
-    c = u1.add(F("c"), target="S1")
+    u1.add(F("c"), target="S1")
     d = u2.add(F("d"), target="S1")
     e = u1.add(F("e"), target="S1")
     u1.reorder(e["id"], 0)
@@ -177,7 +177,7 @@ def test_reject_cancels_with_reason(make, acc):
 
 def test_ha_admin_can_do_everything(make, acc, fake):
     ha = acc.as_("ha")
-    a = ha.add(F("a"), target="S1")
+    ha.add(F("a"), target="S1")
     b = ha.add(F("b"), target="S1")
     c = ha.add(F("c"), target="S1")
     ha.reorder(c["id"], 0)

@@ -1,4 +1,4 @@
-"""Print history: Bambu cloud tasks are the source of truth, Druckwerk jobs only attribute them to a user."""
+"""Print history: printer cloud tasks are the source of truth, Druckwerk jobs only attribute them to a user."""
 from hubfakes import ADMIN, OTHER, SERIAL, SERIAL2, USER, FakeBridge, task
 
 

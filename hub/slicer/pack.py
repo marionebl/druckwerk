@@ -1,7 +1,7 @@
-"""Packs G-code sliced in the browser into a minimal .gcode.3mf, the shape the app and Bambu Sender read.
+"""Packs G-code sliced in the browser into a minimal .gcode.3mf, the shape the app and the vendor's sender read.
 
 It has the G-code with its md5, slice_info.config (model id, print time, weight) and project_settings.config (the
-flattened presets). Bambu Studio's thumbnails and 3D model are not made.
+flattened presets). The vendor slicer's thumbnails and 3D model are not made.
 """
 import hashlib
 import json

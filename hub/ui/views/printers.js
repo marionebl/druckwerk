@@ -1,6 +1,6 @@
 // Printer grid and printer detail.
 import { api } from '../api.js';
-import { h, clear, icon, ring, btn, empty, dur, clock, attempt, pill, swatch, modal, field, toast } from '../util.js';
+import { h, clear, icon, ring, btn, empty, dur, clock, attempt, pill, modal, field, toast } from '../util.js';
 import { nozzleName } from './nozzlerow.js';
 import { statusPill, isPrinting, hmsBanners, amsBlock, temps, timeLeft, finishAt } from './common.js';
 import { stepsView, watchStart } from './progress.js';

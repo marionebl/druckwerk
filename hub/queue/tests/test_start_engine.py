@@ -1,7 +1,7 @@
 """Start safety in the engine: an unsure send fails the job, a refusal keeps it; a start reads a fresh status; force-cancel."""
 import pytest
 
-from queue_engine import Queue, QueueError
+from queue_engine import QueueError
 
 F = "a.gcode.3mf"
 LOST = "send timed out; check the printer before you retry"

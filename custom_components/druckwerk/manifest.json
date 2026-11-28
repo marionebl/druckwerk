@@ -1,7 +1,7 @@
 {
   "domain": "druckwerk",
   "name": "Druckwerk",
-  "version": "0.15.2",
+  "version": "0.15.3",
   "documentation": "https://github.com/marionebl/druckwerk",
   "config_flow": true,
   "iot_class": "local_polling",

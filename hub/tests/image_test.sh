@@ -65,7 +65,7 @@ page=$(curl -fsS $B/); grep -q '<title>Druckwerk</title>' <<<"$page"
 js=$(curl -fsS $B/api.js); grep -q "api/me" <<<"$js"; curl -fsS -o /dev/null $B/views/queue.js; echo "web UI served at /"
 curl -fsS "${ID[@]}" $B/api/bridge/ | grep -q 'Druckwerk bridge'
 # The browser slices; the app only serves the engine and stores the G-code the browser uploads. Upload a model, ask for the
-# filament preset (read from the engine presets in the image), upload a real Bambu Studio H2S G-code like the browser does.
+# filament preset (read from the engine presets in the image), upload a real vendor-slicer H2S G-code like the browser does.
 J=$(curl -fsS "${ID[@]}" -X POST --data-binary @"$REPO/hub/tests/fixtures/test_plate.stl" "$B/api/jobs?name=test_plate.stl" | python3 -c 'import json,sys;print(json.load(sys.stdin)["id"])')
 FIL=$(curl -fsS "${ID[@]}" "$B/api/engine/filament?serial=H2S0001&tray=0:0" | python3 -c 'import json,sys;print(json.load(sys.stdin)["filament"])')
 echo "filament preset from the image's engine presets: $FIL"
@@ -74,7 +74,7 @@ code=$(curl -s -o /dev/null -w '%{http_code}' "${ID[@]}" -X POST $B/api/jobs/$J/
 [ "$code" = 404 ] || { echo "FAIL: POST /api/jobs/<id>/slice gave $code, expected 404 (no server-side slicing)" >&2; exit 1; }
 echo "POST /api/jobs/<id>/slice: $code (no server-side slicing)"
 Q=$(python3 -c 'import sys,urllib.parse as u;print(u.urlencode({"serial":"H2S0001","quality":"better","tray":"0:0","filament":sys.argv[1],"seconds":7440,"grams":75.22,"metres":24.5,"engine":"mt","slice_s":9}))' "$FIL")
-curl -fsS "${ID[@]}" -X POST --data-binary @"$REPO/hub/tests/fixtures/gcode/bambu_multi_object.gcode" "$B/api/jobs/$J/gcode?$Q" \
+curl -fsS "${ID[@]}" -X POST --data-binary @"$REPO/hub/tests/fixtures/gcode/h2s_multi_object.gcode" "$B/api/jobs/$J/gcode?$Q" \
   | python3 -c 'import json,sys;j=json.load(sys.stdin);print(json.dumps({k:j.get(k) for k in ("state","error","info")}));assert j["state"]=="done" and j["info"]["seconds"]==7440,j'
 curl -fsS "${ID[@]}" -o /dev/null -w 'plate.gcode %{http_code} %{size_download} B\n' $B/api/jobs/$J/plate.gcode
 # The app sends the print to the real bridge, which has no account here: it must refuse with its own error text.
