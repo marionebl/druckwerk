@@ -600,14 +600,15 @@ def check_cache(page, base, ident):
         page.wait_for_selector(sel, timeout=8000)
     page.evaluate("fetch('api/_mock/slow')")  # a failed earlier run may have left the delay on
     slow = lambda s: page.evaluate("s => fetch('api/_mock/slow?path=api/printers&path=api/spools&path=api/load-requests&s=' + s)", s)
-    slow(3)
+    # The lists wait for api/me (UI-02), so a slow CI runner needs more than 1.5 s for the page; the API stays slower than the budget.
+    slow(6)
     for tab, sel, text in (("printers", ".pcard", "Workshop H2S"), ("filament", ".spool", "PLA Basic White")):
         t0 = time.time()
         fresh(page, f"{base}/?as={ident}#/{tab}")
-        page.wait_for_selector(sel, timeout=1500)  # the API needs 3 s: this can only be the cache
-        assert time.time() - t0 < 2.5 and page.locator("#view .loading").count() == 0, f"{tab}: cached data without a spinner ({time.time() - t0:.1f} s, {page.locator('#view .loading').count()} spinners)"
+        page.wait_for_selector(sel, timeout=4000)  # the API needs 6 s: this can only be the cache
+        assert time.time() - t0 < 4.5 and page.locator("#view .loading").count() == 0, f"{tab}: cached data without a spinner ({time.time() - t0:.1f} s, {page.locator('#view .loading').count()} spinners)"
         assert text in page.locator("#view").text_content()
-    page.wait_for_timeout(3500)  # the fresh answer arrives and replaces it without trouble
+    page.wait_for_timeout(6500)  # the fresh answer arrives and replaces it without trouble
     assert page.locator(".spool").count() == 5, f"{page.locator('.spool').count()} spools, page {page.url}"
     page.evaluate("fetch('api/_mock/slow')")
     # the cloud library fails: the cached spools still show at once

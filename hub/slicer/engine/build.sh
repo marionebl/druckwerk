@@ -8,8 +8,11 @@ HERE=$(cd "$(dirname "$0")" && pwd)
 TAG=v0.6.0-m1.9  # the newer ...m1.9.p1 release only has profiles
 REPO=Muon-3D/muon3d-slicer-engine
 W=$(mktemp -d)
+. "$HERE/../../externals.env"  # the expected SHA-256 of each download
 for part in engine profiles; do
   curl -fsSL --retry 4 -o "$W/$part.tgz" "https://github.com/$REPO/releases/download/$TAG/muon3d-slicer-$part-${TAG#v}.tgz"
+  want=$([ $part = engine ] && echo "$ENGINE_SHA256" || echo "$PROFILES_SHA256")
+  echo "$want  $W/$part.tgz" | sha256sum -c -
   mkdir "$W/$part" && tar -xzf "$W/$part.tgz" -C "$W/$part"
 done
 RT=$(dirname "$(find "$W/engine" -maxdepth 3 -name manifest.json | head -1)")
@@ -17,6 +20,7 @@ SET=$(dirname "$(find "$W/profiles" -maxdepth 6 -name 'index.*.json' | head -1)"
 # flattenPreset is the engine's own reference implementation; the file has no imports besides erased types.
 mkdir "$W/proto" && echo '{"type":"module"}' > "$W/proto/package.json"
 curl -fsSL --retry 4 -o "$W/proto/profileSet.ts" "https://raw.githubusercontent.com/$REPO/$TAG/packages/protocol/src/profileSet.ts"
+echo "$PROFILESET_SHA256  $W/proto/profileSet.ts" | sha256sum -c -
 (cd "$HERE/../.." && python3 -c 'import json, externals; print(json.dumps(externals.PRINTERS))') > "$W/printers.json"
 mkdir -p "$OUT/engine/presets"
 node --experimental-strip-types "$HERE/flatten.mjs" "$W/proto/profileSet.ts" "$SET" "$W/printers.json" "$OUT/engine/presets"
