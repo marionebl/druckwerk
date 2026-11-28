@@ -645,7 +645,9 @@ def check_printer_card(page, base, ident, go, shot):
     ALLOW_502.append("/camera")
     hook(page, "camera_down", P1S, 1)
     hook(page, "empty_ams", P1S, 1)
-    page.goto(f"{base}/?as={ident}")  # a fresh page: no earlier camera frame is kept
+    page.goto(f"{base}/?as={ident}")
+    page.evaluate("Object.keys(localStorage).filter((k) => k.startsWith('dw1:frame:')).forEach((k) => localStorage.removeItem(k))")
+    page.goto(f"{base}/?as={ident}")  # a fresh page with no cached camera frame
     go("#/printers", ".pcard")
     must(page, ".pcard:has-text('Office P1S') .off:has-text('No camera image')", "a failing camera shows a placeholder")
     assert page.evaluate(BROKEN) == [], "broken images on the printer grid: %s" % page.evaluate(BROKEN)
