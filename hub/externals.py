@@ -28,13 +28,7 @@ CLOUD_HEADERS = {
 CLOUD_NAME = "Bambu"  # shown in error messages
 CLOUD_CLIENT_HEADER = "X-BBL-Client-Name"  # the mock cloud in tests reads it
 
-# -- slicer (Flathub build of the vendor's slicer: the only ready-made aarch64 Linux build)
-FLATHUB_APP_ID = "com.bambulab.BambuStudio"
-STUDIO_BINARY_NAMES = ("bambu-studio", "BambuStudio")  # inside the flatpak's app/bin
-PROFILE_ROOT_FILE = "BBL.json"  # system profile index
-PROFILE_DIR = "BBL"
-PROFILE_SEARCH = "*/profiles/BBL.json"
-DEFAULT_PRINTER = "Bambu Lab H2S 0.4 nozzle"  # machine preset names, verbatim
+# -- printer models the browser slicer supports (preset names are those of the engine's flattened presets, verbatim)
 PRINTERS = {  # dev_product_name -> machine preset, bed type and process presets per quality
     "H2S": {"preset": "Bambu Lab H2S 0.4 nozzle", "bed": "High Temp Plate", "model_id": "O1S",
             "quality": {"good": "0.24mm Standard @BBL H2S", "better": "0.20mm Standard @BBL H2S",

@@ -6,17 +6,12 @@ through the app's own HTTP routes, so the access rules stay in one place.
 import hashlib
 import json
 import os
-import re
 import time
 from urllib.parse import quote
 
 from entities import ENTITIES
 
 API_VERSION = 1
-QUALITIES = ("good", "better", "best")
-MODEL_SUFFIXES = (".stl", ".3mf", ".obj", ".step", ".stp")
-SLICE_POLL = 5.0  # seconds between slice status checks
-SLICE_WAIT = 1800.0  # a call that waits gives up after this; the slices keep running
 SNAPSHOT_KEEP = 20  # snapshots kept per printer
 QUEUE_TIMEOUT = 120  # the app copies the file into the share before it answers
 MEDIA_SUBDIR = "druckwerk"
@@ -153,10 +148,9 @@ ACTIONS = {
     "add_to_queue": {
         "title": "Add to queue",
         "description": (
-            "Adds a job to the print queue; it does not start a print. Give exactly one of file (a "
-            "sliced .gcode.3mf that is already in the share) or slice_job_id (a variant from "
-            "druckwerk.slice). A person who needs approval creates a job that waits for an admin. "
-            "Starting is a separate step that needs the person's confirmation."
+            "Adds a job to the print queue; it does not start a print. The file is a sliced "
+            ".gcode.3mf that is already in the share. A person who needs approval creates a job "
+            "that waits for an admin. Starting is a separate step that needs the person's confirmation."
         ),
         "response": "optional",
         "serial_fields": ["target"],
@@ -164,14 +158,9 @@ ACTIONS = {
             "file": F(
                 "string", "File",
                 "Name of a sliced .gcode.3mf in the share, or an absolute path under /media or /share"
-                " to one. Use this or slice_job_id.",
+                " to one.",
                 tool="Sliced .gcode.3mf name in the share",
-                example="benchy_better_h2s.gcode.3mf", selector=TEXT),
-            "slice_job_id": F(
-                "string", "Slice job",
-                "Job id of a finished slice from druckwerk.slice. Use this or file.",
-                tool="Slice job id from druckwerk_slice",
-                example="a1b2c3d4e5f6", selector=TEXT),
+                required=True, example="benchy_better_h2s.gcode.3mf", selector=TEXT),
             "target": F(
                 "string", "Target",
                 "Printer serial number or name, or \"any\" for the first free printer of the model.",
@@ -204,64 +193,6 @@ ACTIONS = {
                     "Name of the print, shown in the queue and the live activity (80 characters)"
                 ),
                 example="Benchy for Anna", selector=TEXT),
-        },
-    },
-    "slice": {
-        "title": "Slice model",
-        "description": (
-            "Slices a model in good, better and best quality for one printer and AMS tray, and "
-            "returns print time, filament grams and cost for each variant plus the slice job ids. "
-            "Long-running: the slicer runs one slice at a time, so expect 1 to 5 minutes per variant "
-            "and 3 to 15 minutes for the call, which waits up to 30 minutes. With wait false it "
-            "returns the slice job ids at once; poll them with druckwerk.get_slice. Show the variants"
-            " to the person, let them choose, then call add_to_queue with the chosen slice_job_id."
-        ),
-        "response": "optional",
-        "serial_fields": ["printer"],
-        "fields": {
-            "model_file": F(
-                "string", "Model file",
-                "Absolute path of the model (.stl, .3mf, .obj, .step) under /share or /media.",
-                tool="Absolute path of the model",
-                required=True, example="/media/models/cube.stl", selector=TEXT),
-            "printer": F(
-                "string", "Printer",
-                "Printer serial number, printer name or device id. You need an active grant on it.",
-                tool="Printer serial number or name",
-                required=True, selector=TEXT),
-            "tray": F(
-                "string", "Tray",
-                "Loaded AMS tray as unit:slot, both 0-based, as get_printers lists them. 0:0 is the "
-                "first slot of the first AMS.",
-                tool="AMS tray as unit:slot, 0-based, e.g. 0:0",
-                required=True, example="0:0", selector=TEXT),
-            "plate": F(
-                "string", "Build plate",
-                "Build plate type. Empty uses the printer's default.",
-                tool="Build plate type, default is the printer's",
-                example="Textured PEI Plate", selector={"select": {"options": ["Cool Plate", "Engineering Plate", "High Temp Plate", "Textured PEI Plate", "Supertack Plate"]}}),
-            "wait": F(
-                "bool", "Wait",
-                "Wait for the slices to finish and return their results. False returns the slice job "
-                "ids immediately.",
-                tool="Wait for the results",
-                default=True, selector=BOOL),
-        },
-    },
-    "get_slice": {
-        "title": "Get slice results",
-        "description": (
-            "Returns state, print time, grams and cost of slice jobs, for example after "
-            "druckwerk.slice with wait false. Read-only."
-        ),
-        "response": "only",
-        "serial_fields": [],
-        "fields": {
-            "slice_job_ids": F(
-                "list", "Slice jobs",
-                "Slice job ids from druckwerk.slice.",
-                tool="Slice job ids",
-                required=True, example=["a1b2c3d4e5f6"], selector={"text": {"multiple": True}}),
         },
     },
     "cancel_job": {
@@ -484,16 +415,16 @@ ACTIONS = {
     },
 }
 
-PROMPT = """Druckwerk manages 3D printers: printer status, the print queue, slicing and starting prints.
+PROMPT = """Druckwerk manages 3D printers: printer status, the print queue and starting prints. Models are sliced in the browser, not by this app.
 Rules:
 - You act as the signed-in Home Assistant user. Home Assistant admins and printer owners are admins of their printers.
   Users may add jobs on printers they have an active grant for (some grants need an admin's approval), cancel their own jobs
   and reorder only within their own queue slots. Only admins skip, move, approve, reject, retry and start jobs. A refusal
   starting with "rule:" is final; tell the person, do not try another way round.
-- Slicing takes minutes (one slice at a time, three variants good, better and best). Say so before you start, and use
-  wait false with druckwerk_get_slice_results when your own call timeout is short.
-- Typical flow: druckwerk_get_printers (serial, AMS trays as unit:slot), druckwerk_slice, let the person choose a variant,
-  druckwerk_add_to_queue with its slice_job_id. Adding to the queue never starts a print.
+- This app has no slice tool. A person slices in the app's New print page, in the browser. You work with sliced
+  .gcode.3mf files that are already in the share.
+- Typical flow: druckwerk_get_printers (serial, AMS trays as unit:slot), druckwerk_add_to_queue with the sliced file
+  name. Adding to the queue never starts a print.
 - Never start a print on your own. Before druckwerk_start_next or druckwerk_start_job, show the person the sliced plate
   review and a current camera snapshot (druckwerk_camera_snapshot), ask whether the plate is clear and the print may
   start, and call only after an explicit yes, with plate_clear and confirmed_by_person both true. Without both the call is refused.
@@ -516,14 +447,7 @@ TOOLS = {
         "The print queue: waiting jobs per printer serial and for any (with 0-based position), pending approvals, "
         "running jobs, optional history."), READ),
     "druckwerk_add_to_queue": ("add_to_queue", (
-        "Add a job to the queue from a sliced file name in the share or from a slice_job_id (give one). "
-        "Does not start a print."), WRITE),
-    "druckwerk_slice": ("slice", (
-        "Slice a model (.stl, .3mf, .obj, .step under /share or /media) as good, better and best for one printer and "
-        "tray; returns time, grams, cost and a slice job id per variant. Takes 3 to 15 minutes; wait false returns "
-        "the ids at once."), WRITE),
-    "druckwerk_get_slice_results": ("get_slice", (
-        "State, print time, grams and cost of slice jobs (after druckwerk_slice with wait false)."), READ),
+        "Add a job to the queue from a sliced .gcode.3mf name in the share. Does not start a print."), WRITE),
     "druckwerk_cancel_job": ("cancel_job", "Cancel a waiting job. Users cancel their own, admins any.", CANCEL),
     "druckwerk_reorder_job": ("reorder_job", (
         "Move a waiting job to a 0-based position. Users reorder only within their own slots, admins any."), WRITE),
@@ -714,8 +638,8 @@ def write(path, data):
 class Ops:
     """One call of one user. call(method, path, body=None, data=None, binary=False, timeout=30) asks the app as that user."""
 
-    def __init__(self, call, media_roots, media_dir, send_print):
-        self.call, self.media_roots, self.media_dir, self.send_print = call, media_roots, media_dir, send_print
+    def __init__(self, call, media_dir, send_print):
+        self.call, self.media_dir, self.send_print = call, media_dir, send_print
 
     def print_file(self, **fields):
         return self.send_print(fields)
@@ -760,23 +684,16 @@ class Ops:
             "printers": snap.get("printers", []),
         }
 
-    def add_to_queue(self, file=None, slice_job_id=None, target="any", model=None, options=None, name=None):
-        if bool(file) == bool(slice_job_id):
-            raise ValueError("Give exactly one of file (a sliced file in the share) or slice_job_id")
+    def add_to_queue(self, file, target="any", model=None, options=None, name=None):
         if target != "any":
             target = self.serial(target)
         body = {"target": target, "options": options or {}}
         if name:
             body["name"] = name
-        if slice_job_id:
-            if model:
-                body["model"] = model
-            job = self.call("POST", f"/api/jobs/{quote(slice_job_id, safe='')}/queue", body, timeout=QUEUE_TIMEOUT)
-        else:
-            body["file"] = file
-            if target == "any":
-                body["model"] = model or self.only_model()
-            job = self.call("POST", "/api/queue", body, timeout=QUEUE_TIMEOUT)
+        body["file"] = file
+        if target == "any":
+            body["model"] = model or self.only_model()
+        job = self.call("POST", "/api/queue", body, timeout=QUEUE_TIMEOUT)
         return {"job": job}
 
     def only_model(self):
@@ -831,90 +748,6 @@ class Ops:
 
     def start_job(self, printer, job_id, plate_clear=False, confirmed_by_person=False):
         return self.start(printer, job_id, plate_clear, confirmed_by_person)
-
-    # -- slicing
-    def resolve_model(self, path):
-        """Real path of a model file under /media or /share."""
-        if not os.path.isabs(path):
-            raise ValueError("model_file must be an absolute path under /share or /media")
-        roots = [os.path.realpath(r) for r in self.media_roots]
-        real = os.path.realpath(path)
-        if not any(os.path.commonpath([real, r]) == r for r in roots):
-            raise ValueError("model_file must be inside /share or a media folder")
-        if not real.lower().endswith(MODEL_SUFFIXES):
-            raise ValueError("model_file must be one of " + ", ".join(MODEL_SUFFIXES))
-        if not os.path.isfile(real):
-            raise ValueError(f"No such file: {path}")
-        return real
-
-    def slice(self, model_file, printer, tray, plate=None, wait=True):
-        """Slice good, better and best. The slicer runs one slice at a time, so three variants take minutes."""
-        if not re.fullmatch(r"\d+:\d+", tray):
-            raise ValueError("tray is 'unit:slot', both 0-based, as get_printers lists them (e.g. 0:1)")
-        real = self.resolve_model(model_file)
-        with open(real, "rb") as f:
-            content = f.read()
-        serial = self.serial(printer)
-        ids = {}
-        for quality in QUALITIES:
-            job = self.call("POST", f"/api/jobs?name={quote(os.path.basename(real))}", data=content, timeout=120)
-            ids[quality] = job["id"]
-            body = {"serial": serial, "quality": quality, "tray": tray}
-            if plate:
-                body["bed"] = plate
-            self.call("POST", f"/api/jobs/{job['id']}/slice", body)
-        if not wait:
-            return {"state": "slicing", "slice_job_ids": ids, "variants": []}
-        return self.get_slice(list(ids.values()), wait=True, ids=ids)
-
-    def get_slice(self, slice_job_ids, wait=False, ids=None):
-        deadline = time.monotonic() + SLICE_WAIT
-        while True:
-            jobs = [self.call("GET", f"/api/jobs/{quote(jid, safe='')}") for jid in slice_job_ids]
-            busy = [j for j in jobs if j.get("state") in ("uploaded", "queued", "slicing")]
-            if not (wait and busy):
-                break
-            if time.monotonic() > deadline:
-                raise ActionError(504, f"Slicing is still running after {int(SLICE_WAIT)} s; it continues in the app. "
-                                       f"Ask again with slice_job_ids {', '.join(slice_job_ids)}")
-            time.sleep(SLICE_POLL)
-        variants = [self.variant(j) for j in jobs]
-        done = all(v["state"] == "done" for v in variants)
-        failed = any(v["state"] == "failed" for v in variants)
-        return {
-            "state": "done" if done else "failed" if failed and not busy else "slicing",
-            "slice_job_ids": ids or {v["quality"]: v["slice_job_id"] for v in variants},
-            "variants": variants,
-        }
-
-    def variant(self, job):
-        info = job.get("info") or {}
-        out = {
-            "quality": job.get("quality"),
-            "slice_job_id": job["id"],
-            "state": job.get("state"),
-            "print_seconds": info.get("seconds"),
-            "print_time": duration(info.get("seconds")),
-            "grams": info.get("grams"),
-            "cost": job.get("cost_estimate"),
-            "layer_height": ((job.get("settings") or {}).get("process") or "").split(" ")[0] or None,
-            "warnings": info.get("warnings") or [],
-            "error": job.get("error"),
-            "plate_image": None,
-        }
-        if job.get("state") == "done" and info.get("has_png"):
-            out["plate_image"] = self.save(f"/api/jobs/{job['id']}/plate.png", os.path.join("plates", f"{job['id']}.png"))
-        return out
-
-    def save(self, path, rel):
-        """Fetch an image into the druckwerk media folder; None when that fails."""
-        try:
-            data = self.call("GET", path, binary=True, timeout=120)
-            dest = os.path.join(self.media_dir, rel)
-            write(dest, data)
-        except (ActionError, OSError):
-            return None
-        return dest
 
     # -- camera
     def camera_snapshot(self, printer):

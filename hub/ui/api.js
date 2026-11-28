@@ -111,9 +111,8 @@ export const api = {
   // queue
   queue: () => get('api/queue'),
   jobAction: (id, action, body) => post(`api/queue/${q(id)}/${action}`, body),
-  // slicing: one uploaded job per slice (the slicer keeps one result per job)
+  // slicing happens in the browser: one uploaded job per slice, the G-code goes up after it
   upload: (file) => call('POST', 'api/jobs?name=' + q(file.name), file, true),
-  slice: (id, body) => post(`api/jobs/${q(id)}/slice`, body),
   job: (id) => get(`api/jobs/${q(id)}`),
   jobModel: async (id) => {
     const r = await fetch(`api/jobs/${q(id)}/model`);

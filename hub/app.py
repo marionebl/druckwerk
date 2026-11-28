@@ -55,6 +55,8 @@ MEDIA_DIR = "/media/druckwerk"  # snapshots and plate images of the actions
 SLICED = re.compile(r"Metadata/plate_\d+\.gcode")
 TASKS_TTL = 60  # seconds a printer's cloud task list is reused
 SPOOLS_TTL = 30  # seconds an account's cloud filament library is reused
+STALE_AFTER = 60  # seconds after which a printer view from an earlier status call is marked stale
+STATUS_STALE_MAX = 600  # seconds the queue may still act on such a view
 COVER_MAX = 5 * 1024 * 1024  # bytes of a cloud cover image
 FILE_MAX = 400 * 1024 * 1024  # bytes of a sliced 3MF fetched from the cloud
 MISS_TTL = 600  # seconds before a failed cloud file fetch is tried again
@@ -378,9 +380,25 @@ class App:
             return {}
         return (data or {}).get("print") or {} if status == 200 and isinstance(data, dict) else {}
 
+    def status_entry(self, serial):
+        """(view, age in s) of the printer: fresh from the bridge, else the last good one (one failed call is not offline)."""
+        v = printer_state.view(self.bridge_print(serial), self.clock())
+        with self._cache_lock:
+            if v is not None:
+                self._cache["view:" + serial] = (self.clock(), v)
+            at, last = self._cache.get("view:" + serial, (0, None))
+        return (last, self.clock() - at) if last is not None else (None, 0)
+
     def printer_status(self, serial):
-        """What the printer reports now (hub/printer_state.py), from the bridge; None when the bridge cannot say."""
-        return printer_state.view(self.bridge_print(serial), self.clock())
+        """What the printer reports now (hub/printer_state.py), from the bridge; None when the bridge cannot say.
+        The queue acts on it, so a last good view counts for 10 min only."""
+        v, age = self.status_entry(serial)
+        return v if age <= STATUS_STALE_MAX else None
+
+    def cloud_online(self, serial):
+        """False only when the bridge's printer list says the printer is offline (the cloud's flag); unknown counts as online."""
+        printers = self._cached("printers", 5, self.bridge_printers)
+        return next((p.get("online") is not False for p in printers if p.get("serial") == serial), True)
 
     def state(self, entity_id):
         """The queue's state lookup: a registered printer's own sensors come from the bridge, any other entity from HA."""
@@ -420,7 +438,9 @@ class App:
 
     def printer_view(self, p, role):
         serial = p["serial"]
-        v = self.printer_status(serial)
+        v, age = self.status_entry(serial)
+        if v is not None and not self.cloud_online(serial):
+            v = None
         b = v or {}
         tray = b.get("active_tray")
         job = next((j for j in self.queue.jobs if j.get("printer") == serial and j["state"] in ("starting", "printing")), None)
@@ -428,6 +448,7 @@ class App:
         return {
             "serial": serial, "name": p["name"], "model": p["model"], "role": role,
             "online": v is not None and b["status"] != "offline",
+            "stale": v is not None and age > STALE_AFTER, "status_age": round(age) if v is not None else None,
             "status": b.get("status"), "stage": b.get("stage"), "progress": b.get("progress"),
             "remaining_min": b.get("remaining_min"), "end_time": b.get("end_time"),
             "layer": b.get("layer"), "total_layers": b.get("total_layers"),
@@ -997,7 +1018,7 @@ class App:
         return run
 
     def get_slice(self, h, m, q):
-        """The slicer's job answer plus a cost estimate once the slice is done."""
+        """The job answer plus a cost estimate once the browser's G-code is stored."""
         job = self.own(self.caller(h), m.group(1))
         cap = Capture(h)
         self.s.get_job(cap, m, q)
@@ -1023,14 +1044,8 @@ class App:
         return filament.job_cost([f["grams"] for f in use["filaments"]], prices, use["seconds"], printer.get("model"),
                                  printer.get("electricity_kwh_price") or 0)
 
-    def check_slice(self, h, c, job):
-        body = h.json()
-        h.json = lambda: body  # the slicer handler reads the body again
-        if self.access.role(c, str(body.get("serial"))) is None:
-            raise Forbidden("rule: slicing needs an active grant on the printer")
-
     def check_gcode(self, h, c, job):
-        """Browser-sliced G-code is a slice: same grant rule as POST .../slice, on the printer the query names."""
+        """Browser-sliced G-code needs an active grant on the printer the query names."""
         serial = (parse_qs(urlsplit(h.path).query).get("serial") or [""])[0]
         if self.access.role(c, serial) is None:
             raise Forbidden("rule: slicing needs an active grant on the printer")
@@ -1521,7 +1536,7 @@ class App:
             def call(method, path, body=None, data=None, binary=False, timeout=30):
                 return self.local_call(port, act_as, method, path, body, data, binary, timeout)
             try:
-                result = run(m.group(1), h.json(), actions.Ops(call, self.media_roots, self.media_dir, self.sender.print_file))
+                result = run(m.group(1), h.json(), actions.Ops(call, self.media_dir, self.sender.print_file))
             except actions.ActionError as e:
                 raise HttpError(e.status, str(e))
             h.send(200, {"result": result})
@@ -1578,7 +1593,6 @@ class App:
             ("POST", r"/api/printers/([^/]+)/light", w(self.post_printer_light)),
             ("POST", r"/api/jobs", self.post_job),
             ("GET", r"/api/jobs/" + JOB_ID, self.get_slice),
-            ("POST", r"/api/jobs/" + JOB_ID + r"/slice", self.slicer_job(self.s.post_slice, self.check_slice)),
             ("POST", r"/api/jobs/" + JOB_ID + r"/gcode", self.slicer_job(self.s.post_gcode, self.check_gcode)),
             ("GET", r"/api/engine/filament", self.get_engine_filament),
             ("GET", r"/api/jobs/" + JOB_ID + r"/(plate\.png|plate\.gcode)", self.slicer_job(self.s.get_file)),

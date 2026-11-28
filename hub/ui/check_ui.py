@@ -25,7 +25,6 @@ sys.path.insert(0, HERE)
 import ingress_proxy  # noqa: E402
 MODEL = {"name": "demo_part.stl", "mimeType": "model/stl", "buffer": b"solid x\nendsolid x\n"}
 SLICE_TIMEOUT = 15000
-SLICE_ON = None
 MOCKED = True  # False against a real hub (--base-url): no mock hooks, other spool names
 ONLY = None
 ALLOW_502 = []  # path fragments whose 502 answer is the point of the step
@@ -62,6 +61,10 @@ def check_viewer(page, shot):
     setrange = lambda name, v: page.evaluate("([n, v]) => { const e = document.querySelector(`.preview3d input[aria-label='${n}']`); e.value = v; e.dispatchEvent(new Event('input', { bubbles: true })); }", [name, v])
 
     full = read()
+    for _ in range(50):  # software WebGL on a slow arm runner can need seconds for the first frame; poll, do not guess
+        if full["lit"] > 50:
+            break
+        full = read()
     if MODEL["name"] != "demo_part.stl":  # a real slice (image run): the checks below need the mock's two-object plate
         m = re.fullmatch(r"Layers 1 to (\d+) of (\d+) · Z .* mm", text())
         assert m and m[1] == m[2], text()
@@ -563,6 +566,20 @@ def must(page, selector, msg, timeout=6000):
         raise AssertionError(msg + " (broken images: %s)" % page.evaluate(BROKEN))
 
 
+def check_back_online(page, base, ident):
+    """A printer page that saw the printer offline shows the camera again once it is back."""
+    hook = lambda on: page.evaluate(f"fetch('{PREFIX}api/_mock/hook?set=offline&serial={H2S}&on={on}')")
+    page.goto(base + PREFIX + "#/printers/" + H2S)
+    page.wait_for_selector(".cam.big")
+    hook(1)
+    page.wait_for_selector(".cam.big .off:has-text('Printer offline')", timeout=12000)
+    hook(0)
+    try:
+        page.wait_for_function("!document.querySelector('.cam.big .off') || !document.querySelector('.cam.big .off').textContent.includes('Printer offline')", timeout=12000)
+    finally:
+        hook(0)
+
+
 def check_printer_card(page, base, ident, go, shot):
     """A printer whose camera fails and whose AMS slots are all empty: a placeholder, no broken image, no tray row;
     the chamber light switch sends the command and shows the state."""
@@ -621,8 +638,6 @@ def check_library_pick(page, go, shot):
     assert page.locator("#load-note").get_by_role("button", name="Ask to load").count() == 1
     assert not slice_btn.is_disabled()
     shot("newprint-filament-pick")
-    if SLICE_ON:
-        page.locator("#where").get_by_role("button", name=SLICE_ON).click()
     slice_btn.click()
     page.wait_for_selector(".variant[aria-pressed=true]", timeout=SLICE_TIMEOUT)
     sent = page.evaluate("fetch('api/_mock/slices').then((r) => r.json())")[-3:]
@@ -674,6 +689,9 @@ def walk(page, ident, base, shot, inject):
     if ONLY == "preview":
         check_history_preview(page, base, ident)
         return
+    if ONLY == "offline":
+        check_back_online(page, base, ident)
+        return
     page.wait_for_selector(".pcard")
     if inject:
         page.evaluate("fetch('/api/me')")
@@ -695,6 +713,7 @@ def walk(page, ident, base, shot, inject):
         shot("printer-offline-hms")
     if MOCKED:
         check_printer_card(page, base, ident, go, shot)
+        check_back_online(page, base, ident)
         check_start_steps(page, base, ident, go, shot)
     go("#/queue", ".job")
     shot("queue")
@@ -716,8 +735,6 @@ def walk(page, ident, base, shot, inject):
     page.set_input_files("input[type=file]", files=[MODEL])
     page.get_by_role("button", name="Workshop H2S").click()
     page.locator(".chip", has_text="AMS 1·1").click()
-    if SLICE_ON:  # the page defaults to "This device" where it is isolated; the real image run covers the Pi path here
-        page.locator("#where").get_by_role("button", name=SLICE_ON).click()
     shot("new-print-ready")
     page.get_by_role("button", name="Slice good, better and best").click()
     page.wait_for_selector(".variant[aria-pressed=true]", timeout=SLICE_TIMEOUT)
@@ -769,7 +786,7 @@ def walk(page, ident, base, shot, inject):
 def main():
     ap = argparse.ArgumentParser()
     ap.add_argument("--shots")
-    ap.add_argument("--only", choices=["cache", "reslice", "panel", "download", "preview"], help="run one check only")
+    ap.add_argument("--only", choices=["cache", "reslice", "panel", "download", "preview", "offline"], help="run one check only")
     ap.add_argument("--port", type=int, default=18099, help="port of the mock server")
     ap.add_argument("--inject-absolute", action="store_true")
     ap.add_argument("--base-url")
@@ -777,12 +794,10 @@ def main():
     ap.add_argument("--model")
     ap.add_argument("--slice-timeout", type=int, default=15)
     ap.add_argument("--expect-403", default="")
-    ap.add_argument("--slice-on", help="chip to press under Slice on, e.g. \"Pi (Bambu Studio)\"")
     a = ap.parse_args()
-    global PREFIX, MODEL, SLICE_TIMEOUT, SLICE_ON, MOCKED, ONLY
+    global PREFIX, MODEL, SLICE_TIMEOUT, MOCKED, ONLY
     ONLY = a.only
     MOCKED = not a.base_url
-    SLICE_ON = a.slice_on
     SLICE_TIMEOUT = a.slice_timeout * 1000
     if a.model:
         MODEL = {"name": os.path.basename(a.model), "mimeType": "model/stl", "buffer": open(a.model, "rb").read()}

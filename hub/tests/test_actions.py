@@ -1,4 +1,4 @@
-"""Actions and LLM tools of the integration: the real app behind its HTTP routes, fake HA, bridge and slicer."""
+"""Actions and LLM tools of the integration: the real app behind its HTTP routes, fake HA and bridge."""
 import json
 import os
 import time
@@ -89,13 +89,6 @@ def test_add_to_queue_absolute_media_path(hub):
     assert job["grams"] == 75.22 and os.path.isfile(os.path.join(hub.s.SHARE, job["file"]))
 
 
-def test_add_to_queue_from_a_slice_as_the_user(hub):
-    hub.grant(USER, SERIAL)
-    jid = hub.sliced(owner=USER)
-    job = ok(act(hub, "add_to_queue", {"slice_job_id": jid, "target": "Lab"}, user=USER))["job"]
-    assert job["owner_user_id"] == USER and job["target"] == SERIAL and job["grams"] == 75.22
-
-
 def test_add_to_queue_any_needs_a_model_when_printers_differ(hub):
     status, body = act(hub, "add_to_queue", {"file": "a.gcode.3mf"})
     assert status == 400 and body["error"].startswith("target any needs model")
@@ -104,10 +97,20 @@ def test_add_to_queue_any_needs_a_model_when_printers_differ(hub):
     assert ok(act(hub, "add_to_queue", {"file": "b.gcode.3mf"}))["job"]["model"] == "H2S"
 
 
-@pytest.mark.parametrize("data", [{}, {"file": "a.gcode.3mf", "slice_job_id": "a1b2c3d4e5f6"}])
-def test_add_to_queue_needs_exactly_one_source(hub, data):
-    status, body = act(hub, "add_to_queue", data)
-    assert status == 400 and "exactly one" in body["error"]
+def test_add_to_queue_needs_a_file(hub):
+    status, body = act(hub, "add_to_queue", {})
+    assert status == 400 and "required key not provided @ data['file']" in body["error"]
+    status, body = act(hub, "add_to_queue", {"file": "a.gcode.3mf", "slice_job_id": "a1b2c3d4e5f6"})  # the field is gone with druckwerk.slice
+    assert status == 400 and "extra keys not allowed @ data['slice_job_id']" in body["error"]
+
+
+def test_the_slice_actions_and_tools_are_gone(hub):
+    assert act(hub, "slice", {})[0] == 404 and act(hub, "get_slice", {})[0] == 404
+    assert tool(hub, "druckwerk_slice", {})[0] == 404 and tool(hub, "druckwerk_get_slice_results", {})[0] == 404
+    got = manifest(hub)
+    names = {a["name"] for a in got["actions"]} | {t["name"] for t in got["llm"]["tools"]}
+    assert not [n for n in names if "slice" in n]
+    assert "slice_job" not in json.dumps(got) and "druckwerk.slice" not in json.dumps(got)
 
 
 def test_access_rules_reach_the_caller_with_their_status(hub):
@@ -171,74 +174,6 @@ def test_start_is_for_admins_even_with_both_flags(hub):
     assert status == 403 and body["error"].startswith("rule:")
 
 
-# ---- slicing with a fake slicer
-@pytest.fixture
-def slicer(hub, monkeypatch):
-    """Three slices that end after a short pause, with the real slice_info of the test fixture."""
-    s = hub.s
-    printer = {"serial": SERIAL, "name": "Lab", "model": "H2S", "bed": "Textured PEI Plate", "qualities": ["good", "better", "best"],
-               "trays": [{"ams": "0", "id": "0", "type": "PETG", "idx": "", "name": "PETG", "colour": "#ADB1B2"}], "online": True}
-    monkeypatch.setattr(s, "printers", lambda: [printer])
-    monkeypatch.setattr(actions, "SLICE_POLL", 0.02)
-
-    def run_slice(jid, printer, quality, tray, bed):
-        job = s.jobs[jid]
-        time.sleep(0.1)
-        result = make_3mf(hub.tmp / ("%s.gcode.3mf" % jid))
-        job.update(state="done", result=result, info=s.slice_info(result), settings={"process": "0.20mm Standard @X", "tray": tray})
-
-    monkeypatch.setattr(s, "run_slice", run_slice)
-    (hub.media / "cube.stl").write_bytes(b"solid x")
-    return hub
-
-
-def test_slice_waits_for_three_variants_and_saves_the_plate_images(slicer):
-    hub = slicer
-    hub.grant(USER, SERIAL)
-    data = {"model_file": str(hub.media / "cube.stl"), "printer": "Lab", "tray": "0:0", "plate": "Textured PEI Plate"}
-    res = ok(act(hub, "slice", data, user=USER))
-    assert res["state"] == "done" and list(res["slice_job_ids"]) == ["good", "better", "best"]
-    assert [v["quality"] for v in res["variants"]] == ["good", "better", "best"]
-    first = res["variants"][0]
-    assert first["print_time"] == "2 h 04 min" and first["grams"] == 75.22 and first["layer_height"] == "0.20mm"
-    assert first["plate_image"] == str(hub.media / "druckwerk" / "plates" / (first["slice_job_id"] + ".png"))
-    assert open(first["plate_image"], "rb").read().startswith(b"\x89PNG")
-    assert all(hub.s.jobs[i]["owner_user_id"] == USER for i in res["slice_job_ids"].values())
-
-
-def test_slice_without_waiting_returns_ids_and_get_slice_reads_them(slicer):
-    hub = slicer
-    data = {"model_file": str(hub.media / "cube.stl"), "printer": SERIAL, "tray": "0:0", "wait": False}
-    res = ok(act(hub, "slice", data))
-    assert res["state"] == "slicing" and res["variants"] == [] and len(res["slice_job_ids"]) == 3
-    ids = list(res["slice_job_ids"].values())
-    got = ok(act(hub, "get_slice", {"slice_job_ids": ids}))
-    assert got["state"] == "slicing" and [v["state"] for v in got["variants"]] != []
-    deadline = time.time() + 5
-    while got["state"] != "done" and time.time() < deadline:
-        time.sleep(0.05)
-        got = ok(act(hub, "get_slice", {"slice_job_ids": ids[0]}))  # a single id is a list of one
-    assert got["state"] == "done" and got["variants"][0]["plate_image"]
-
-
-def test_slice_gives_up_waiting_but_the_slices_go_on(slicer, monkeypatch):
-    monkeypatch.setattr(actions, "SLICE_WAIT", 0.0)
-    status, body = act(slicer, "slice", {"model_file": str(slicer.media / "cube.stl"), "printer": SERIAL, "tray": "0:0"})
-    assert status == 504 and "continues in the app" in body["error"]
-
-
-@pytest.mark.parametrize("path, tray, text", [("/etc/passwd", "0:0", "inside"), ("rel.stl", "0:0", "absolute"),
-                                              ("x.txt", "0:0", "must be one of"), ("gone.stl", "0:0", "No such file"),
-                                              ("cube.stl", "bad", "unit:slot")])
-def test_slice_rejects_bad_input_before_it_uploads(hub, path, tray, text):
-    (hub.media / "x.txt").write_text("x")
-    (hub.media / "cube.stl").write_bytes(b"s")
-    full = path if path in ("/etc/passwd", "rel.stl") else str(hub.media / path)
-    status, body = act(hub, "slice", {"model_file": full, "printer": SERIAL, "tray": tray})
-    assert status == 400 and text in body["error"]
-    assert hub.s.jobs == {}
-
-
 # ---- camera
 def test_camera_snapshot_is_saved_in_media(hub):
     res = ok(act(hub, "camera_snapshot", {"printer": "Lab"}))
@@ -288,7 +223,6 @@ def test_a_tool_runs_the_action_as_the_user(hub):
     assert [p["serial"] for p in ok(tool(hub, "druckwerk_get_printers", {}, USER))["printers"]] == [SERIAL]
     assert ok(tool(hub, "druckwerk_get_queue", {}, USER))["waiting"][SERIAL][0]["id"] == job["id"]
     assert ok(tool(hub, "druckwerk_cancel_job", {"job_id": job["id"]}, USER))["job"]["state"] == "cancelled"
-    assert ok(tool(hub, "druckwerk_get_slice_results", {"slice_job_ids": []}))["variants"] == []
 
 
 def test_a_start_tool_is_refused_without_both_flags(hub):
@@ -318,8 +252,6 @@ def test_tools_are_strict_where_actions_coerce(hub):
     ("get_queue", {"history_limit": -1}, "value must be at least 0 for dictionary value @ data['history_limit']"),
     ("get_queue", {"history_limit": "many"}, "expected int for dictionary value @ data['history_limit']"),
     ("reorder_job", {"job_id": "a" * 12, "position": -1}, "value must be at least 0 for dictionary value @ data['position']"),
-    ("slice", {"model_file": "/media/a.stl", "printer": SERIAL, "tray": "0:0", "wait": "maybe"},
-     "invalid boolean value maybe for dictionary value @ data['wait']"),
     ("add_to_queue", {"file": "a", "options": {"bed_type": "gold"}}, "value must be one of"),
     ("add_to_queue", {"file": "a", "options": {"gold": 1}}, "extra keys not allowed @ data['options']['gold']"),
     ("add_to_queue", {"file": "a", "name": "x" * 81}, "length of value must be at most 80"),
@@ -371,8 +303,7 @@ def test_events_carry_the_manifest_revision(hub):
 
 def test_manifest_describes_what_the_ui_needs(hub):
     by_name = {a["name"]: a for a in manifest(hub)["actions"]}
-    printer = by_name["slice"]["fields"]["plate"]
-    assert printer["selector"]["select"]["options"][3] == "Textured PEI Plate" and printer["example"] == "Textured PEI Plate"
+    assert by_name["print_file"]["fields"]["bed_leveling"]["selector"] == {"select": {"options": ["on", "off", "auto"]}}
     assert by_name["print_file"]["fields"]["device_id"]["selector"] == {"device": {"filter": [{"manufacturer": "Bambu Lab"}]}}
     assert by_name["get_queue"]["fields"]["history_limit"]["selector"]["number"]["max"] == 50
     assert by_name["start_job"]["serial_fields"] == ["printer"] and by_name["move_job"]["serial_fields"] == ["target"]

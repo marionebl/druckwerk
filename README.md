@@ -47,8 +47,7 @@ Agents (an MCP server for Home Assistant, Claude through Assist) and automations
 Actions (reads answer with `return_response` only, writes may):
 
 - `druckwerk.get_printers`: status, progress, remaining time, layer, temperatures, AMS trays, HMS errors, current job, queue length. `druckwerk.get_queue`: waiting jobs per printer and `any`, pending approvals, history.
-- `druckwerk.slice`: slices a model under `/share` or `/media` as good, better and best, and returns time, grams, cost and a slice job id for each. It takes 3 to 15 minutes (one slice at a time); `wait: false` returns the ids at once, `druckwerk.get_slice` reads them later.
-- `druckwerk.add_to_queue` (a sliced file in the share, or a slice job id), `cancel_job`, `reorder_job`, `move_job`, `skip_job`, `approve_job`, `reject_job`, `retry_job`.
+- `druckwerk.add_to_queue` (a sliced `.gcode.3mf` in the share), `cancel_job`, `reorder_job`, `move_job`, `skip_job`, `approve_job`, `reject_job`, `retry_job`.
 - `druckwerk.start_next` and `druckwerk.start_job` need `plate_clear: true` and `confirmed_by_person: true` and are refused otherwise. Agents must show the person the sliced plate review and a current `druckwerk.camera_snapshot` first and get an explicit yes.
 - `druckwerk.camera_snapshot`: saves `/media/druckwerk/<serial>-<time>.jpg` and returns the path.
 
@@ -58,7 +57,7 @@ Example with `ha_call_service` (or any REST client: `POST /api/services/druckwer
 
 ```json
 {"domain": "druckwerk", "service": "add_to_queue",
- "data": {"slice_job_id": "a1b2c3d4e5f6", "target": "any", "model": "H2S", "options": {"timelapse": true}}}
+ "data": {"file": "benchy_better_h2s.gcode.3mf", "target": "any", "model": "H2S", "options": {"timelapse": true}}}
 ```
 
 ## Print options, name and drying
@@ -95,14 +94,14 @@ Before anything is sent, `druckwerk.print_file` and the Start button check the f
 ```
 pip install pytest-homeassistant-custom-component
 pytest tests                      # integration (Python 3.14)
-pytest hub/slicer                 # slicer server
+pytest hub/slicer                 # slicer server (browser G-code upload, print, engine files)
 (cd hub/bridge/tests && pytest)   # bridge server and plugin download
 pytest -p no:homeassistant -p no:socket hub/queue/tests hub/tests
 ```
 
 ## Druckwerk app
 
-`hub/` is the one app to install: it runs the cloud bridge (what `addon/` did), the slicer (`hub/slicer/`)
+`hub/` is the one app to install: it runs the cloud bridge (what `addon/` did), the browser slicer's server side (`hub/slicer/`: engine files, G-code storage, print)
 and the bridge build (done in the image build, `hub/bridge/`). Prebuilt images for aarch64 and amd64 are on ghcr.io, so nothing is built on the Pi.
 
 1. In Home Assistant: Settings, Apps, App store, menu, Repositories, add `https://github.com/marionebl/druckwerk`.
@@ -118,6 +117,6 @@ Ingress serves the slicer UI; the bridge page and API are proxied under `api/bri
 The web UI has the feedback button (purple, bottom right, or key F): click an element, write a message and send. It adds an item with the context and a screenshot to the to-do list `todo.feedback` (`POST api/feedback`). In the Access view, "Create switch" makes an `input_boolean` helper for the chosen user and printer and puts it in the condition field (`POST api/ha/switches`, HA admins). Both routes are in `hub/API.md`.
 The app hostname is `<repository hash>-druckwerk`. Supervisor derives the hash from the repository URL (`c9a833d4` for `https://github.com/marionebl/druckwerk`), and `ha apps info` or the Supervisor API (`/addons/<slug>/info`, field `hostname`) shows it.
 
-Slicing in the browser: "Slice on" in New print defaults to **This device** only when the page is cross-origin isolated (`crossOriginIsolated`; the app sends COOP, COEP and Document-Isolation-Policy, so Chrome 137+ isolates even the Home Assistant sidebar frame), else to the Pi. An STL is sliced by OrcaSlicer compiled to WebAssembly, the [Muon3D Slicer Engine](https://github.com/Muon-3D/muon3d-slicer-engine/tree/v0.6.0-m1.9) (AGPL-3.0, source at that link, licence at `engine/<release>/LICENSE` in the app), in a Web Worker. The three variants run one after another; the G-code goes to `POST api/jobs/<id>/gcode` (identity, grant and owner rules as for `/slice`) and is stored like a Pi slice. Other model types slice on the Pi. `hub/tests/browser_test.sh` checks it in headless Chromium.
+Slicing happens only in the browser; the app has no slicer of its own (since 3.3.0). OrcaSlicer compiled to WebAssembly, the [Muon3D Slicer Engine](https://github.com/Muon-3D/muon3d-slicer-engine/tree/v0.6.0-m1.9) (AGPL-3.0, source at that link, licence at `engine/<release>/LICENSE` in the app), runs in a Web Worker and slices an STL. It uses several threads when the page is cross-origin isolated (`crossOriginIsolated`; the app sends COOP, COEP and Document-Isolation-Policy, so Chrome 137+ isolates even the Home Assistant sidebar frame), else one. The three variants run one after another; the G-code goes to `POST api/jobs/<id>/gcode` (identity, grant and owner rules) and is stored as a `.gcode.3mf`. `hub/tests/browser_test.sh` checks it in headless Chromium.
 
-Tests: `hub/tests/image_test.sh` builds the image and checks it (no vendor libs, plugin download from a local fake CDN with a right and a wrong hash, bridge health, a test plate sliced through the API). CI runs it on both architectures (`.github/workflows/hub.yml`) and pushes `ghcr.io/marionebl/druckwerk-<arch>:<version>` from main. Raise `version` in `hub/config.yaml` with every change.
+Tests: `hub/tests/image_test.sh` builds the image and checks it (no vendor libs, plugin download from a local fake CDN with a right and a wrong hash, bridge health, browser G-code stored and printed through the API, image size limit). CI runs it on both architectures (`.github/workflows/hub.yml`) and pushes `ghcr.io/marionebl/druckwerk-<arch>:<version>` from main. Raise `version` in `hub/config.yaml` with every change.

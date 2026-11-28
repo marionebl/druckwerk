@@ -5,7 +5,6 @@ ARG BASE=druckwerk-base:local
 # One stage collects the app files, so the app is a single layer on top of the base.
 FROM scratch AS app
 COPY hub/bridge/server.py hub/bridge/plugin.py hub/bridge/bridge.sh hub/externals.py hub/externals.env /opt/bridge/
-COPY hub/slicer/slice.sh hub/slicer/bs.py hub/externals.py hub/externals.env /opt/bs/bin/
 COPY hub/slicer/server.py /srv/slicer_server.py
 COPY hub/slicer/pack.py /srv/
 COPY hub/externals.py /srv/
@@ -23,8 +22,7 @@ ARG VERSION=dev
 ARG HASS_ARCH=unknown
 COPY --from=app / /
 ENV DW_DAEMON_CMD=/opt/bridge/bridge.sh DW_CERT=/opt/bridge/slicer_base64.cer \
-    SLICER_SENDER_URL=http://127.0.0.1:8098 SLICER_PORT=8099 SLICER_ENGINE=/srv/engine \
-    BS_APP=/opt/bs SLICER_SLICE_CMD=/opt/bs/bin/slice.sh SLICER_BS=/opt/bs/bin/bs.py SLICER_PROFILES=/opt/bs/resources/profiles
+    SLICER_SENDER_URL=http://127.0.0.1:8098 SLICER_PORT=8099 SLICER_ENGINE=/srv/engine
 LABEL io.hass.type="app" io.hass.name="Druckwerk" io.hass.version="$VERSION" io.hass.arch="$HASS_ARCH" \
       org.opencontainers.image.source="https://github.com/marionebl/druckwerk"
 CMD ["/run.sh"]

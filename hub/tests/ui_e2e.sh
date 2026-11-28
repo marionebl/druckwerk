@@ -1,6 +1,6 @@
 #!/bin/bash
 # The web UI against the real hub in the real image: fake HA, bridge and Supervisor (e2e_mock.py), the Supervisor ingress
-# replaced by ingress_proxy.py (path prefix + identity headers), real slicing. Fails on any console error,
+# replaced by ingress_proxy.py (path prefix + identity headers), slicing in the browser (WASM engine). Fails on any console error,
 # page error, failed request, HTTP status >= 400 or request outside the ingress prefix.
 # Env: IMG, DOCKERFILE and BUILD_ARGS as in image_test.sh; SHOTS (screenshot dir); SKIP_BUILD=1 to reuse the image; ONLY=setup|seeded runs one of the two passes.
 set -euo pipefail
@@ -32,6 +32,6 @@ fi
 if [ "${ONLY:-seeded}" = seeded ]; then
   echo "== seeded hub: admin and a user with grants on two printers"
   python3 "$HERE/e2e_seed.py" $WORK/seeded; run_hub $WORK/seeded
-  check --idents admin,user --model "$REPO/hub/tests/fixtures/cube20.stl" --slice-timeout 240 --slice-on "Pi (Bambu Studio)"
+  check --idents admin,user --model "$REPO/hub/tests/fixtures/cube20.stl" --slice-timeout 240
 fi
 echo "screenshots in $SHOTS"
