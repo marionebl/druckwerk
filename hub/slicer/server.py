@@ -34,6 +34,7 @@ CORE = env("SLICER_CORE_URL", "http://supervisor/core/api")
 PRINT = None  # the app sets a function that sends a print; without it the print goes through the HA service
 ENGINE = env("SLICER_ENGINE", "/srv/engine")  # OrcaSlicer WASM runtime and presets/<model>.json (see engine/build.sh)
 MAX_MODEL = 100 * 1024 * 1024
+MAX_PART = 1024 * 1024  # largest body of one part
 KEEP_JOBS = 10
 JOB_ID = r"([0-9a-f]{12})"
 
@@ -167,11 +168,52 @@ def get_printers(h, m, q):
         h.send(502, {"error": "Cannot read printers from the bridge: %s" % e})
 
 
+def read_body(h, f, length):
+    left = length
+    while left:
+        chunk = h.rfile.read(min(left, 1 << 20))
+        if not chunk:
+            break
+        f.write(chunk)
+        left -= len(chunk)
+    return length - left
+
+
+def refuse(h, status, body):
+    """Answer an error to an upload. The body is read first (up to 8 MB), or the client sees a reset connection, not the error."""
+    left = min(int(h.headers.get("Content-Length") or 0), 8 << 20)
+    while left > 0:
+        left -= len(h.rfile.read(min(left, 1 << 20)) or b"\0" * left)
+    h.send(status, body)
+
+
+def chunk_args(h, q):
+    """(offset, total) of an upload sent in parts, or None when the body is the whole file. A proxy in front of the app
+    (HA ingress) can refuse bodies of about 1 MB, so the browser sends the file in parts of 512 KB."""
+    if "total" not in q:
+        return None
+    try:
+        offset, total = int((q.get("offset") or ["0"])[0]), int(q["total"][0])
+    except ValueError:
+        total = 0
+    length = int(h.headers.get("Content-Length") or 0)
+    if not 0 < total <= MAX_MODEL or offset < 0 or not 0 < length <= min(MAX_PART, total - offset):
+        refuse(h, 413 if length > MAX_PART else 400, {"error": "Send the file in parts of at most %d bytes with a valid offset and total." % MAX_PART})
+        return False
+    return offset, total
+
+
 def post_job(h, m, q):
     name = os.path.basename((q.get("name") or [""])[0])
     if not re.search(r"\.(stl|3mf|obj|step|stp)$", name, re.I):
         return h.send(400, {"error": "Upload an .stl, .3mf, .obj or .step file."})
+    part = chunk_args(h, q)
+    if part is False:
+        return
     length = int(h.headers.get("Content-Length") or 0)
+    total = part[1] if part else length
+    if part and part[0]:
+        return h.send(400, {"error": "The first part starts at offset 0."})
     if not 0 < length <= MAX_MODEL:
         return h.send(413, {"error": "The file must be 1 byte to 100 MB."})
     jid = secrets.token_hex(6)
@@ -179,19 +221,40 @@ def post_job(h, m, q):
     os.makedirs(d)
     model = os.path.join(d, re.sub(r"[^A-Za-z0-9._-]", "_", name))
     with open(model, "wb") as f:
-        left = length
-        while left:
-            chunk = h.rfile.read(min(left, 1 << 20))
-            if not chunk:
-                break
-            f.write(chunk)
-            left -= len(chunk)
-    job = {"id": jid, "filename": name, "model": model, "state": "uploaded", "created": time.time()}
+        read_body(h, f, length)
+    done = length == total
+    job = {"id": jid, "filename": name, "model": model, "state": "uploaded" if done else "uploading", "created": time.time()}
+    if not done:
+        job["total"] = total
     with jobs_lock:
         jobs[jid] = job
     save_job(job)
     prune()
-    h.send(200, public(job))
+    h.send(200, dict(public(job), received=length) if part else public(job))
+
+
+def post_model_part(h, m, q):
+    """The next part of a model that POST /api/jobs started with `total`."""
+    job = jobs.get(m.group(1))
+    if not job:
+        return h.send(404, {"error": "unknown job"})
+    part = chunk_args(h, q)
+    if part is False:
+        return
+    if not part or job.get("state") != "uploading" or part[1] != job.get("total"):
+        return refuse(h, 400, {"error": "This job is not waiting for more parts of the model."})
+    size = os.path.getsize(job["model"])
+    if part[0] != size:
+        return refuse(h, 409, {"error": "Expected offset %d." % size, "received": size})
+    length = int(h.headers.get("Content-Length") or 0)
+    with open(job["model"], "ab") as f:
+        read_body(h, f, length)
+    size = os.path.getsize(job["model"])
+    if size == job["total"]:
+        job.update(state="uploaded")
+        job.pop("total", None)
+    save_job(job)
+    h.send(200, dict(public(job), received=size))
 
 
 def public(job):
@@ -286,11 +349,30 @@ def post_gcode(h, m, q):
         return h.send(404, {"error": "unknown job"})
     arg = {k: v[0] for k, v in q.items()}
     length = int(h.headers.get("Content-Length") or 0)
-    if not 0 < length <= MAX_MODEL:
-        return h.send(413, {"error": "The G-code must be 1 byte to 100 MB."})
-    gcode = h.rfile.read(length)
-    if len(gcode) != length:
-        return h.send(400, {"error": "The G-code upload was cut short."})
+    part = chunk_args(h, q)
+    if part is False:
+        return
+    if part:
+        buf = os.path.join(job_dir(job["id"]), "gcode.part")
+        size = os.path.getsize(buf) if os.path.isfile(buf) else 0
+        if part[0] == 0:
+            size = 0
+        if part[0] != size:
+            return refuse(h, 409, {"error": "Expected offset %d." % size, "received": size})
+        with open(buf, "wb" if part[0] == 0 else "ab") as f:
+            read_body(h, f, length)
+        if os.path.getsize(buf) != part[1]:
+            return h.send(200, {"received": os.path.getsize(buf), "total": part[1]})
+        with open(buf, "rb") as f:
+            gcode = f.read()
+        os.remove(buf)
+        length = len(gcode)
+    else:
+        if not 0 < length <= MAX_MODEL:
+            return h.send(413, {"error": "The G-code must be 1 byte to 100 MB."})
+        gcode = h.rfile.read(length)
+        if len(gcode) != length:
+            return h.send(400, {"error": "The G-code upload was cut short."})
     picked = pick(h, arg)
     if not picked:
         return
@@ -380,6 +462,7 @@ ROUTES = [
     ("POST", r"/api/jobs/" + JOB_ID + r"/gcode", post_gcode),
     ("GET", r"/api/jobs/" + JOB_ID + r"/(plate\.png|plate\.gcode)", get_file),
     ("GET", r"/api/jobs/" + JOB_ID + r"/model", get_model),
+    ("POST", r"/api/jobs/" + JOB_ID + r"/model", post_model_part),
     ("POST", r"/api/jobs/" + JOB_ID + r"/print", post_print),
 ]
 
