@@ -9,6 +9,15 @@
 - The "Plate clear, start" notification button and the air-print pause run in their own short-lived thread, so a slow send or pause no longer stops the delivery of Home Assistant events or the ticker.
 - Bridge: a cloud login, its code step and the account write hold the global lock only around the account and pending lists; one lock per account keeps two logins of one account in order.
 
+## 3.21.0 (unreleased)
+
+- Bridge (port 8098): only the app on loopback may use it. Other clients get 403, except `GET /api/camera/<serial>/live` (go2rtc cannot send a header) and `GET /api/health`, which no longer lists account email addresses for them. Before, any client in the Home Assistant network could print, pause and delete a cloud account.
+- `druckwerk.print_file` obeys the calling user: with a user id only an admin of the printer (HA admin or printer owner) may send, and only they can use `force`. A call without a user stays admin.
+- Integration 0.15.0: the to-do list, the chamber light and the buttons send the HA user id (`X-Druckwerk-Act-As`), so the app's rules apply to them. The light and the slot re-read need an admin of the printer (HA admin or owner), as in the web UI. The upload route answers 401 and counts a failed login for a secret with a byte that is not UTF-8 (it was a 500).
+- A negative or non-numeric `Content-Length` is a 400 in the bridge and the app (the app read until the client closed). The bridge has a read timeout of 30 s, the app of 120 s.
+- The login daemon and ffmpeg of the bridge start with `PATH`, `HOME`, `LANG` and `TZ` only; they no longer get `SUPERVISOR_TOKEN`.
+- An empty `HUB_INGRESS_IPS` uses the default ingress address 172.30.32.2. Before, it made each network client a trusted ingress gateway.
+
 ## 3.20.0 (unreleased)
 
 - Bridge: the live camera upstream of each printer stays open at all times (`DW_LIVE_KEEP`, on by default). A viewer gets video without the 12 to 14 s mint and keyframe wait on the H2S, and stills and fresh stills (after a light switch) come from the live frames. A dropped upstream opens again after 5 s, then up to 120 s between tries. No new upstream opens while a print is sent. Cost on a Pi 4: about one core and the camera's bit rate per printer, all the time.

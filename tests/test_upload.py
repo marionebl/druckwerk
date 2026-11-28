@@ -1,5 +1,6 @@
 """PUT /api/druckwerk/upload/<name>: secret check and ban hook in HA, everything else in the app."""
 
+import asyncio
 from unittest.mock import AsyncMock, patch
 
 import pytest
@@ -102,3 +103,14 @@ async def test_an_unreachable_app_is_502(client, app):
     app.put(f"{APP_UPLOAD}a.gcode.3mf", exc=aiohttp.ClientError("down"))
     resp = await client.put(UPLOAD + "a.gcode.3mf", data=b"x", headers=OK)
     assert resp.status == 502 and "not reachable" in (await resp.json())["message"]
+
+
+async def test_a_secret_with_a_byte_that_is_not_utf8_is_401_and_counts_as_a_failed_login(client, app):
+    # aiohttp's client cannot send such a header, so write the request by hand
+    reader, writer = await asyncio.open_connection(client.server.host, client.server.port)
+    writer.write(b"PUT " + UPLOAD.encode() + b"a.gcode.3mf HTTP/1.1\r\nHost: x\r\nContent-Length: 1\r\n"
+                 b"X-Druckwerk-Secret: ab\xff\xfecd\r\n\r\nx")
+    with patch("custom_components.druckwerk.upload.process_wrong_login", new=AsyncMock()) as ban:
+        status = (await reader.readline()).split()[1]
+    writer.close()
+    assert status == b"401" and ban.await_count == 1 and not forwarded(app)

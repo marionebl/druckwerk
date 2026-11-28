@@ -117,7 +117,7 @@ class Handler(BaseHTTPRequestHandler):
         s = self.server
         if self.path == "/health":
             self.reply(200, {"status": "ok", "mqtt_connected": True, "cached_devices": len(s.serials),
-                             "credentials": s.creds, "home": os.environ.get("HOME"), "pid": os.getpid()})
+                             "credentials": s.creds, "home": os.environ.get("HOME"), "env": sorted(os.environ), "pid": os.getpid()})
         elif self.path == "/printers":
             self.reply(200, {"printers": [{"name": "p", "serial": x, "gcode_state": "IDLE"} for x in s.serials[:1]]})
         elif self.path == "/commands":  # mock only: what /command received

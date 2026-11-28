@@ -133,9 +133,9 @@ Goal: the `druckwerk` integration (HACS, a Home Assistant restart on every updat
 
 ## Generic integration: entities, print, files, upload, options
 
-Goal: the `druckwerk` integration holds no logic of its own. It renders what the app describes, and forwards. All routes here are internal: `X-Hub-Secret` is required (401 without identity or secret, 403 `rule: only the Home Assistant integration can do this` with an identity but no secret). `X-Druckwerk-Act-As` is ignored on them, except on `POST /api/actions/*` and `POST /api/tools/*`, where it works as above. Errors are `{error: <text>}`. The integration maps 400 to `ServiceValidationError` and every other status to `HomeAssistantError`, both with the `error` text, and a connection failure to `HomeAssistantError("Druckwerk not reachable: ...")`.
+Goal: the `druckwerk` integration holds no logic of its own. It renders what the app describes, and forwards. All routes here are internal: `X-Hub-Secret` is required (401 without identity or secret, 403 `rule: only the Home Assistant integration can do this` with an identity but no secret). `X-Druckwerk-Act-As` works as above on them; the integration sends it for the buttons, the light, the to-do list, the actions and the tools. Errors are `{error: <text>}`. The integration maps 400 to `ServiceValidationError` and every other status to `HomeAssistantError`, both with the `error` text, and a connection failure to `HomeAssistantError("Druckwerk not reachable: ...")`.
 
-Two base URLs: `hub_url` is the app on port 8099 (every route below). `bridge_url` is the bridge on port 8098, same host. Only the camera stream (see Camera) uses the bridge URL.
+Two base URLs: `hub_url` is the app on port 8099 (every route below). `bridge_url` is the bridge on port 8098, same host. Only the camera stream (see Camera) uses the bridge URL. The bridge has no secret: it answers 403 to every client except the app on loopback, apart from `GET /api/camera/<serial>/live` and `GET /api/health` (without email addresses for other clients).
 
 ### Routes
 
@@ -149,8 +149,8 @@ Two base URLs: `hub_url` is the app on port 8099 (every route below). `bridge_ur
 | `PUT /api/upload/<name>` | Store an uploaded print file. |
 | `GET /api/integration/printers/<serial>/image` | The picture of the current print (PNG). |
 | `GET /api/integration/printers/<serial>/snapshot` | The camera still (JPEG). |
-| `POST /api/integration/printers/<serial>/light` | Switch the chamber light. |
-| `POST /api/integration/printers/<serial>/rfid` | Make the AMS read a slot's tag again. |
+| `POST /api/integration/printers/<serial>/light` | Switch the chamber light. With `X-Druckwerk-Act-As`: admin of the printer only (403 otherwise). |
+| `POST /api/integration/printers/<serial>/rfid` | Make the AMS read a slot's tag again. With `X-Druckwerk-Act-As`: admin of the printer only (403 otherwise). |
 | `POST /api/queue/<id>/cancel`, `POST /api/queue/<id>/reorder` | The existing queue routes, used by the todo entity. |
 
 `<serial>` matches `[A-Za-z0-9_-]{1,40}`.
@@ -230,7 +230,7 @@ Every entity is created for each serial in `printers`, now and when a new serial
 How to run `press = {path, body?, needs?}`:
 1. `needs` maps a local entity key to an error text. If that entity has no value (select without option), raise `HomeAssistantError(text)` and call nothing.
 2. In `path`, replace `$serial` with the serial. In `body`, replace each string value that equals `$serial` with the serial and each string value that equals `$<key>` with the value of the local entity `<key>` (a string for the select, a boolean for a switch). All other values are literal.
-3. `POST hub_url + path` with the body as JSON and `X-Hub-Secret`. When `path` starts with `/api/actions/` or `/api/tools/`, add `X-Druckwerk-Act-As: <context.user_id>` when there is one. Use a timeout of at least 400 s: a print send waits up to 300 s for the bridge.
+3. `POST hub_url + path` with the body as JSON and `X-Hub-Secret`. Add `X-Druckwerk-Act-As: <context.user_id>` when there is one. Use a timeout of at least 400 s: a print send waits up to 300 s for the bridge.
 4. Errors as in the first paragraph, then poll the state at once.
 
 **sensor `cloud_sender`**. `native_value` is `entities.cloud_sender.state`, `extra_state_attributes` is `entities.cloud_sender.attributes` (`account_email`, `last_file`, `last_time`, `last_error`). Device class enum with the keys of `options` as options. The state is per printer and also survives an app restart.
@@ -248,7 +248,7 @@ How to run `press = {path, body?, needs?}`:
 **todo `queue`**. Features: `DELETE_TODO_ITEM` and `MOVE_TODO_ITEM`. No create and no update. Items come from `entities.queue.items`, in order, each `TodoItem(uid=uid, summary=summary, description=description, status=NEEDS_ACTION)`. They are the waiting jobs (`queued` and `pending_approval`) with that printer as target or printer. Jobs for `any` are not listed.
 - Delete one or more uids: for each uid `POST /api/queue/<uid>/cancel` with body `{}`. Then poll the state at once.
 - Move `uid` after `previous_uid` (None means to the top): `waiting` is the uids of the current items without `uid`; `position` is 0 when `previous_uid` is None, else `waiting.index(previous_uid) + 1` when `previous_uid` is in `waiting`, else `len(waiting)`. Then `POST /api/queue/<uid>/reorder` with `{"position": position, "scope": <serial>}`. Then poll the state at once.
-- Both calls go without `X-Druckwerk-Act-As`, as today (the todo list is for HA users who can see it). Errors are shown as `HomeAssistantError("Druckwerk: <text>")`. The cancel and reorder rules and answers are in "Queue".
+- Both calls send `X-Druckwerk-Act-As: <context.user_id>` when there is one, so a user cancels and reorders only what the access rules allow (a call without a user stays admin). Errors are shown as `HomeAssistantError("Druckwerk: <text>")`. The cancel and reorder rules and answers are in "Queue".
 
 ### Print: `POST /api/actions/print_file`
 
@@ -262,7 +262,7 @@ The fields, names, defaults and `response: optional` are those of the manifest a
 - Result: every try sets the printer's result for the `cloud_sender` sensor: `result` `sent` or `error`, `last_file`, `last_time`, `last_error`, and after a success `last_path`. It is kept in `/data/sender.json`.
 - After a success with `use_ams: true`, the app watches the print (see "Watchdog").
 - The queue's own start and the web UI's `POST /api/jobs/<id>/print` call the same function inside the app. They do not call Home Assistant.
-- No grant rule applies, as before with the HA service: any internal caller prints. The HA service `druckwerk.print_file` is registered from the manifest like the other actions and forwards here.
+- Access: a call without `X-Druckwerk-Act-As` (automation) prints. With a user id only an admin of the printer (HA admin or printer owner) prints, else `403 rule: only an admin of the printer can print directly; use the queue`. `force` therefore needs admin too. The HA service `druckwerk.print_file` is registered from the manifest like the other actions and forwards here.
 
 ### Watchdog
 

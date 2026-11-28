@@ -35,6 +35,7 @@ HERE = os.path.dirname(os.path.abspath(__file__))
 for _d in (HERE, os.path.dirname(HERE)):  # python -I drops the script dir; the repo keeps externals.py one level up
     sys.path.insert(0, _d)
 import externals  # noqa: E402
+from httplen import content_length  # noqa: E402
 
 env = os.environ.get
 DATA = env("DW_DATA", "/data")
@@ -319,7 +320,7 @@ class Daemon:
                 install_cert(self.acc.home)
                 self.proc = subprocess.Popen(DAEMON_CMD + [self.acc.creds, str(self.acc.port)],
                                              stdout=subprocess.PIPE, stderr=subprocess.STDOUT, text=True,
-                                             errors="replace", env=dict(os.environ, HOME=self.acc.home))
+                                             errors="replace", env=dict(clean_env(), HOME=self.acc.home))
                 self.started, self.bad_since = time.time(), None
                 if self.dead:  # stop() ran before the process existed
                     self.proc.kill()
@@ -775,7 +776,7 @@ def fetch_camera(acc, serial, kind, qs):
         acc.daemon.camera_timeout(serial)
     if status == 200 and ctype.startswith("video/h264"):
         jpeg = subprocess.run(["ffmpeg", "-loglevel", "error", "-f", "h264", "-i", "-", "-frames:v", "1", "-f", "image2", "-c:v", "mjpeg", "-"],
-                              input=raw, capture_output=True, timeout=60)
+                              input=raw, capture_output=True, timeout=60, env=clean_env())
         if jpeg.returncode or not jpeg.stdout:
             err = {"error": "could not decode keyframe", "stage": "decode", "detail": jpeg.stderr.decode(errors="replace")[-300:]}
             return 502, json.dumps(err).encode(), "application/json"
@@ -830,10 +831,15 @@ TS_PACKET = 188
 PAT_PID, PMT_PID = 0, 0x1000  # ffmpeg's mpegts muxer puts the PMT here
 
 
+def clean_env():
+    """The plugin and ffmpeg must not see SUPERVISOR_TOKEN or the other variables of the app."""
+    return {k: os.environ[k] for k in ("PATH", "HOME", "LANG", "TZ") if k in os.environ}
+
+
 def ffmpeg_jpeg(args, data):
     """First decoded frame of a stream on stdin, as JPEG; None if it did not decode."""
     out = subprocess.run(["ffmpeg", "-loglevel", "error"] + args + ["-i", "-", "-frames:v", "1", "-f", "image2", "-c:v", "mjpeg", "-"],
-                         input=data, capture_output=True, timeout=60)
+                         input=data, capture_output=True, timeout=60, env=clean_env())
     return out.stdout if out.stdout and not out.returncode else None
 
 
@@ -924,7 +930,7 @@ class Live:
             ["ffmpeg", "-loglevel", "error", "-probesize", "32", "-analyzeduration", "0",
              "-framerate", str(rate if 1 <= rate <= 60 else 15), "-f", "h264", "-i", "-",
              "-c", "copy", "-flush_packets", "1", "-f", "mpegts", "-"],
-            stdin=subprocess.PIPE, stdout=subprocess.PIPE)
+            stdin=subprocess.PIPE, stdout=subprocess.PIPE, env=clean_env())
         threading.Thread(target=self.read_ts, daemon=True).start()
         try:
             while True:
@@ -1114,7 +1120,7 @@ class Live:
         with tempfile.TemporaryDirectory() as d:  # -update 1 overwrites the file with each frame: the last one stays
             out = os.path.join(d, "last.jpg")
             r = subprocess.run(["ffmpeg", "-loglevel", "error", "-f", "mpegts", "-i", "-", "-update", "1", "-c:v", "mjpeg", out],
-                               input=data, capture_output=True, timeout=60)
+                               input=data, capture_output=True, timeout=60, env=clean_env())
             if r.returncode or not os.path.exists(out):
                 return None
             with open(out, "rb") as f:
@@ -1198,8 +1204,9 @@ def daemon_json(acc, path, timeout):
 def get_health(h, m, body):
     with lock:
         accs = list(accounts.values())
+    local = h.client_address[0] in LOOPBACK  # the manual setup of the integration calls this from the network
     h.send(200, {"server": "ok", "plugin": plugin.status() if plugin else {"state": "ready"}, "accounts": [
-        {"id": a.id, "email": a.email, "logged_in": True,
+        {"id": a.id, **({"email": a.email} if local else {}), "logged_in": True,
          "daemon": {"running": a.daemon.running(), "restarts": a.daemon.restarts,
                     "health": daemon_json(a, "/health", 3)}} for a in accs]})
 
@@ -1588,6 +1595,9 @@ def get_page(h, m, body):
 
 
 SER = r"([A-Za-z0-9_-]{1,64})"
+LOOPBACK = ("127.0.0.1", "::1")  # the app proxies from here; the secret lives in the app
+# Open to the network: go2rtc cannot send a header, and the integration's setup step reads the health.
+REMOTE_OK = (r"/api/health", r"/api/camera/" + SER + r"/live")
 # (method, regex) -> (handler, max body bytes)
 ROUTES = [
     ("GET", r"/", get_page, 0),
@@ -1619,6 +1629,8 @@ ROUTES = [
 
 
 class Handler(BaseHTTPRequestHandler):
+    timeout = 30  # a client that stops sending must not hold a thread
+
     def send(self, status, body, ctype="application/json", headers=None):
         data = body if isinstance(body, bytes) else body.encode() if isinstance(body, str) else json.dumps(body).encode()
         self.send_response(status)
@@ -1636,7 +1648,14 @@ class Handler(BaseHTTPRequestHandler):
             match = m == method and re.fullmatch(regex, path)
             if not match:
                 continue
-            length = int(self.headers.get("Content-Length") or 0)
+            if regex not in REMOTE_OK and self.client_address[0] not in LOOPBACK:
+                self.close_connection = True
+                return self.send(403, {"error": "Only the app may use this route."})
+            try:
+                length = content_length(self.headers)
+            except ValueError as e:
+                self.close_connection = True  # the body stays unread
+                return self.send(400, {"error": str(e)})
             if length > limit:
                 self.close_connection = True  # the body stays unread
                 return self.send(413, {"error": "Body too large (limit %d bytes)." % limit})
