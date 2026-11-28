@@ -1,4 +1,4 @@
-"""The steps between Start and the first layer, as one list the UI draws: upload to the Bambu cloud (from the bridge),
+"""The steps between Start and the first layer, as one list the UI draws: upload to the printer cloud (from the bridge),
 the printer's download of the plate, its preparation (stage names), then printing. Pure, so tests cover it without a printer."""
 
 # Stages the printer reports before the first layer (printer_state.STAGES names).

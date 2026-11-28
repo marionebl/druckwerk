@@ -1,7 +1,6 @@
 """Grams from a real slice_info.config, cost arithmetic, spools and the decrement when a job finishes."""
 import os
 
-import pytest
 
 import filament
 from hubfakes import ADMIN, OTHER, SERIAL, SERIAL2, USER, FakeBridge, make_3mf
@@ -68,7 +67,7 @@ def test_a_cloud_failure_is_an_error_not_old_data(hub):
     hub.cloud_spool(type="PLA")
     assert len(hub.req("GET", "/api/spools", user=ADMIN)[1]) == 1
     hub.now += 31
-    FakeBridge.library_fail = (502, "Bambu cloud answered HTTP 401 for /v1/design-user-service/my/filament/v2")
+    FakeBridge.library_fail = (502, "Cloud answered HTTP 401 for /v1/design-user-service/my/filament/v2")
     st, body = hub.req("GET", "/api/spools", user=ADMIN)
     assert st == 502 and "filament library" in body["error"] and "HTTP 401" in body["error"]
 

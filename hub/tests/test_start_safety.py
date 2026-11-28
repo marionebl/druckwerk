@@ -1,7 +1,6 @@
 """A print start is safe: fresh status, one send per printer, a timeout is not a refusal, no stale confirmations."""
 import threading
 
-import pytest
 
 from app import HttpError
 from hubfakes import ADMIN, OTHER, SERIAL, USER, FakeBridge, make_3mf

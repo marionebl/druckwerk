@@ -1,4 +1,4 @@
-"""Print history: the Bambu cloud's task list is the truth; Druckwerk's own jobs only say who started a task.
+"""Print history: the printer cloud's task list is the truth; Druckwerk's own jobs only say who started a task.
 
 attribute(tasks, jobs) is pure, so tests cover the rule without a server.
 """

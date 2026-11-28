@@ -1,4 +1,4 @@
-// Paint on the model: support enforcers and blockers, seam enforcers and blockers (as in Bambu Studio). A full-screen
+// Paint on the model: support enforcers and blockers, seam enforcers and blockers (as in the vendor slicer). A full-screen
 // dialog with the model in three.js. The mesh is refined first (see paintcodes.js), so a brush can paint small areas.
 // Result: {positions, states} where states.supports and states.seam hold 0 (none), 1 (enforce) or 2 (block) per triangle.
 import { h, btn } from '../util.js';

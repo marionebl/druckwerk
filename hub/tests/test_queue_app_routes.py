@@ -1,5 +1,4 @@
 """Queue routes through the real server: access, scoped reorder, start."""
-import os
 
 from hubfakes import ADMIN, OTHER, SERIAL, SERIAL2, USER
 

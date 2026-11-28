@@ -1,6 +1,5 @@
 """Plates inbox: a fake GitHub API on a loopback port, the real hub app and queue."""
 import hashlib
-import io
 import json
 import os
 import threading

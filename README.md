@@ -16,7 +16,7 @@ The camera entity plays a live stream. HA's go2rtc integration serves it, so the
 
 - The app opens one cloud tunnel per printer and shares it between all viewers.
 - H.264 printers are repackaged to MPEG-TS with ffmpeg and no re-encoding. This needs a feed without B-frames.
-- A new viewer starts at the last keyframe. The tunnel stays open for 30 s after the last viewer leaves, so a reopen starts fast.
+- A new viewer starts at the last keyframe. The tunnel stays open for 90 s after the last viewer leaves, so a reopen starts fast.
 - Printers that send JPEG frames (P1P, P1S, A1, A1 mini) are passed through unchanged. Their stream source is `ffmpeg:<url>#video=h264`, so go2rtc encodes H.264 for WebRTC.
 - The stream URL is `<app>/api/camera/<serial>/live`.
 - Still images come from the last keyframe of the live stream while it runs, because the bridge allows one tunnel per printer. Otherwise each still opens a new tunnel and takes 10 to 60 s.
@@ -34,7 +34,7 @@ curl -fsS -X PUT --data-binary @plate.gcode.3mf \
 
 - `DRUCKWERK_UPLOAD_URL` is `https://<your HA address>/api/druckwerk/upload`.
 - Set the secret in Settings → Devices & services → Druckwerk → Configure (at least 24 characters). An empty secret turns uploads off.
-- A wrong secret counts as a failed login, so HA's IP ban applies if `ip_ban_enabled` is on.
+- A wrong secret counts as a failed login, so HA's IP ban applies if `ip_ban_enabled` is on and `login_attempts_threshold` is set (it is off by default).
 - The file must be a sliced 3MF (it has `Metadata/plate_N.gcode`). The limit is 64 MB. An existing name needs `?overwrite=1`.
 - The answer has the stored name, the size and the SHA-256.
 
@@ -63,9 +63,9 @@ Example with `ha_call_service` (or any REST client: `POST /api/services/druckwer
 ## Print options, name and drying
 
 - `druckwerk.print_file` and the `options` of `druckwerk.add_to_queue` take the options of the vendor slicer's send dialog: `bed_leveling`, `flow_cali`, `nozzle_offset_cali` (`on`, `off` or `auto`), `vibration_cali`, `layer_inspect`, `ext_change_assist`, `timelapse`, `use_ams` (on or off) and `bed_type` (`auto`, `cool_plate`, `eng_plate`, `hot_plate`, `textured_plate`, `supertack_plate`, `3d_effect_plate`). What you leave out keeps today's value. In the web UI they are under "Advanced print options" on the New print page (closed by default). Not every printer supports every option; the printer ignores what it cannot do.
-- `druckwerk.add_to_queue` also takes `name` (up to 80 characters; default: the file name). The queue, the todo list and the live activity show it. `file` may be an absolute path under `/media` or `/share` to a sliced `.gcode.3mf`; the app copies it into its share (it has read-only access to `/media`).
+- `druckwerk.add_to_queue` also takes `name` (up to 80 characters; default: the file name). The queue, the todo list and the live activity show it. `file` may be an absolute path under `/media` or `/share` to a sliced `.gcode.3mf`; the app copies it into its share (`/media` is mapped read-write).
 - AMS drying (AMS 2 Pro, AMS HT): on the printer page an admin starts and stops drying per AMS unit (a confirm dialog comes first) or adds a drying job to the queue. A drying job is a queue job like a print: it waits for its turn, needs a person to start it, and the next print on that printer waits until the drying is over or stopped. The page shows the state and the time left. The control appears only for units that report a dryer and a printer that supports remote drying; an AMS that the status does not show cannot be controlled.
-- The Filament page lists the spools of your Bambu Cloud filament library (the list Bambu Studio and Bambu Handy show), grouped by printer and AMS unit. You edit them here and there; the price per kg is kept by Druckwerk.
+- The Filament page lists the spools of your printer cloud filament library (the list the vendor's slicer and phone app show), grouped by printer and AMS unit. You edit them here and there; the price per kg is kept by Druckwerk.
 
 ## Print guard
 
@@ -78,7 +78,7 @@ Before anything is sent, `druckwerk.print_file` and the Start button check the f
 
 `force` only overrides the "printer is busy" check, not this guard.
 
-## Druckwerk integration (v0.14)
+## Druckwerk integration (v0.15)
 
 - The integration sets itself up: the app announces host, ports and secret through Supervisor discovery, and Home Assistant creates the entry without a question. Install it from the Marketplace (HACS) and restart Home Assistant. The app's setup page shows whether the integration is connected; the URL and secret are there only as a manual fallback.
 - Printers need no setup step either: the app registers every printer of the linked cloud accounts. Remove one on the setup page and it stays removed.
@@ -92,7 +92,8 @@ Before anything is sent, `druckwerk.print_file` and the Start button check the f
 ## Tests
 
 ```
-pip install pytest-homeassistant-custom-component
+sudo apt-get install libturbojpeg ffmpeg   # JPEG encoding in the camera tests
+pip install -r requirements-test.txt
 pytest tests                      # integration (Python 3.14)
 pytest hub/slicer                 # slicer server (browser G-code upload, print, engine files)
 (cd hub/bridge/tests && pytest)   # bridge server and plugin download
@@ -101,7 +102,7 @@ pytest -p no:homeassistant -p no:socket hub/queue/tests hub/tests
 
 ## Druckwerk app
 
-`hub/` is the one app to install: it runs the cloud bridge (what `addon/` did), the browser slicer's server side (`hub/slicer/`: engine files, G-code storage, print)
+`hub/` is the one app to install: it runs the cloud bridge, the browser slicer's server side (`hub/slicer/`: engine files, G-code storage, print)
 and the bridge build (done in the image build, `hub/bridge/`). Prebuilt images for aarch64 and amd64 are on ghcr.io, so nothing is built on the Pi.
 
 1. In Home Assistant: Settings, Apps, App store, menu, Repositories, add `https://github.com/marionebl/druckwerk`.
@@ -117,6 +118,6 @@ Ingress serves the slicer UI; the bridge page and API are proxied under `api/bri
 The web UI has the feedback button (purple, bottom right, or key F): click an element, write a message and send. It adds an item with the context and a screenshot to the to-do list `todo.feedback` (`POST api/feedback`). In the Access view, "Create switch" makes an `input_boolean` helper for the chosen user and printer and puts it in the condition field (`POST api/ha/switches`, HA admins). Both routes are in `hub/API.md`.
 The app hostname is `<repository hash>-druckwerk`. Supervisor derives the hash from the repository URL (`c9a833d4` for `https://github.com/marionebl/druckwerk`), and `ha apps info` or the Supervisor API (`/addons/<slug>/info`, field `hostname`) shows it.
 
-Slicing happens only in the browser; the app has no slicer of its own (since 3.3.0). OrcaSlicer compiled to WebAssembly, the [Muon3D Slicer Engine](https://github.com/Muon-3D/muon3d-slicer-engine/tree/v0.6.0-m1.9) (AGPL-3.0, source at that link, licence at `engine/<release>/LICENSE` in the app), runs in a Web Worker and slices an STL. It uses several threads when the page is cross-origin isolated (`crossOriginIsolated`; the app sends COOP, COEP and Document-Isolation-Policy, so Chrome 137+ isolates even the Home Assistant sidebar frame), else one. The three variants run one after another; the G-code goes to `POST api/jobs/<id>/gcode` (identity, grant and owner rules) and is stored as a `.gcode.3mf`. `hub/tests/browser_test.sh` checks it in headless Chromium.
+Slicing happens only in the browser; the app has no slicer of its own (since 3.7.0). OrcaSlicer compiled to WebAssembly, the [Muon3D Slicer Engine](https://github.com/Muon-3D/muon3d-slicer-engine/tree/v0.6.0-m1.9) (AGPL-3.0, source at that link, licence at `engine/<release>/LICENSE` in the app), runs in a Web Worker and slices an STL. It uses several threads when the page is cross-origin isolated (`crossOriginIsolated`; the app sends COOP, COEP and Document-Isolation-Policy, so Chrome 137+ isolates even the Home Assistant sidebar frame), else one. The three variants run one after another; the G-code goes to `POST api/jobs/<id>/gcode` (identity, grant and owner rules) and is stored as a `.gcode.3mf`. `hub/tests/browser_test.sh` checks it in headless Chromium.
 
 Tests: `hub/tests/image_test.sh` builds the image and checks it (no vendor libs, plugin download from a local fake CDN with a right and a wrong hash, bridge health, browser G-code stored and printed through the API, image size limit). CI runs it on both architectures (`.github/workflows/hub.yml`) and pushes `ghcr.io/marionebl/druckwerk-<arch>:<version>` from main. Raise `version` in `hub/config.yaml` with every change.

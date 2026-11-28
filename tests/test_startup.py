@@ -3,7 +3,7 @@
 from homeassistant.const import EVENT_HOMEASSISTANT_STARTED
 from homeassistant.core import CoreState
 
-from .conftest import SERIAL, URL, HUB_SECRET, mock_hub
+from .conftest import URL, HUB_SECRET, mock_hub
 from pytest_homeassistant_custom_component.common import MockConfigEntry
 
 

@@ -140,7 +140,7 @@ export function parse(text) {
   return { layers, layerIndex, groups: list, objects, bbox, segments, plate: plateOf(text) };
 }
 
-// Bambu Studio and Orca put printable_area in the header, older ones in the config at the end; Prusa writes bed_shape.
+// The vendor slicer and Orca put printable_area in the header, older ones in the config at the end; Prusa writes bed_shape.
 function plateOf(text) {
   const re = /^; (?:printable_area|bed_shape) = (.+)$/m;
   const m = re.exec(text.slice(0, 200000)) || re.exec(text.slice(-80000));

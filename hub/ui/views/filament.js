@@ -1,4 +1,4 @@
-// The Bambu Cloud filament library: list, edit; the AMS location is read-only and the price is kept by the hub.
+// The printer cloud filament library: list, edit; the AMS location is read-only and the price is kept by the hub.
 // #/filament/<spool id> shows one spool and the prints done with it.
 import { api } from '../api.js';
 import { h, clear, icon, btn, field, swatch, empty, modal, attempt, money, pill, hex, loading, dateTime } from '../util.js';
@@ -12,7 +12,7 @@ export async function mount(ctx, root, parts = []) {
   const canEdit = (s) => ctx.me.is_admin || (s?.printer && ctx.canManage(s.printer));
   const canCancel = (r) => ctx.me.is_admin || r.user_id === ctx.me.user_id || ctx.canManage(r.printer);
   const pname = (serial) => printers.find((p) => p.serial === serial)?.name || serial;
-  root.append(h('div', { class: 'page-head' }, h('div', null, h('h1', null, 'Filament'), h('div', { class: 'sub' }, 'Spools from your Bambu Cloud filament library, with remaining grams and your prices')),
+  root.append(h('div', { class: 'page-head' }, h('div', null, h('h1', null, 'Filament'), h('div', { class: 'sub' }, 'Spools from your printer cloud filament library, with remaining grams and your prices')),
     ctx.managesAny() && btn([icon('plus', 18), 'Add spool'], () => edit(null), 'primary')), list);
 
   const where = (s) => (s.printer ? `${pname(s.printer)}${s.unit != null && s.slot != null ? ` · AMS ${s.unit + 1}·${s.slot + 1}` : ''}` : '');
@@ -52,7 +52,7 @@ export async function mount(ctx, root, parts = []) {
       h('span', null, `${r.user_name} asks for a ${nozzleName(r)} nozzle in ${pname(r.printer)}`, r.note && `: ${r.note}`, forJob(r)),
       canCancel(r) && btn('Cancel request', async () => { if (await attempt(() => api.cancelNozzle(r.id), 'Request cancelled')) load(); }, 'sm')))));
   function draw() {
-    if (!spools.length) return clear(list, nozzleSection(), empty('No spools in the Bambu Cloud filament library yet.'));
+    if (!spools.length) return clear(list, nozzleSection(), empty('No spools in the printer cloud filament library yet.'));
     const loaded = spools.filter((s) => s.printer).sort((a, b) => pname(a.printer).localeCompare(pname(b.printer)) || (a.unit ?? -1) - (b.unit ?? -1) || (a.slot ?? -1) - (b.slot ?? -1));
     const groups = new Map();
     for (const s of loaded) { const k = `${pname(s.printer)}${s.unit != null ? ` · AMS ${s.unit + 1}` : ''}`; (groups.get(k) || groups.set(k, []).get(k)).push(s); }
@@ -77,9 +77,9 @@ export async function mount(ctx, root, parts = []) {
         h('div', { class: 'form two' }, field('Brand', f.brand), field('Material', f.type)),
         h('div', { class: 'form two' }, field('Name', f.name), field('Colour', f.colour)),
         h('div', { class: 'form two' }, field('Grams left', f.left), field('Spool size (g)', f.total)),
-        field('Price per kg (EUR)', f.price, 'Kept by Druckwerk; the Bambu Cloud has no price.'),
+        field('Price per kg (EUR)', f.price, 'Kept by Druckwerk; the printer cloud has no price.'),
         !s && accounts.length > 1 && field('Cloud account', f.account),
-        s?.printer && h('p', { class: 'muted' }, `Loaded in ${where(s)}. Bambu Cloud keeps the AMS location.`),
+        s?.printer && h('p', { class: 'muted' }, `Loaded in ${where(s)}. The printer cloud keeps the AMS location.`),
         btn('Save', async () => {
           const num = (el) => (el.value === '' ? undefined : +el.value);
           const all = { brand: f.brand.value.trim(), type: f.type.value.trim(), name: f.name.value.trim(), colour: f.colour.value.slice(1).toUpperCase(),
@@ -104,7 +104,7 @@ async function spoolView(ctx, root, id) {
     const [all, ps, pr] = await Promise.all([api.spools(), api.printers().catch(() => []), api.spoolPrints(id)]);
     spool = all.find((s) => String(s.id) === id); printers = ps; prints = pr.items;
   } catch (e) { return clear(box, empty('Could not load this spool: ' + e.message)); }
-  if (!spool) return clear(box, empty('This spool is not in the Bambu Cloud filament library (any more).'));
+  if (!spool) return clear(box, empty('This spool is not in the printer cloud filament library (any more).'));
   const pname = (serial) => printers.find((p) => p.serial === serial)?.name || serial;
   const frac = spool.grams_left != null && spool.grams_total ? spool.grams_left / spool.grams_total : null;
   const total = prints.reduce((n, p) => n + (p.spool_grams || 0), 0);

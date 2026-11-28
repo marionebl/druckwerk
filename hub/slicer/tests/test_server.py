@@ -1,4 +1,4 @@
-"""End-to-end test of the slicer app's HTTP API (browser G-code upload, print) with a fake bridge and HA core."""
+"""End-to-end test of the slicer app's HTTP API (browser G-code upload, print) with a fake bridge."""
 import json
 import os
 import socket
@@ -54,13 +54,13 @@ def app(tmp_path):
     (tmp_path / "engine" / "t" / "engine-mt.wasm").write_bytes(b"\0asm")
     mocks = subprocess.Popen([sys.executable, os.path.join(HERE, "mocks.py"), str(mport)])
     env = dict(os.environ, SLICER_JOBS=str(tmp_path / "jobs"), SLICER_SHARE=str(tmp_path / "share"),
-               SLICER_SENDER_URL="http://127.0.0.1:%d" % mport, SLICER_CORE_URL="http://127.0.0.1:%d/core" % mport,
-               SLICER_PORT=str(sport), SLICER_ENGINE=str(tmp_path / "engine"), SUPERVISOR_TOKEN="tok")
+               SLICER_SENDER_URL="http://127.0.0.1:%d" % mport,
+               SLICER_PORT=str(sport), SLICER_ENGINE=str(tmp_path / "engine"))
     server = subprocess.Popen([sys.executable, os.path.join(APP, "server.py")], env=env)
     base = "http://127.0.0.1:%d" % sport
     for _ in range(50):
         try:
-            urllib.request.urlopen(base + "/api/printers", timeout=1)
+            urllib.request.urlopen(base + "/engine/version.json", timeout=1)
             break
         except OSError:
             time.sleep(0.1)
@@ -69,14 +69,8 @@ def app(tmp_path):
     mocks.kill()
 
 
-def test_printers_lists_supported_models_with_loaded_trays(app):
-    base = app[0]
-    status, raw = call(base, "GET", "/api/printers")
-    data = json.loads(raw)
-    assert status == 200
-    assert [p["model"] for p in data["printers"]] == ["H2S"]  # X1C has no profile table
-    assert [t["name"] for t in data["printers"][0]["trays"]] == ["PETG HF", "PLA Matte"]  # empty slot 3 left out
-    assert data["printers"][0]["trays"][0]["colour"] == "#ADB1B2"
+def test_the_slicer_has_no_printer_list_of_its_own(app):
+    assert call(app[0], "GET", "/api/printers")[0] == 404  # the app answers /api/printers; the slicer runs only inside it
 
 
 def gcode_query(**kw):
@@ -100,9 +94,6 @@ def test_browser_gcode_becomes_a_normal_slice(app):
         settings = json.loads(z.read("Metadata/project_settings.config"))
         assert z.read("Metadata/plate_1.gcode") == gcode and 'value="O1S"' in z.read("Metadata/slice_info.config").decode()
     assert settings["curr_bed_type"] == "High Temp Plate"  # Orca refuses PETG without a plate
-    assert call(base, "POST", "/api/jobs/%s/print" % jid, {"confirm": True})[0] == 200  # the stored file prints like any slice
-    sent = json.loads(call(mock, "GET", "/calls")[1])[0]["body"]["file"]
-    assert os.path.basename(sent).startswith("Fan_better_h2s_") and sent.endswith(".gcode.3mf")  # random part, one file per print
 
 
 def job_result(tmp, jid):
@@ -156,8 +147,6 @@ def test_engine_files_and_isolation_headers(app):
         assert r.headers["Cache-Control"] == "no-cache"
     assert call(base, "GET", "/engine/../../etc/passwd")[0] == 404
     assert call(base, "GET", "/engine/nothing")[0] == 404
-    with urllib.request.urlopen(base + "/api/printers") as r:
-        assert r.headers["Cross-Origin-Embedder-Policy"] == "require-corp"
 
 
 def test_upload_keeps_the_model_and_the_server_does_not_slice(app):

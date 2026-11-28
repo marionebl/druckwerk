@@ -12,6 +12,7 @@ import urllib.request
 
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))  # python -I drops the script dir
 import slicer_server as s
+import watchdog
 from app import App, log
 from ha import HA
 from plates_inbox import PlatesInbox
@@ -47,7 +48,7 @@ def main():
     app.install()
 
     stop = threading.Event()
-    threading.Thread(target=app.run_ticker, args=(stop,), daemon=True).start()
+    threading.Thread(target=app.run_ticker, args=(stop, watchdog.CHECK_EVERY), daemon=True).start()
     threading.Thread(target=ha.watch_state_changes, args=(app.on_state, stop), daemon=True).start()
     threading.Thread(target=app.notifier.run, args=(stop,), daemon=True).start()
     app.plates_inbox = PlatesInbox.from_options(app, env("HUB_DATA", "/data"))

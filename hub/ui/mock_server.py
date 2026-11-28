@@ -6,7 +6,6 @@ absolute URLs (which break behind HA ingress) fail here too.
 All serials, names and entities are fake. State lives in memory and resets on restart."""
 import hashlib
 import json
-import math
 import mimetypes
 import os
 import re
@@ -274,7 +273,7 @@ def settings_out(item):
     dl = {"download": kind and {"kind": kind, "name": fname}, "preview": bool(kind)}
     if not src:
         return {**dl, "available": False, "source": None, "can_reprint": False, "task": dict(task, model_id="US1", profile_id=4711) if item["source"] == "cloud" else task,
-                "reason": "The Bambu cloud did not give the file (cloud file: HTTP Error 404)." if item["source"] == "cloud" else "The sliced file is gone.",
+                "reason": "The printer cloud did not give the file (cloud file: HTTP Error 404)." if item["source"] == "cloud" else "The sliced file is gone.",
                 "groups": [], "all": [], "plate": {}, "slicer": None}
     return {**dl, "available": True, "source": src, "reason": "", "can_reprint": again, "task": task, "slicer": "02.09.02.62", "plate": {},
             "groups": [{"title": t, "rows": [{"key": l, "label": l, "value": v, "unit": ""} for l, v in rows]} for t, rows in SETTINGS_GROUPS],
@@ -289,7 +288,7 @@ def job_view(j):
     return {k: j[k] for k in JOB_FIELDS if j.get(k) is not None}
 
 
-# The Bambu Cloud filament library as the hub lists it; prices live in the hub (PRICES), the cloud has none.
+# The printer cloud filament library as the hub lists it; prices live in the hub (PRICES), the cloud has none.
 def cloud_spool(id_, brand, type_, name, colour, left, total, loaded=None):
     p, u, sl = loaded or (None, None, None)
     return {"id": id_, "brand": brand, "type": type_, "name": name, "colour": colour, "grams_left": left, "grams_total": total,
@@ -359,7 +358,7 @@ def camera_svg(p):
 def gcode():
     if os.environ.get("MOCK_GCODE"):  # try the viewer on a real file
         return open(os.environ["MOCK_GCODE"], encoding="latin-1").read()
-    """Two objects the way Bambu Studio writes them: label markers, ; FEATURE: comments, config tail with the plate."""
+    """Two objects the way the vendor slicer writes them: label markers, ; FEATURE: comments, config tail with the plate."""
     out = ["; mock gcode", "M83"]
     box = {1: (40, 40, 100, 100, 60), 2: (150, 130, 210, 190, 40)}  # x0, y0, x1, y1, layers
     for n in range(60):
@@ -826,7 +825,7 @@ class H(BaseHTTPRequestHandler):
             SPOOLS_DOWN["on"] = (q.get("on") or ["1"])[0] == "1"
             return ok({"on": SPOOLS_DOWN["on"]})
         if path.startswith("api/spools") and SPOOLS_DOWN["on"]:
-            raise Err(502, "Bambu Cloud filament library: Bambu cloud answered HTTP 401 for /v1/design-user-service/my/filament/v2")
+            raise Err(502, "Printer cloud filament library: Cloud answered HTTP 401 for /v1/design-user-service/my/filament/v2")
         if path == "api/_mock/nozzles":  # ?serial=..&d=0.4,0.6: the owner's library of a printer (hardened steel)
             PRINTERS[q["serial"][0]]["nozzles"] = [{"diameter": d, "type": "hardened_steel"} for d in q["d"][0].split(",") if d]
             return ok(PRINTERS[q["serial"][0]]["nozzles"])

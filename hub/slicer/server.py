@@ -3,7 +3,7 @@
 
 The app does not slice. The browser does, with the OrcaSlicer WASM engine (hub/slicer/engine).
 Printers and AMS trays come from the bridge. A print goes through the app's own send (PRINT), so its busy check
-and G-code guard apply. Run alone, it calls Home Assistant's druckwerk.print_file service instead.
+and G-code guard apply. The server runs only inside the app.
 """
 import json
 import os
@@ -32,8 +32,7 @@ env = os.environ.get
 JOBS = env("SLICER_JOBS", "/data/jobs")
 SHARE = env("SLICER_SHARE", "/share/druckwerk")
 SENDER = env("SLICER_SENDER_URL", "http://127.0.0.1:8098")
-CORE = env("SLICER_CORE_URL", "http://supervisor/core/api")
-PRINT = None  # the app sets a function that sends a print; without it the print goes through the HA service
+PRINT = None  # the app sets the function that sends a print
 ENGINE = env("SLICER_ENGINE", "/srv/engine")  # OrcaSlicer WASM runtime and presets/<model>.json (see engine/build.sh)
 MAX_MODEL = 100 * 1024 * 1024
 MAX_PART = 1024 * 1024  # largest body of one part
@@ -171,13 +170,6 @@ def get_engine(h, m, q):
     immutable = "/" in m.group(1) and not m.group(1).startswith("presets/")
     h.send_file(path, TYPES.get(os.path.splitext(path)[1], "application/octet-stream"),
                 "public, max-age=31536000, immutable" if immutable else "no-cache")
-
-
-def get_printers(h, m, q):
-    try:
-        h.send(200, {"printers": printers(), "beds": BEDS})
-    except (OSError, RuntimeError) as e:
-        h.send(502, {"error": "Cannot read printers from the bridge: %s" % e})
 
 
 def read_body(h, f, length):
@@ -457,15 +449,9 @@ def post_print(h, m, q):
             "timelapse": bool(body.get("timelapse")), "force": bool(body.get("force"))}
     status = None
     try:
-        if PRINT:  # the app sends the file itself
-            try:
-                status, answer = 200, PRINT(call)
-            except Exception as e:  # noqa: BLE001 - the refusal text is what the person needs
-                status, answer = getattr(e, "status", 400 if isinstance(e, ValueError) else 502), {"error": str(e)}
-        else:
-            token = env("SUPERVISOR_TOKEN", "")
-            status, answer = http_json("POST", CORE + "/services/druckwerk/print_file?return_response", call,
-                                       {"Authorization": "Bearer " + token}, timeout=360)
+        status, answer = 200, PRINT(call)
+    except Exception as e:  # noqa: BLE001 - the refusal text is what the person needs
+        status, answer = getattr(e, "status", 400 if isinstance(e, ValueError) else 502), {"error": str(e)}
     finally:
         # The printer's picture (integration, preview) reads the sent copy while it prints, so the copy of a sent
         # print stays until this slice is sent again; a refused send leaves none.
@@ -480,16 +466,13 @@ def post_print(h, m, q):
     log("print %s -> %s: %s" % (os.path.basename(dest), job["printer"]["serial"], status))
     if status != 200:
         msg = answer.get("message") or answer.get("error") if isinstance(answer, dict) else answer
-        if PRINT:
-            return h.send(status, {"error": msg})
-        return h.send(502, {"error": "Home Assistant refused the print (%s): %s" % (status, msg)})
+        return h.send(status, {"error": msg})
     h.send(200, {"answer": answer, "file": os.path.basename(dest)})
 
 
 ROUTES = [
     ("GET", r"/engine/(.+)", get_engine),
     ("GET", r"/api/engine/filament", get_filament),
-    ("GET", r"/api/printers", get_printers),
     ("POST", r"/api/jobs", post_job),
     ("GET", r"/api/jobs/" + JOB_ID, get_job),
     ("POST", r"/api/jobs/" + JOB_ID + r"/gcode", post_gcode),

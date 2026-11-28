@@ -96,9 +96,6 @@ class FakeHA:
             raise RuntimeError(self.fail["fire_event"])
         self.events.append((event_type, data))
 
-    def image(self, eid):
-        return "image/jpeg", b"JPEGDATA"
-
 
 DEFAULT_SPOOL = {"id": "", "brand": "", "type": "PLA", "name": "PLA Basic", "colour": "FFFFFF", "grams_left": 1000, "grams_total": 1000,
                  "printer": None, "unit": None, "slot": None, "in_printer": False, "rfid": None, "account": "a_x"}
@@ -167,11 +164,11 @@ class FakeBridge(BaseHTTPRequestHandler):
             serial = self.path.split("serial=")[1].split("&")[0]
             FakeBridge.task_calls.append(self.path)
             if serial in FakeBridge.task_fail:
-                return self.reply(502, {"error": "Bambu cloud answered HTTP 500"})
+                return self.reply(502, {"error": "Cloud answered HTTP 500"})
             return self.reply(200, FakeBridge.tasks.get(serial, []))
         if self.path.startswith("/api/tasks/file?"):
             if not FakeBridge.file_url:
-                return self.reply(502, {"error": "Bambu cloud answered HTTP 404"})
+                return self.reply(502, {"error": "Cloud answered HTTP 404"})
             return self.reply(200, {"url": FakeBridge.file_url})
         if self.path in FakeBridge.files:
             return self.reply(200, FakeBridge.files[self.path], "application/octet-stream")

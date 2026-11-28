@@ -51,7 +51,7 @@ def test_model_names_and_not_a_3mf(tmp_path):
 
 def test_file_nozzle_reads_the_header_of_a_real_slice(tmp_path):
     here = os.path.join(os.path.dirname(os.path.abspath(__file__)), "fixtures", "gcode")
-    for name in ("bambu_arcs", "orca_multi_object"):
+    for name in ("h2s_arcs", "orca_multi_object"):
         with zipfile.ZipFile(str(tmp_path / (name + ".3mf")), "w") as z:  # extruder_nozzle_diameter must not be taken for it
             z.write(os.path.join(here, name + ".gcode"), "Metadata/plate_1.gcode")
         assert file_nozzle(str(tmp_path / (name + ".3mf"))) == "0.4"

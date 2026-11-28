@@ -4,10 +4,8 @@ Mounted onto the slicer server (hub/slicer/server.py) by hub.py: install() adds 
 every one of them and adds PUT/DELETE dispatch. Home Assistant I/O goes through the `ha` object (hub/ha.py; fakes in tests).
 """
 import collections
-import hashlib
 import hmac
 import http.client
-import io
 import json
 import os
 import re
@@ -675,7 +673,7 @@ class App:
         except Exception as e:  # noqa: BLE001
             log("sync: %s" % e)
 
-    def run_ticker(self, stop, every=10):
+    def run_ticker(self, stop, every):
         self.try_auto_register()  # at startup, before the first wait
         while not stop.wait(every):
             self.tick_all()
@@ -758,9 +756,6 @@ class App:
             raise NotFound("no such file")
 
     # -- route functions --
-    def role_or_none(self, c, serial):
-        return self.access.role(c, serial)
-
     def get_me(self, h, m, q, c):
         roles = [{"serial": p["serial"], "role": self.access.role(c, p["serial"])} for p in self.registry.all()]
         u = self.get_user(c.user_id) or {}
@@ -842,7 +837,7 @@ class App:
                 out.append(self.printer_view(p, role))
         return out
 
-    def printer_access(self, c, serial, admin=False):
+    def printer_access(self, c, serial):
         p = self.registry.get(serial)
         role = self.access.role(c, serial) if p else None
         if not role:
@@ -961,9 +956,9 @@ class App:
             write_json(self.saved_settings_path(job_id), parsed)
 
     def cloud_file(self, it):
-        """Path of the item's sliced 3MF from the Bambu cloud (fetched once, kept in data/cloud); ValueError says why not."""
+        """Path of the item's sliced 3MF from the printer cloud (fetched once, kept in data/cloud); ValueError says why not."""
         if it["source"] == "job" or not re.fullmatch(r"\d{1,19}", str(it["id"])):
-            raise ValueError("This print has no Bambu cloud task.")
+            raise ValueError("This print has no printer cloud task.")
         with self.cloud_locks.setdefault(it["id"], threading.Lock()):  # a second request waits for the first download
             return self._cloud_file(it)
 
@@ -976,16 +971,16 @@ class App:
             raise ValueError(miss[1])
         try:
             if not (it.get("model_id") and it.get("profile_id")):
-                raise ValueError("The Bambu cloud record of this print has no file reference (modelId, profileId).")
+                raise ValueError("The printer cloud record of this print has no file reference (modelId, profileId).")
             try:
                 got = self.bridge_ok("GET", "/api/tasks/file?serial=%s&model_id=%s&profile_id=%s" % (
                     quote(it["serial"]), quote(str(it["model_id"])), quote(str(it["profile_id"]))), timeout=30)
                 fetch_file(got["url"], dest)
             except (HttpError, KeyError, TypeError) as e:
-                raise ValueError("The Bambu cloud did not give the file (%s)." % e)
+                raise ValueError("The printer cloud did not give the file (%s)." % e)
             if not slice_settings.read(dest):
                 os.remove(dest)
-                raise ValueError("The Bambu cloud file has no slicing settings.")
+                raise ValueError("The printer cloud file has no slicing settings.")
         except ValueError as e:
             self.cloud_miss[it["id"]] = (self.clock(), str(e))
             raise
@@ -1385,7 +1380,7 @@ class App:
         except OSError:
             raise NotFound("no plate image")
 
-    # -- spools (the Bambu Cloud filament library, read and written through the bridge) --
+    # -- spools (the printer cloud filament library, read and written through the bridge) --
     def library(self, account, fetch=True):
         """An account's spools, reused for SPOOLS_TTL. fetch=False only reads what is cached, however old."""
         key = "lib:%s" % account
@@ -1398,7 +1393,7 @@ class App:
         try:
             val = self.bridge_ok("GET", "/api/filament?account=" + quote(account), timeout=30)
         except HttpError as e:  # no stale copy: the person must see that the cloud did not answer
-            raise HttpError(e.status, "Bambu Cloud filament library: %s" % e)
+            raise HttpError(e.status, "Printer cloud filament library: %s" % e)
         with self._cache_lock:
             self._cache[key] = (self.clock(), val)
         self.loads.settle(val)
@@ -1427,7 +1422,7 @@ class App:
         else:
             found = {p.get("account") for p in self.registry.all() if self.access.role(c, p["serial"])} - {None}
         if not found:
-            raise HttpError(409, "No Bambu Cloud account is linked for your printers; link one in the bridge setup.")
+            raise HttpError(409, "No printer cloud account is linked for your printers; link one in the bridge setup.")
         return sorted(found)
 
     def visible_spools(self, c):
@@ -1471,7 +1466,7 @@ class App:
                 raise ValueError("account is required: " + ", ".join(accounts))
             account = accounts[0]
         if account not in self.library_accounts(c):
-            raise Forbidden("rule: this Bambu Cloud account is not one of yours")
+            raise Forbidden("rule: this printer cloud account is not one of yours")
         self.spool_admin(c, account)
         made = self.bridge_ok("POST", "/api/filament?account=" + quote(account), fields)
         self._cache.pop("lib:%s" % account, None)
@@ -1884,7 +1879,7 @@ class App:
         """Replace the slicer's overlapping routes with ours, check identity first, add PUT and DELETE."""
         s, mine = self.s, self.routes()
         taken = {(meth, rx) for meth, rx, _ in mine}
-        s.ROUTES[:] = mine + [r for r in s.ROUTES if (r[0], r[1]) not in taken and r[:2] != ("GET", "/api/printers")]
+        s.ROUTES[:] = mine + [r for r in s.ROUTES if (r[0], r[1]) not in taken]
         s.PRINT = self.sender.print_file
         s.Handler.dispatch = lambda h, method: self.dispatch(h, method, s.ROUTES)
         s.Handler.do_PUT = lambda h: h.dispatch("PUT")

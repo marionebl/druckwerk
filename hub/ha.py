@@ -141,7 +141,7 @@ class HA:
             if e.code in (502, 503, 504):  # the gateway has nothing behind it while Home Assistant starts
                 raise HAUnavailable(RESTARTING)
             raise HAError("Home Assistant answered %s: %s" % (e.code, text))
-        except OSError as e:
+        except OSError:
             raise HAUnavailable(RESTARTING)
 
     def state(self, entity_id):
@@ -169,15 +169,11 @@ class HA:
                                data, timeout=360)
         return json.loads(raw or b"null")
 
-    def image(self, entity_id):
-        _, ctype, raw = self._rest("GET", "/image_proxy/" + urllib.parse.quote(entity_id), timeout=15)
-        return ctype, raw
-
     # -- websocket --
     def _connect(self, timeout=30):
         try:
             ws = WebSocket(self.ws_url, timeout)
-        except OSError as e:
+        except OSError:
             raise HAUnavailable(RESTARTING)
         try:
             if ws.recv().get("type") != "auth_required":
