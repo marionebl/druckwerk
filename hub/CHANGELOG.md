@@ -1,12 +1,21 @@
 # Changelog
 
-## 3.8.0 (unreleased)
+## 3.9.0 (unreleased)
 
 - Fix: New print failed with "HTTP 413" for a model or a G-code file above about 1 MB. A proxy between the browser and the app (Home Assistant's ingress) refuses bigger request bodies, and the app's own limit is 100 MB. The page now sends models and G-code in parts of 512 KB and the app joins them (`total` and `offset` in the query of `POST /api/jobs`, `POST /api/jobs/{id}/model` (new) and `POST /api/jobs/{id}/gcode`, see API.md). A request without `total` works as before.
 - New print has a step "Object settings" with the per-object settings of Bambu Studio and OrcaSlicer. Always visible: seam (position, gap, scarf joint), supports (type, style, threshold angle, on build plate only, distances), fuzzy skin ("surface randomisation": mode, thickness, point distance, generator, noise), walls and shells, infill, layer height, ironing and brim. The list "Add a setting" has every other object setting of the engine (about 300). A changed value replaces the preset value in all three slices. The form, the greyed rows, the warnings and the values that an edit changes along with it come from the engine's own settings service. The arrow returns a value to the preset.
 - Paint supports and seam on the model: support enforcers and blockers, seam enforcers and blockers. A brush and a "fill by angle" tool work on a refined copy of the mesh (same shape). Painted support turns supports on by itself. The slice button is now its own card below the settings.
 - Gap: fuzzy skin painting is not offered. With this engine (v0.6.0-m1.9) fuzzy skin "painted only" gives the same G-code as no fuzzy skin. The fuzzy skin setting itself works.
 - Gap: the model cannot be rotated or scaled in New print yet. Painted meshes are sent as they are (no repair), so a broken STL can fail with painting where it slices without.
+
+## 3.8.0 (unreleased)
+
+- The printer page plays the live camera stream. H.264 printers (H2S, X1) send MPEG-TS, which the vendored mpegts.js 1.8.0 (Apache-2.0) plays through Media Source, or ManagedMediaSource on iOS 17.1+. JPEG printers (P1, A1) show the multipart stream in an `<img>`. Before, the page showed a still that the bridge cached for 30 s.
+- The still stays under the video as poster and as fallback. A stream that fails, ends or freezes for 10 s starts again (backoff 1 s to 30 s). A hidden page drops its stream. Printer cards on the grid keep the stills.
+- Bridge: an unused live upstream stays open 90 s (was 30 s, `DW_LIVE_IDLE`), so a viewer who comes back gets a frame at once. A live upstream costs about one Pi 4 core while open (qemu runs the vendor plugin).
+- Bridge: when the camera URL mint times out on a live open, the bridge mints once more before it answers 502. Mints fail about 1 in 7 on the H2S.
+- Bridge log: `live <serial>: first frame after N s` and, at close, the duration, MB, stalls (gaps over 2 s, `DW_LIVE_STALL`) and the longest gap.
+- `GET /api/printers` has `camera_live`: `mpegts` or `mjpeg`.
 
 ## 3.7.1 (unreleased)
 

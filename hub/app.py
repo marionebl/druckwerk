@@ -30,7 +30,7 @@ from ha import HAError, HAUnavailable
 from queue_access import Access, Caller, Forbidden, Grants, Unauthorized, caller_from_headers
 from queue_engine import WAITING, NotFound, Queue, QueueError
 from queue_registry import Registry
-from integration import Integration
+from integration import JPEG_PRODUCTS, Integration
 from notify import Notifier
 from sender import Sender
 from watchdog import Watchdog
@@ -45,7 +45,7 @@ OFFLINE_JPEG = os.path.join(os.path.dirname(os.path.abspath(__file__)), "offline
 # Entity ids the queue and the watchdog ask for: <prefix>_<suffix>. State() answers them from the bridge, so they need not
 # exist in Home Assistant (with the vendor integration installed they are its real ids).
 SENSORS = {"status": "print_status", "stage": "current_stage", "progress": "print_progress", "tray": "active_tray"}
-UI_FILES = r"(index\.html|style\.css|app\.js|api\.js|util\.js|feedback\.js|views/[a-z]+\.js|vendor/three\.module\.min\.js)"
+UI_FILES = r"(index\.html|style\.css|app\.js|api\.js|util\.js|feedback\.js|views/[a-z]+\.js|vendor/three\.module\.min\.js|vendor/mpegts\.js)"
 # A feedback post carries screenshots; every other route keeps the slicer's 8 KB JSON limit.
 FEEDBACK_MAX = 1500000
 MIME = {"html": "text/html; charset=utf-8", "css": "text/css; charset=utf-8", "js": "text/javascript; charset=utf-8"}
@@ -428,6 +428,7 @@ class App:
             "task_name": b.get("task_name"),
             "cover_url": "api/printers/%s/cover" % serial if b.get("task_name") else None,
             "camera_url": "api/printers/%s/camera" % serial, "account": p.get("account"),
+            "camera_live": "mjpeg" if str(p["model"]).startswith(JPEG_PRODUCTS) else "mpegts",
             "light": self.integration.light(v),
             "active_tray": {"unit": tray["unit"], "slot": tray["slot"]} if tray else None,
             "drying": self.drying(serial) or [],
