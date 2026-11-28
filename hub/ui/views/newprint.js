@@ -158,7 +158,7 @@ export async function mount(ctx, root) {
 
   function printerCard() {
     const opts = [...models.map((m) => ['any:' + m, `Any compatible ${m}`, (n => n + (n === 1 ? ' printer' : ' printers'))(printers.filter((p) => p.model === m).length)]),
-      ...printers.map((p) => [p.serial, p.name, p.model + (p.online ? '' : ' · offline')])];
+      ...printers.map((p) => [p.serial, p.name, p.model + (p.online === false ? ' · offline' : '')])];
     defaultFil();
     return h('section', { class: 'card stack' }, h('h2', { style: 'margin:0' }, '2 · Printer and filament'),
       h('div', null, h('div', { class: 'tag', style: 'margin-bottom:6px' }, 'Target'),
