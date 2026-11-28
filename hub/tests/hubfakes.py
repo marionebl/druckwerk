@@ -303,6 +303,11 @@ class Hub:
         for name in "abcd":
             make_3mf(os.path.join(self.s.SHARE, name + ".gcode.3mf"))
 
+    def queue_job(self, user=ADMIN, target=SERIAL, file="a"):
+        """A waiting print job in the queue (needs seed_share's files; the share is seeded here)."""
+        self.seed_share()
+        return self.req("POST", "/api/queue", {"file": file + ".gcode.3mf", "target": target}, user=user)[1]
+
     def sent(self):
         """The prints the bridge received, as their JSON bodies without the file."""
         return [dict(b, file_b64="...") for path, b in FakeBridge.log if path == "/api/print"]

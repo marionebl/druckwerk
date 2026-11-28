@@ -95,7 +95,8 @@ class Notifier:
         """First queued job for this printer (or for any printer)."""
         with self.app.queue.lock:
             for job in self.app.queue.jobs:
-                if job.get("state") == "queued" and job.get("target") in (serial, "any") and job.get("id") != exclude:
+                if job.get("state") == "queued" and job.get("target") in (serial, "any") and job.get("id") != exclude \
+                        and not self.app.queue.blocked(job):
                     # start-next takes the first job; a drying there needs its own confirmation, not a plate prompt.
                     return None if job.get("kind") == "dry" else job
         return None

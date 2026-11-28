@@ -66,7 +66,7 @@ class Prices:
 
 
 class LoadRequests:
-    """Open requests to put a library spool into a printer's AMS; one per (spool, printer)."""
+    """Open requests to put a library spool into a printer's AMS; one per job (older ones have no job and block nothing)."""
 
     def __init__(self, data_dir):
         self.path = os.path.join(data_dir, "load_requests.json")
@@ -76,13 +76,10 @@ class LoadRequests:
             with open(self.path) as f:
                 self.items = json.load(f)
 
-    def find(self, spool_id, printer):
-        return next((r for r in self.items if r["spool_id"] == spool_id and r["printer"] == printer), None)
-
     def add(self, req):
-        """(request, created); an open request for the same spool and printer is returned as it is."""
+        """(request, created); the job's open request is returned as it is."""
         with self.lock:
-            old = self.find(req["spool_id"], req["printer"])
+            old = next((r for r in self.items if r.get("job_id") == req["job_id"]), None)
             if old:
                 return old, False
             self.items.append(req)
@@ -93,6 +90,14 @@ class LoadRequests:
         with self.lock:
             self.items = [r for r in self.items if r["id"] != req_id]
             write_json(self.path, self.items)
+
+    def drop_jobs(self, active):
+        """Close the requests of jobs that are no longer waiting; active is the set of waiting job ids."""
+        with self.lock:
+            left = [r for r in self.items if not r.get("job_id") or r["job_id"] in active]
+            if len(left) != len(self.items):
+                self.items = left
+                write_json(self.path, self.items)
 
     def settle(self, spools):
         """Close the requests whose spool the cloud library shows in the requested printer."""

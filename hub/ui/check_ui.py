@@ -164,29 +164,35 @@ def check_cloud_down(page, go, shot):
     ALLOW_502.clear()
 
 
+def row_height(page, title):
+    return page.evaluate("t => [...document.querySelectorAll('.job')].find((e) => e.textContent.includes(t)).getBoundingClientRect().height", title)
+
+
 def check_load_request(page, base, go, shot):
-    """The user asks for a spool, the admin sees the pill, the user cancels."""
-    card = lambda: page.locator(".spool", has_text="PLA Matte Charcoal")
-    card().get_by_role("button", name="Ask to load").click()
-    page.wait_for_selector("dialog[open]")
-    page.locator("dialog label.field", has_text="Printer").locator("select").select_option(label="Office P1S")
-    page.get_by_label("Note").fill("for the grey bracket")
-    shot("filament-load-modal")
-    page.get_by_role("button", name="Send", exact=True).click()
-    page.wait_for_selector("dialog[open]", state="detached")
-    pill = "Requested for Office P1S by Lena Tester"
-    card().get_by_text(pill).wait_for()
-    assert card().get_by_role("button", name="Cancel request").count() == 1, "the requester may cancel"
-    shot("filament-requested")
-    page.goto(f"{base}/?as=admin")  # the owner's view of the same request
+    """A user asks for a spool on their own queue entry: the entry is blocked with the reason, Start is refused,
+    the request shows on the Filament tab with its job, the owner's change (mock hook) unblocks, the row keeps its height."""
+    job = lambda: page.locator(".job", has_text="Cable clips for the desk")
+    go("#/queue", ".job")
+    before = row_height(page, "Cable clips for the desk")
+    job().get_by_role("link", name="Cable clips for the desk").click()
+    page.get_by_role("button", name="Ask owner to load").wait_for()
+    page.locator("#req-load-note").fill("for the grey bracket")
+    shot("job-ask-load")
+    page.get_by_role("button", name="Ask owner to load").click()
+    page.locator("[data-request]", has_text="to be loaded").wait_for()
+    assert "asked by Lena Tester: for the grey bracket" in page.locator("[data-request]").text_content()
+    go("#/queue", ".job")
+    job().locator("[data-blocked-pill]").wait_for()
+    assert "to be loaded" in job().locator("[data-blocked]").text_content()
+    assert abs(row_height(page, "Cable clips for the desk") - before) < 0.5, "the blocked row changes height"
+    shot("queue-job-blocked-load")
     go("#/filament", ".spool")
-    card().get_by_text(pill).wait_for()
-    assert card().get_by_role("button", name="Cancel request").count() == 1, "an admin may cancel"
-    page.goto(f"{base}/?as=user")
-    go("#/filament", ".spool")
-    card().get_by_role("button", name="Cancel request").click()
-    page.wait_for_selector(".spool:has-text('PLA Matte Charcoal') >> text=Requested for", state="detached")
-    assert card().get_by_role("button", name="Ask to load").count() == 1, "the spool can be requested again"
+    page.locator(".spool", has_text="Requested for").get_by_role("link", name="Cable clips for the desk").wait_for()
+    page.locator(".spool", has_text="Requested for").get_by_role("button", name="Cancel request").click()
+    page.wait_for_selector(".spool >> text=Requested for", state="detached")
+    go("#/queue", ".job")
+    assert job().locator("[data-blocked-pill]").count() == 0, "cancelling the request unblocks the job"
+    assert abs(row_height(page, "Cable clips for the desk") - before) < 0.5, "the unblocked row changes height"
 
 
 def check_nozzle(page, base, go, shot, ident):
@@ -203,13 +209,8 @@ def check_nozzle(page, base, go, shot, ident):
     assert "0.4 mm" in page.locator(".pcard", has_text="Workshop H2S").locator("#nozzle-installed").text_content(), "the card shows the nozzle"
     go("#/printers/" + H2S, ".cam.big")
     assert "Installed nozzle: 0.4 mm hardened steel" in page.locator("#nozzle-installed").text_content(), "the page shows the nozzle"
-    # before and after the open requests have loaded
-    page.evaluate("fetch('api/_mock/slow?path=api/nozzle-requests&s=1.2')")
     open_new("Workshop H2S")
-    heights["H2S, requests loading"] = row()
-    page.wait_for_timeout(1700)
-    heights["H2S, requests loaded"] = row()
-    page.evaluate("fetch('api/_mock/slow')")  # no path: back to normal
+    heights["H2S, first draw"] = row()
     assert page.locator("#nozzle-row .chip").count() == 2, "two nozzles in the library"
     assert page.locator("#nozzle-row .chip[aria-pressed=true]").text_content().startswith("0.4 mm hardened steel"), "the installed nozzle is the default"
     # one nozzle, and none
@@ -229,15 +230,13 @@ def check_nozzle(page, base, go, shot, ident):
     heights["H2S, 3 nozzles"] = row()
     # a nozzle that is not installed: ask, then the pill
     page.locator("#nozzle-row .chip[data-nozzle='0.6']").click()
-    ask = page.get_by_role("button", name="Ask owner to change nozzle")
+    ask = page.locator("#nozzle-ask")
     ask.wait_for()
     heights["H2S, 0.6 picked (ask)"] = row()
     shot("new-print-nozzle-ask")
     page.locator("#nozzle-note").fill("for the vase")
-    ask.click()
-    page.locator("#nozzle-row .pill", has_text="change requested").wait_for()
-    assert page.get_by_role("button", name="Ask owner to change nozzle").count() == 0, "asked once"
-    heights["H2S, 0.6 picked (requested)"] = row()
+    ask.check()  # asked when the job is queued, so the controls stay as they are
+    heights["H2S, 0.6 picked (asking when queued)"] = row()
     shot("new-print-nozzle-requested")
     page.locator("#nozzle-row .chip[data-nozzle='0.4']").click()
     page.locator("#nozzle-row .pill", has_text="installed").wait_for()
@@ -245,14 +244,6 @@ def check_nozzle(page, base, go, shot, ident):
     shot("new-print-nozzle")
     assert max(heights.values()) - min(heights.values()) < 0.5, "the nozzle row changes height: %r" % heights
     print("nozzle row height [%s]: %s px in %d states" % (ident, round(heights["H2S, 3 nozzles"], 1), len(heights)))
-    # the owner's view of the request
-    mine = page.evaluate("fetch('api/nozzle-requests').then((r) => r.json())")
-    assert [(r["printer"], r["diameter"], r["type"], r["note"]) for r in mine] == [(H2S, "0.6", "hardened_steel", "for the vase")], mine
-    go("#/filament", ".spool")
-    item = page.locator("#nozzle-requests [data-nozzle-request]")
-    assert "asks for a 0.6 mm hardened steel nozzle in Workshop H2S: for the vase" in item.text_content()
-    item.get_by_role("button", name="Cancel request").click()
-    page.wait_for_selector("#nozzle-requests", state="detached")
     page.evaluate("fetch('api/_mock/nozzles?serial=%s&d=0.4,0.6')" % H2S)
     # the queue: a job for a 0.6 nozzle while the printer has 0.4
     go("#/queue", ".job")
@@ -263,6 +254,38 @@ def check_nozzle(page, base, go, shot, ident):
         assert start.is_disabled() and start.get_attribute("title") == "This job needs a 0.6 mm nozzle; the printer has 0.4 mm."
     assert page.locator(".job [data-nozzle-pill]").count() == 1, "only that job needs another nozzle"
     shot("queue-needs-nozzle")
+    if ident == "admin":
+        check_nozzle_request(page, go, shot)
+
+
+def check_nozzle_request(page, go, shot):
+    """Ask for the 0.6 nozzle on that queue entry: it is blocked (Start disabled with the reason, requester and note shown),
+    the request is on the Filament tab with its job, the change (mock hook) unblocks it; the row keeps its height."""
+    job = lambda: page.locator(".job", has_text="vase_wide_walls")
+    before = row_height(page, "vase_wide_walls")
+    job().get_by_role("link", name="vase_wide_walls").click()
+    page.get_by_role("button", name="Ask owner to change to 0.6 mm nozzle").wait_for()
+    page.locator("#req-nozzle-note").fill("for the vase")
+    page.get_by_role("button", name="Ask owner to change to 0.6 mm nozzle").click()
+    page.locator("[data-request]", has_text="Waiting for 0.6 mm hardened steel nozzle").wait_for()
+    go("#/queue", ".job")
+    job().locator("[data-blocked-pill]").wait_for()
+    start = job().get_by_role("button", name="Start", exact=True)
+    assert start.is_disabled() and start.get_attribute("title") == "Waiting for 0.6 mm hardened steel nozzle.", start.get_attribute("title")
+    assert "asked by Alex Admin: for the vase" in job().locator("[data-blocked]").text_content()
+    assert abs(row_height(page, "vase_wide_walls") - before) < 0.5, "the blocked row changes height"
+    shot("queue-job-blocked-nozzle")
+    go("#/filament", ".spool")
+    item = page.locator("#nozzle-requests [data-nozzle-request]")
+    assert "asks for a 0.6 mm hardened steel nozzle in Workshop H2S: for the vase" in item.text_content()
+    item.get_by_role("link", name="vase_wide_walls").wait_for()
+    page.evaluate("fetch('api/_mock/settle?kind=nozzle')")  # the owner changed the nozzle
+    go("#/queue", ".job")
+    page.wait_for_selector("[data-blocked-pill]", state="detached", timeout=10000)
+    assert not job().get_by_role("button", name="Start", exact=True).is_disabled(), "the change unblocks the job"
+    assert abs(row_height(page, "vase_wide_walls") - before) < 0.5, "the unblocked row changes height"
+    page.evaluate("fetch('api/_mock/installed?serial=%s&d=0.4&type=hardened_steel')" % H2S)  # back to the seeded state
+    page.evaluate("fetch('api/_mock/nozzles?serial=%s&d=0.4,0.6')" % H2S)
 
 
 JOB_CLIPS, TASK_BENCHY, TASK_CLIPS, TASK_CLOUD, TASK_OWNED_CLOUD, JOB_ONLY = "a00000000002", "5", "8", "7", "10", "job-b00000000004"
@@ -832,7 +855,7 @@ def check_library_pick(page, go, shot):
     assert slice_btn.is_disabled(), "nothing is chosen yet"
     page.locator("#fil-library .chip").click()
     assert "not in the AMS" in page.locator("#load-note").text_content()
-    assert page.locator("#load-note").get_by_role("button", name="Ask to load").count() == 1
+    assert page.locator("#load-note #load-ask").count() == 1, "the load request is made when the job is queued"
     assert not slice_btn.is_disabled()
     shot("newprint-filament-pick")
     slice_btn.click()

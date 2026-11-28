@@ -2,10 +2,14 @@
 // Finished jobs live in History (one list for cloud tasks and jobs).
 import { api } from '../api.js';
 import { h, clear, icon, btn, pill, empty, modal, field, attempt, dateTime, money, loading, thumb, durSec, toast, staleNote } from '../util.js';
+import { nozzleName } from './nozzlerow.js';
 import * as D from './detail.js';
 import { stepsView, watchStart } from './progress.js';
 
 const WAITING = ['queued', 'pending_approval'];
+// Open requests for a nozzle or spool change block a job; the hub sends them with the job.
+const waitText = (j) => (j.requests?.length ? 'Waiting for ' + j.requests.map((r) => r.wait).join(' and ') : '');
+const askedBy = (j) => (j.requests || []).map((r) => r.user_name + (r.note ? ': ' + r.note : '')).join('; ');
 const STATE = { pending_approval: ['Needs approval', 'warn'], queued: ['Queued', ''], starting: ['Starting', 'ok'], printing: ['Printing', 'ok'], drying: ['Drying', 'ok'], done: ['Done', 'ok'], failed: ['Failed', 'err'], cancelled: ['Cancelled', ''] };
 
 export async function mount(ctx, root, parts = []) {
@@ -102,7 +106,8 @@ export async function mount(ctx, root, parts = []) {
       h('button', { class: 'icon-btn', 'aria-label': 'Move up', disabled: idx === 0, onclick: () => step(j, group, -1) }, icon('up')),
       h('button', { class: 'icon-btn', 'aria-label': 'Move down', disabled: idx === group.length - 1, onclick: () => step(j, group, 1) }, icon('down')));
     if (pending && admin) acts.push(btn('Approve', () => act(j, 'approve', undefined, 'Approved'), 'sm primary'), btn('Reject', () => act(j, 'reject', undefined, 'Rejected'), 'sm danger'));
-    const why = waiting ? nozzleWhy(j) : '';
+    const blocked = waiting ? waitText(j) : '';
+    const why = blocked ? blocked + '.' : waiting ? nozzleWhy(j) : '';
     if (waiting && admin) acts.push(btn('Start', () => startDialog(j), 'sm', { disabled: !!why, title: why || null }), btn('Skip', () => act(j, 'skip', undefined, 'Skipped'), 'sm'),
       j.kind !== 'dry' && btn('Move…', () => moveDialog(j), 'sm'));
     if (j.state === 'drying' && admin) acts.push(btn('Stop drying', () => act(j, 'stop', undefined, 'Drying stopped'), 'sm danger'));
@@ -112,11 +117,14 @@ export async function mount(ctx, root, parts = []) {
       j.kind === 'dry' ? h('div', { class: 'thumb' }, '♨') : thumb(j.plate_png),
       h('div', { class: 'main' },
         h('div', { class: 'row between' }, h('span', { class: 'title' }, h('a', { href: '#/queue/' + j.id }, j.name || j.source || j.file)),
-          h('span', { class: 'row', style: 'gap:6px' }, why && h('span', { title: why, 'data-nozzle-pill': j.nozzle }, pill(`needs ${j.nozzle} nozzle`, 'warn')), pill(stl, cls))),
+          h('span', { class: 'row', style: 'gap:6px' }, blocked ? h('span', { title: why, 'data-blocked-pill': '' }, pill('Blocked', 'warn'))
+            : why && h('span', { title: why, 'data-nozzle-pill': j.nozzle }, pill(`needs ${j.nozzle} nozzle`, 'warn')), pill(stl, cls))),
         h('div', { class: 'sub' },
           h('span', { class: 'row', style: 'gap:6px' }, h('span', { class: 'avatar' }, (j.owner_name || '?')[0].toUpperCase()), j.owner_name, own && ' (you)'),
           j.grams != null && h('span', null, j.grams.toFixed(0) + ' g'),
           j.cost != null && h('span', null, money(j.cost)),
+          // The blocked text takes what is left of the line, so it never adds a line.
+          blocked && h('span', { 'data-blocked': '', title: `${blocked} · asked by ${askedBy(j)}`, style: 'flex:1 1 0;min-width:0;color:var(--warn);overflow:hidden;text-overflow:ellipsis;white-space:nowrap' }, `${blocked} · asked by ${askedBy(j)}`),
           j.kind === 'dry' && h('span', null, `${unitName(j.dry)} · ${j.dry.temp}°C · ${j.dry.hours} h`),
           j.options?.timelapse && h('span', null, 'timelapse'),
           j.name && j.file && j.name !== j.file.replace(/\.gcode\.3mf$/, '') && h('span', null, j.source || j.file),
@@ -176,9 +184,29 @@ async function detailView(ctx, root, id) {
   const box = h('div');
   root.append(D.back('#/queue', 'Queue'), box);
   box.append(loading());
-  let job = null, start = null, names = {}, models = {}, sig = '', dirty = false, source = null, sourceFor = null;
+  let job = null, start = null, names = {}, models = {}, printers = [], spools = [], sig = '', dirty = false, source = null, sourceFor = null;
   const label = (target) => (target === 'any' ? 'Any compatible printer' : names[target] || target);
   const isAdminFor = (j) => ctx.me.is_admin || (j.target === 'any' ? ctx.managesAny() : ctx.canManage(j.printer || j.target));
+
+  // Nozzle and spool changes this job waits for, and where to ask for them; the job is blocked until they happen.
+  function changesCard(j, admin, own) {
+    const reqs = j.requests || [], p = printers.find((x) => x.serial === j.target), nozzle = reqs.find((r) => r.kind === 'nozzle'), loadReq = reqs.find((r) => r.kind === 'load');
+    const canAsk = (admin || own) && p;
+    const ask = (call, ok) => async () => { if (await attempt(call, ok)) await load(true); };
+    const nNote = h('input', { type: 'text', id: 'req-nozzle-note', maxlength: 200, placeholder: 'Note (optional)' }), lNote = h('input', { type: 'text', id: 'req-load-note', maxlength: 200, placeholder: 'Note (optional)' });
+    const loadable = spools.filter((x) => !(x.printer === j.target && x.in_printer)), pick = h('select', { id: 'req-spool' }, loadable.map((x) => h('option', { value: x.id }, `${x.brand} ${x.type} ${x.name}`.trim())));
+    const wantNozzle = canAsk && !nozzle && j.nozzle && p.nozzle && Number(p.nozzle.diameter) !== Number(j.nozzle);
+    const wantLoad = canAsk && !loadReq && p.ams?.length && loadable.length > 0;
+    if (!reqs.length && !wantNozzle && !wantLoad) return null;
+    return D.card('Waiting for a change', h('div', { class: 'stack', style: 'gap:10px' },
+      reqs.map((r) => h('div', { class: 'row between', 'data-request': r.id }, h('span', null, h('b', null, 'Waiting for ' + r.wait), ` · asked by ${r.user_name}`, r.note && `: ${r.note}`),
+        (admin || r.user_id === ctx.me.user_id) && btn('Cancel request', async () => { if (await attempt(() => (r.kind === 'nozzle' ? api.cancelNozzle(r.id) : api.cancelLoad(r.id)), 'Request cancelled')) await load(true); }, 'sm'))),
+      wantNozzle && h('div', { class: 'row', style: 'gap:8px;flex-wrap:wrap' }, nNote,
+        btn(`Ask owner to change to ${j.nozzle} mm nozzle`, ask(() => api.askNozzle(j.target, { diameter: j.nozzle, type: (p.nozzles || []).find((n) => n.diameter === j.nozzle)?.type || '', note: nNote.value.trim(), job_id: j.id }), 'Request sent'), 'sm', { id: 'req-nozzle' })),
+      wantLoad && h('div', { class: 'row', style: 'gap:8px;flex-wrap:wrap' }, pick, lNote,
+        btn('Ask owner to load', ask(() => api.askLoad(pick.value, j.target, lNote.value.trim(), j.id), 'Request sent'), 'sm', { id: 'req-load' })),
+      reqs.length > 0 && h('small', { class: 'muted' }, 'The job starts when the change has happened, or when the request is cancelled.')));
+  }
 
   function draw() {
     const j = job, [stl, cls] = STATE[j.state] || [j.state, ''];
@@ -214,6 +242,7 @@ async function detailView(ctx, root, id) {
         ['Error', j.error && h('span', { style: 'color:var(--err)' }, j.error)]]),
       blocks: [
         editable ? D.card('Change this job', h('div', { class: 'form' }, field('Name', name), admin && field('Target printer', target)), opts.node, h('div', null, save)) : optCard,
+        waiting && j.kind !== 'dry' && changesCard(j, admin, own),
         start && D.card('Starting the print', stepsView(start)),
         sliceCard, D.previewCard(source && j.slice_job)],
       actions: [
@@ -231,10 +260,12 @@ async function detailView(ctx, root, id) {
       const [q, ps] = await Promise.all([api.queue(), api.printers()]);
       names = Object.fromEntries(ps.map((p) => [p.serial, p.name]));
       models = Object.fromEntries(ps.map((p) => [p.serial, p.model]));
+      printers = ps;
       const found = [...q.jobs, ...q.history].find((j) => j.id === id);
       if (!found) return clear(box, empty('This job is not in the queue (any more). Finished prints are under History.'));
       start = ps.find((p) => p.start && p.start_job === id)?.start || null;
-      const s = JSON.stringify([found, names, start]);
+      if (WAITING.includes(found.state) && found.kind !== 'dry' && !spools.length) spools = await api.spools().catch(() => []);  // the spools to ask for
+      const s = JSON.stringify([found, names, start, ps.map((p) => [p.serial, p.nozzle, p.ams?.length])]);
       if (!force && (s === sig || dirty || document.querySelector('dialog[open]'))) return;
       sig = s; job = found;
       if (sourceFor !== job.slice_job) { sourceFor = job.slice_job; source = await D.sliceSource(job); }
