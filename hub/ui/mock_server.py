@@ -228,8 +228,8 @@ SETTINGS_GROUPS = [
 SETTINGS_OF = {"8": ("slice", True), "5": ("saved", False), "10": ("cloud", True)}
 
 
-# Files the hub still holds per cloud task: (kind, name). Item 8 has its model, 10 only the cloud's sliced file; the others have none.
-FILES_OF = {"8": ("model", "cable_clip_set.stl"), "10": ("sliced", "Slicer_plate_3.gcode.3mf")}
+# Files the hub still holds per cloud task: (kind, name). Item 8 has its model, 10 and the running 9 only the cloud's sliced file; the others have none.
+FILES_OF = {"8": ("model", "cable_clip_set.stl"), "10": ("sliced", "Slicer_plate_3.gcode.3mf"), "9": ("sliced", "gridfinity_bin_4x2.gcode.3mf")}
 
 
 def settings_out(item):

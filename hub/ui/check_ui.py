@@ -418,6 +418,36 @@ def check_history_preview(page, base, ident):
     assert page.locator(".detail canvas").count() == 0, "settings kept but no file: no canvas"
 
 
+def check_printer_history(page, base, ident):
+    """The printer page shows the running print in 3D and its last prints, with a link to History filtered by the printer."""
+    fresh(page, f"{base}/?as={ident}#/printers/{H2S}")
+    page.wait_for_selector(".printer-history .tl-item", timeout=10000)
+    items = page.locator(".printer-history .tl-item")
+    assert 1 <= items.count() <= 5, f"excerpt has 1 to 5 prints, got {items.count()}"
+    link = page.locator(".printer-history a", has_text="All prints on this printer")
+    assert link.get_attribute("href") == f"#/history?printer={H2S}", link.get_attribute("href")
+    if ident == "admin":  # the running task 9 is the admin's; a user sees only their own prints
+        page.wait_for_selector('.preview3d[data-ready="1"][data-task="9"]', timeout=15000)
+        assert page.locator("section.card h2", has_text="Current print in 3D").count() == 1
+    else:
+        page.wait_for_selector("section.card :text('You see only your own prints')", timeout=8000)
+        assert page.locator(".preview3d").count() == 0, "not the user's print: no 3D view"
+    page.wait_for_timeout(5500)  # one 5 s redraw: the canvas must survive it
+    assert page.locator(".preview3d canvas").count() == (1 if ident == "admin" else 0), "the 3D view survives the redraw"
+    link.click()
+    hash_is(page, f"#/history?printer={H2S}")
+    page.wait_for_selector(".timeline .tl-item", timeout=8000)
+    metas = page.locator(".timeline .tl-card .meta").all_inner_texts()
+    assert metas and all("Workshop H2S" in m for m in metas), f"only the H2S prints: {metas}"
+    if ident == "admin":
+        assert page.locator(".filters select").nth(1).input_value() == H2S, "the printer select shows the filter"
+    else:
+        assert page.locator(".filters a", has_text="Show all your prints").count() == 1
+    fresh(page, f"{base}/?as={ident}#/printers/{P1S}")
+    page.wait_for_selector(".printer-history", timeout=8000)
+    assert page.locator("section.card h2", has_text="Current print in 3D").count() == 0, "idle printer: no 3D card"
+
+
 def check_queue_details(page, base, ident, go, shot):
     fresh(page, f"{base}/?as={ident}#/queue/{JOB_CLIPS}")
     page.wait_for_selector(".detail")
@@ -675,6 +705,9 @@ def walk(page, ident, base, shot, inject):
     if ONLY == "preview":
         check_history_preview(page, base, ident)
         return
+    if ONLY == "printerhistory":
+        check_printer_history(page, base, ident)
+        return
     page.wait_for_selector(".pcard")
     if inject:
         page.evaluate("fetch('/api/me')")
@@ -706,6 +739,7 @@ def walk(page, ident, base, shot, inject):
         check_history_details(page, base, ident, go, shot)
         check_history_download(page, base, ident)
         check_history_preview(page, base, ident)
+        check_printer_history(page, base, ident)
         check_queue_details(page, base, ident, go, shot)
         check_spool_detail(page, base, ident, go, shot)
         check_loading(page, go)
@@ -768,7 +802,7 @@ def walk(page, ident, base, shot, inject):
 def main():
     ap = argparse.ArgumentParser()
     ap.add_argument("--shots")
-    ap.add_argument("--only", choices=["cache", "reslice", "panel", "download", "preview"], help="run one check only")
+    ap.add_argument("--only", choices=["cache", "reslice", "panel", "download", "preview", "printerhistory"], help="run one check only")
     ap.add_argument("--port", type=int, default=18099, help="port of the mock server")
     ap.add_argument("--inject-absolute", action="store_true")
     ap.add_argument("--base-url")

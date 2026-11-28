@@ -1,5 +1,12 @@
 # Changelog
 
+## 3.9.0 (unreleased)
+
+- The printer page shows the running print in 3D ("Current print in 3D"). It is the same preview as on a History print, read from that print's stored file. It loads when the cloud lists the print, up to a minute after the start. A user who is not admin of the printer sees it only for their own prints, as in History.
+- The printer page has a History card with the last 5 prints of this printer and a link "All prints on this printer".
+- History reads a filter from the URL: `#/history?printer=<serial>` (and `user=` for admins). The admin selects start from it. A user sees "One printer" and a link to all their prints.
+- This version includes the History work of 3.7.0 from the history-settings branch (settings, duration bars, download, 3D preview).
+
 ## 3.7.0 (unreleased)
 
 - The "Slice on the Pi" choice is gone. New print slices in the browser only.

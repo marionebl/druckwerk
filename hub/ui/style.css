@@ -324,3 +324,5 @@ details.adv .form { margin-top: 12px; }
 .sstep[data-state=active] .mark .spin { width: 10px; height: 10px; border-width: 2px; vertical-align: 0; }
 .sstep[data-state=done] .mark { background: var(--accent); border-color: var(--accent); color: var(--accent-fg); }
 .slice-progress { display: grid; gap: 6px; }
+.tl-list { list-style: none; margin: 12px 0 0; padding: 0; display: grid; gap: 8px; }
+.tl-list .tl-item::before { content: none; }
