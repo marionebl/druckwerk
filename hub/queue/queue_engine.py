@@ -9,6 +9,7 @@ get_nozzle(serial) -> "0.4" | None (optional)   installed nozzle diameter in mm;
 dry (optional): start(serial, {"ams_id", "temp", "hours", "filament"}) and stop(serial, ams_id) raise on refusal;
     state(serial, ams_id) -> {"active": bool, "left_min": int} | None (None: unknown)
 """
+import logging
 import re
 import secrets
 import threading
@@ -16,6 +17,8 @@ import time
 
 from queue_registry import read_json, write_json
 import os
+
+log = logging.getLogger(__name__)
 
 HISTORY = 200
 STARTABLE = {"idle", "finish", "failed"}  # print status values that allow a new job
@@ -421,6 +424,7 @@ class Queue:
     def _send(self, printer, serial, job):
         """Returns (error text or None, unsure). unsure: the send ended in a timeout. Paused entities come back either way."""
         paused = [e for e in printer["pause_entities"] if self.get_state(e) == "on"]
+        err, unsure = None, False
         try:
             for e in paused:
                 self.call_service("homeassistant", "turn_off", {"entity_id": e})
@@ -433,15 +437,19 @@ class Queue:
                 if k not in data and o.get(k, OPTIONS[k]) != OPTIONS[k]:
                     data[k] = o[k]
             self.send_print(data)
-            return None, False
         except Exception as e:  # the guard's refusal text is the useful part
-            return str(e) or e.__class__.__name__, bool(getattr(e, "unsure", False))
+            err, unsure = str(e) or e.__class__.__name__, bool(getattr(e, "unsure", False))
         finally:
+            stuck = []
             for e in paused:
                 try:
                     self.call_service("homeassistant", "turn_on", {"entity_id": e})
-                except Exception:
-                    pass
+                except Exception as x:
+                    log.warning("could not switch %s on again: %s", e, str(x) or x.__class__.__name__)
+                    stuck.append(e)
+        if err and stuck:  # after a sent file the job runs on; only a refusal gets the hint
+            err += " (still off: %s)" % ", ".join(stuck)
+        return err, unsure
 
     # -- progress --
     def observe(self, serial, stage):

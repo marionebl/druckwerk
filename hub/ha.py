@@ -9,6 +9,7 @@ import json
 import os
 import socket
 import struct
+import sys
 import threading
 import time
 import urllib.error
@@ -16,6 +17,10 @@ import urllib.parse
 import urllib.request
 
 GUID = "258EAFA5-E914-47DA-95CA-C5AB0DC85B11"
+
+
+def log(msg):
+    print("druckwerk: " + msg, file=sys.stderr, flush=True)
 
 
 RESTARTING = "Home Assistant is restarting. This page tries again in a few seconds."
@@ -38,6 +43,7 @@ class WebSocket:
                            "Sec-WebSocket-Key: %s\r\nSec-WebSocket-Version: 13\r\n\r\n"
                            % (u.path or "/", u.netloc, key)).encode())
         self.buf = b""
+        self.rx = 0  # chunks received; a pong shows as a change
         head = self._until(b"\r\n\r\n")
         want = base64.b64encode(hashlib.sha1((key + GUID).encode()).digest()).decode()
         if not head.startswith(b"HTTP/1.1 101") or want.encode() not in head:
@@ -53,6 +59,7 @@ class WebSocket:
         chunk = self.sock.recv(65536)
         if not chunk:
             raise HAError("websocket closed")
+        self.rx += 1
         self.buf += chunk
 
     def _take(self, n):
@@ -76,13 +83,21 @@ class WebSocket:
         """Next JSON message; answers pings, raises HAError when the peer closes."""
         data = b""
         while True:
-            b0, b1 = self._take(2)
-            n = b1 & 0x7F
-            if n == 126:
-                n = struct.unpack(">H", self._take(2))[0]
-            elif n == 127:
-                n = struct.unpack(">Q", self._take(8))[0]
-            payload = self._take(n)  # servers do not mask
+            try:
+                b0, b1 = self._take(2)
+            except TimeoutError:
+                if data:
+                    raise HAError("websocket stalled in a message")
+                raise  # between messages: the caller may ping and read on
+            try:
+                n = b1 & 0x7F
+                if n == 126:
+                    n = struct.unpack(">H", self._take(2))[0]
+                elif n == 127:
+                    n = struct.unpack(">Q", self._take(8))[0]
+                payload = self._take(n)  # servers do not mask
+            except TimeoutError:
+                raise HAError("websocket stalled in a frame")  # the stream is out of step now
             op = b0 & 0x0F
             if op == 8:
                 raise HAError("websocket closed")
@@ -170,6 +185,9 @@ class HA:
             ws.send({"type": "auth", "access_token": self.token})
             if ws.recv().get("type") != "auth_ok":
                 raise HAError("websocket login refused")
+        except OSError:  # a timeout or reset while Home Assistant starts
+            ws.close()
+            raise HAUnavailable(RESTARTING)
         except Exception:
             ws.close()
             raise
@@ -177,8 +195,9 @@ class HA:
 
     def command(self, type_, **fields):
         """One websocket command on its own short connection; for rare calls (registries, users)."""
-        ws = self._connect()
+        ws = None
         try:
+            ws = self._connect()
             ws.send(dict(fields, id=1, type=type_))
             while True:
                 m = ws.recv()
@@ -189,10 +208,13 @@ class HA:
         except OSError as e:
             raise HAError("Home Assistant websocket failed: %s" % e)
         finally:
-            ws.close()
+            if ws:
+                ws.close()
 
     def fire_event(self, event_type, data):
         self._rest("POST", "/events/" + event_type, data, timeout=15)
+
+    IDLE = 60  # seconds without a frame before the watcher pings
 
     def watch_events(self, event_type, callback, stop, with_user=False):
         """Blocking loop: calls callback(event data) per event of this type; reconnects until stop is set.
@@ -200,20 +222,35 @@ class HA:
         pause = 2
         while not stop.is_set():
             try:
-                ws = self._connect(timeout=None)  # idle is normal here
+                ws = self._connect(timeout=self.IDLE)
                 try:
                     ws.send({"id": 1, "type": "subscribe_events", "event_type": event_type})
                     pause = 2
+                    pinged = None  # ws.rx when the last ping went out
                     while not stop.is_set():
-                        m = ws.recv()
+                        try:
+                            m = ws.recv()
+                        except TimeoutError:
+                            # An idle socket is normal; a ping that nothing answers is a dead one.
+                            if pinged is not None and ws.rx == pinged:
+                                raise HAError("no answer to the websocket ping")
+                            ws._send_frame(9, b"")
+                            pinged = ws.rx
+                            continue
+                        pinged = None
                         if m.get("type") == "event":
-                            if with_user:
-                                callback(m["event"]["data"], (m["event"].get("context") or {}).get("user_id"))
-                            else:
-                                callback(m["event"]["data"])
+                            try:
+                                if with_user:
+                                    callback(m["event"]["data"], (m["event"].get("context") or {}).get("user_id"))
+                                else:
+                                    callback(m["event"]["data"])
+                            except Exception as e:  # noqa: BLE001 - one bad event must not end the watcher
+                                log("%s callback failed: %s: %s" % (event_type, type(e).__name__, e))
                 finally:
                     ws.close()
-            except (HAError, OSError, ValueError, KeyError):
+            except Exception as e:  # noqa: BLE001 - this thread is the only watcher; it reconnects until stop
+                if not isinstance(e, (HAError, OSError)):
+                    log("%s watcher: %s: %s" % (event_type, type(e).__name__, e))
                 stop.wait(pause)
                 pause = min(pause * 2, 60)
 
