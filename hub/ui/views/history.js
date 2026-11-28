@@ -1,7 +1,7 @@
 // History: the one list of prints. The Bambu cloud's tasks are the truth, enriched with the Druckwerk job where one matches;
 // a job the cloud never saw is listed too. Grouped by day; admins can filter by user and printer. #/history/<id> is one print.
 import { api } from '../api.js';
-import { h, clear, icon, btn, pill, empty, field, clock, dateTime, durSec, money, toDate, fail, loading, thumb, attempt } from '../util.js';
+import { h, clear, icon, btn, pill, empty, field, clock, dateTime, durSec, money, toDate, fail, loading, thumb, attempt, staleNote } from '../util.js';
 import * as D from './detail.js';
 
 const STATUS = { finished: ['Finished', 'ok'], failed: ['Failed', 'err'], cancelled: ['Cancelled', ''], stopped: ['Stopped early', 'err'], running: ['Printing', 'ok'] };
@@ -27,7 +27,7 @@ export async function mount(ctx, root, parts = []) {
   const note = h('div');
   const bar = h('div', { class: 'filters' });
   root.append(h('div', { class: 'page-head' }, h('div', null, h('h1', null, 'History'),
-    h('div', { class: 'sub' }, admin ? 'All prints: the printer cloud, with Druckwerk jobs added' : 'Your prints: the printer cloud, with Druckwerk jobs added'))), bar, note, timeline);
+    h('div', { class: 'sub' }, admin ? 'All prints: the printer cloud, with Druckwerk jobs added' : 'Your prints: the printer cloud, with Druckwerk jobs added'))), bar, note, h('div', { class: 'stale-host' }, staleNote(), timeline));
   timeline.append(loading());
 
   if (admin) {

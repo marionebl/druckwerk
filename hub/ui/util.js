@@ -132,3 +132,6 @@ export function ring(percent, label, sub) {
   return h('div', { class: 'ring-wrap', role: 'img', 'aria-label': `${Math.round(v)} percent` }, svg,
     h('div', { class: 'ring-txt' }, h('b', null, label ?? Math.round(v) + '%'), sub && h('small', null, sub)));
 }
+
+// Overlay pill over the top of a list; style.css shows it only while #view is stale (it takes no layout space).
+export const staleNote = () => h('div', { class: 'stale-note muted', role: 'status' }, h('i'), ' Checking for newer items…');

@@ -305,3 +305,16 @@ details.adv .form { margin-top: 12px; }
 .sstep[data-state=active] .mark .spin { width: 10px; height: 10px; border-width: 2px; vertical-align: 0; }
 .sstep[data-state=done] .mark { background: var(--accent); border-color: var(--accent); color: var(--accent-fg); }
 .slice-progress { display: grid; gap: 6px; }
+
+/* Cached data on screen while the network answers (api.js stale()): decisions wait, lists say so without moving anything. */
+#view.stale button, #view.stale .btn:not(a) { pointer-events: none; opacity: .5; }
+.stale-host { position: relative; }
+.stale-note { display: none; position: absolute; top: 0; left: 50%; transform: translate(-50%, -50%); z-index: 5; align-items: center; gap: 6px; padding: 3px 12px; font-size: 13px; border: 1px solid var(--line); border-radius: 999px; background: var(--card); pointer-events: none; white-space: nowrap; }
+#view.stale .stale-note { display: flex; }
+.stale-note i { width: 12px; height: 12px; border: 2px solid var(--line); border-top-color: var(--accent); border-radius: 50%; animation: s 1s linear infinite; }
+.cam .ago { position: absolute; right: 56px; top: 10px; padding: 2px 8px; border-radius: 999px; background: rgba(16, 18, 20, .78); color: #fff; font-size: 12px; pointer-events: none; }
+#slowbar { position: fixed; top: 0; left: 0; right: 0; height: 3px; z-index: 1000; overflow: hidden; pointer-events: none; }
+#slowbar[hidden] { display: none; }
+#slowbar::after { content: ''; position: absolute; inset: 0 auto 0 0; width: 30%; background: var(--accent); animation: slowbar 1.2s ease-in-out infinite; }
+@keyframes slowbar { from { transform: translateX(-100%); } to { transform: translateX(340%); } }
+@media (prefers-reduced-motion: reduce) { #slowbar::after { animation: none; width: 100%; opacity: .6; } .stale-note i { animation-duration: 3s; } }

@@ -1,10 +1,19 @@
 # Changelog
 
+## 3.10.0 (unreleased)
+
+- Pages show cached data at once after a reload. The identity (`api/me`) and the Access lists (grants, Home Assistant users and entities) are cached in the browser too, so the shell and the lists no longer wait for the network. The cached shape (printer cards, filament slots, list rows) stays on screen, so the page does not jump when the answer arrives.
+- While a cached list is still being checked, buttons in the view are dimmed and cannot be clicked (links still work), so nobody decides on old data. The filament view shows cached data as is. Queue and History show a small "Checking for newer items…" pill over the top of the list. It takes no layout space.
+- The last camera frame of each printer is kept in the browser (640 px wide) and shows at once with an "n s ago" label until a live frame loads.
+- A thin loading bar at the top of the page appears when a request takes 3 s or more.
+- Without usable browser storage the UI behaves as before.
+
 ## 3.7.1 (unreleased)
 
 - Fix: a printer that was online showed "Printer offline". The daemon asks the printer for a full push on every status call that finds its cache older than 10 s, and an idle printer sends no updates, so the calls queued on one thread and timed out.
 - Bridge: `GET /api/status/<serial>` runs one daemon call at a time per printer, reuses an answer younger than 5 s (`DW_STATUS_CACHE`), waits 8 s for the daemon (`DW_STATUS_TIMEOUT`), and answers a failed call with the last good status up to 10 min old (`DW_STATUS_STALE`). Every answer has the header `X-Status-Age` (seconds). Only without a good status it answers 503.
 - Hub: one failed status call no longer flips a printer offline. The printer view keeps the last good status and adds `stale` (older than 60 s) and `status_age` (seconds). A printer is offline when the bridge printer list says `online: false`, or there has been no status yet. The printer card shows "status from N min ago" when stale. The queue uses a kept status for 10 min at most.
+
 ## 3.7.0 (unreleased)
 
 - The "Slice on the Pi" choice is gone. New print slices in the browser only.

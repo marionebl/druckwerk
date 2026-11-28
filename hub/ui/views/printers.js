@@ -19,14 +19,34 @@ const stills = new Map();
 // The <img> stays hidden until a frame has loaded, so a printer whose snapshot fails or takes a minute shows the
 // placeholder, never a broken image. After a first frame, a failed one keeps the last good frame.
 const noImage = (text) => h('div', { class: 'off' }, icon('camera', 28), text);
+// The last frame per printer (640 px wide JPEG, in localStorage) shows at once after a reload, labelled with its age.
+const frameKey = (p) => 'dw1:frame:' + p.serial;
+const readFrame = (p) => { try { const f = JSON.parse(localStorage.getItem(frameKey(p))); return f && f.d && f.t ? f : null; } catch { return null; } };
+const ago = (t) => { const sec = Math.max(0, Math.round((Date.now() - t) / 1000)); return sec < 60 ? sec + ' s ago' : sec < 3600 ? Math.floor(sec / 60) + ' min ago' : Math.floor(sec / 3600) + ' h ago'; };
+function saveFrame(p, img) {
+  try {
+    const w = Math.min(640, img.naturalWidth), c = document.createElement('canvas');
+    c.width = w; c.height = Math.round(img.naturalHeight * w / img.naturalWidth);
+    c.getContext('2d').drawImage(img, 0, 0, c.width, c.height);
+    localStorage.setItem(frameKey(p), JSON.stringify({ t: Date.now(), d: c.toDataURL('image/jpeg', 0.7) }));
+  } catch { /* full, blocked or tainted: no cached frame */ }
+}
 function still(p, big) {
   const key = p.serial + (big ? ':big' : '');
   let s = stills.get(key);
   if (!s) {
     const img = h('img', { alt: `Camera of ${p.name}` }), text = h('span', null, 'Loading camera image…');
     const holder = h('div', { class: 'still' }, h('div', { class: 'off' }, icon('camera', 28), text), img);
-    s = { holder, img, text, running: false, url: p.camera_url, pause: big ? 2000 : 10000 };
+    s = { holder, img, text, running: false, url: p.camera_url, pause: big ? 2000 : 10000, saved: 0 };
     stills.set(key, s);
+    const old = readFrame(p);
+    if (old) {
+      // Overlay label: no layout space. It ticks while the cached frame is the only one.
+      const label = h('span', { class: 'ago' }, ago(old.t));
+      const tick = setInterval(() => { if (!label.isConnected) clearInterval(tick); else label.textContent = ago(old.t); }, 1000);
+      s.label = label; s.tick = tick;
+      img.src = old.d; holder.classList.add('ok'); holder.append(label);
+    }
   }
   s.url = p.camera_url;
   if (!s.running) {
@@ -36,7 +56,12 @@ function still(p, big) {
       if (document.hidden) { setTimeout(next, 1000); return; }
       const probe = new Image();
       const again = () => setTimeout(next, s.pause);
-      probe.onload = () => { s.img.src = probe.src; s.holder.classList.add('ok'); again(); };
+      probe.onload = () => {
+        s.img.src = probe.src; s.holder.classList.add('ok');
+        if (s.label) { s.label.remove(); clearInterval(s.tick); s.label = null; }
+        if (Date.now() - s.saved > 20000) { s.saved = Date.now(); saveFrame(p, probe); }  // not every frame: encoding costs
+        again();
+      };
       probe.onerror = () => { if (!s.holder.classList.contains('ok')) s.text.textContent = 'No camera image'; again(); };
       probe.src = s.url + (s.url.includes('?') ? '&' : '?') + 'mode=snapshot&t=' + Date.now();
     };
