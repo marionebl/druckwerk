@@ -76,6 +76,7 @@ T0 = {H2S: NOW() - 58 * 60}
 # Test hooks the UI check switches: a printer whose camera answers 502, one whose AMS slots are all empty, what was sent.
 CAMERA_DOWN, EMPTY_AMS, MOCK_SLICES, MOCK_LIGHT = set(), set(), [], []
 OFFLINE = set()  # test hook: these printers answer as offline
+CONNECTING = set()  # test hook: no status seen yet (online null)
 # AMS units with a dryer, per serial; a drying unit counts down from "until".
 DRYING = {H2S: {0: {"name": "AMS 2 Pro", "lo": 45, "hi": 65, "until": None, "filament": "", "temp": None},
                 128: {"name": "AMS HT", "lo": 45, "hi": 85, "until": None, "filament": "", "temp": None}}}
@@ -392,6 +393,10 @@ def printer_out(ident, p):
     p["account"] = "acc1"
     if s in OFFLINE:
         p["online"], p["status"] = False, "offline"
+    if s in CONNECTING:
+        p.update(online=None, status="connecting", stage=None, progress=None, remaining_min=None, task_name=None, layer=None,
+                 total_layers=None, nozzle_temp=None, nozzle_target=None, bed_temp=None, bed_target=None, chamber_temp=None,
+                 active_tray=None, ams=[], external=None, hms=[], light=None)
     if s in EMPTY_AMS:
         for u in p["ams"]:
             u["trays"] = [tray(t["slot"], "", "", "", -1) for t in u["trays"]]
@@ -635,8 +640,8 @@ class H(BaseHTTPRequestHandler):
             return ok([printer_out(ident, PRINTERS[s]) for s in visible(ident)])
         if path == "api/_mock/queued":
             return ok(MOCK_QUEUED)
-        if path == "api/_mock/hook":  # ?set=camera_down|empty_ams|offline&serial=..&on=1|0
-            target = {"camera_down": CAMERA_DOWN, "empty_ams": EMPTY_AMS, "offline": OFFLINE}[q["set"][0]]
+        if path == "api/_mock/hook":  # ?set=camera_down|empty_ams|offline|connecting&serial=..&on=1|0
+            target = {"camera_down": CAMERA_DOWN, "empty_ams": EMPTY_AMS, "offline": OFFLINE, "connecting": CONNECTING}[q["set"][0]]
             (target.add if (q.get("on") or ["1"])[0] == "1" else target.discard)(q["serial"][0])
             return ok({})
         if path == "api/_mock/start":  # ?serial=..&mode=sending|download|prepare|off&percent=..&stage=..

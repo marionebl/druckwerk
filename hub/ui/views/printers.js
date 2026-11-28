@@ -146,7 +146,7 @@ function live(p) {
 function camera(p, big) {
   const box = h('div', { class: 'cam' + (big ? ' big' : '') });
   if (p.online && p.camera_url) box.append(big ? live(p) : still(p, big));
-  else box.append(noImage(p.online ? 'No camera image' : 'Printer offline'));
+  else box.append(noImage(p.online ? 'No camera image' : p.online === null ? 'Connecting to the printer…' : 'Printer offline'));
   box.append(h('span', { class: 'badge' }, statusPill(p)));
   if (p.online && p.light != null) box.append(lightButton(p));
   if (p.task_name && isPrinting(p)) box.append(h('div', { class: 'name' }, p.task_name));
@@ -229,7 +229,7 @@ async function detail(ctx, root, serial) {
     clear(recent, historyCard(ctx, serial, hist));
     if (p) model.sync(p, hist);
   });
-  let camUrl = '', last = '';
+  let camUrl = '', camOnline, last = '';
   ctx.every(5000, async () => {
     let ps, queue;
     try { [ps, queue] = await Promise.all([api.printers(), api.queue()]); } catch (e) { if (!last) clear(body, empty(e.message)); return; }
@@ -239,7 +239,7 @@ async function detail(ctx, root, serial) {
     const sig = JSON.stringify([p, queue.jobs]);
     if (sig === last) return;
     last = sig;
-    if (p.camera_url !== camUrl || !p.online) { camUrl = p.camera_url; clear(camHost, camera(p, true)); }
+    if (p.camera_url !== camUrl || p.online !== camOnline || !p.online) { camUrl = p.camera_url; camOnline = p.online; clear(camHost, camera(p, true)); }
     const mine = queue.jobs.filter((j) => j.printer === serial || j.target === serial || (j.target === 'any' && j.model === p.model));
     draw(ctx, body, { camHost, model: model.box, recent }, p, mine, () => { last = ''; });
   });
@@ -292,7 +292,7 @@ function jobCard(p) {
   if (p.start) return h('section', { class: 'card' }, h('h2', null, 'Starting the print'), stepsView(p.start));
   if (!isPrinting(p)) {
     return h('section', { class: 'card' }, h('h2', null, 'Current job'),
-      p.online ? h('p', { class: 'muted' }, p.status === 'finish' ? 'The last print is finished. Clear the plate before starting the next one.' : 'Nothing is printing.') : h('p', { class: 'muted' }, 'The printer is offline.'));
+      p.online ? h('p', { class: 'muted' }, p.status === 'finish' ? 'The last print is finished. Clear the plate before starting the next one.' : 'Nothing is printing.') : h('p', { class: 'muted' }, p.online === null ? 'Connecting to the printer…' : 'The printer is offline.'));
   }
   return h('section', { class: 'card' }, h('h2', null, 'Current job'),
     h('div', { class: 'jobbox' },
@@ -393,7 +393,7 @@ function draw(ctx, body, { camHost, model, recent }, p, mine, refresh) {
     h('div', { class: 'cols' },
       h('div', { class: 'stack' }, camHost, jobCard(p), model, ctx.canManage(p.serial) && startNext(ctx, p, mine, refresh)),
       h('div', { class: 'stack' },
-        h('section', { class: 'card' }, h('h2', null, 'Temperatures'), p.online ? temps(p) : h('p', { class: 'muted' }, 'No data while offline.'),
+        h('section', { class: 'card' }, h('h2', null, 'Temperatures'), p.online ? temps(p) : h('p', { class: 'muted' }, p.online === null ? 'Connecting to the printer…' : 'No data while offline.'),
           p.online && p.light != null && h('div', { class: 'row between', style: 'margin-top:12px' }, h('span', null, 'Chamber light'), lightButton(p))),
         (p.ams?.length || p.external) && h('section', { class: 'card' }, h('h2', null, 'Filament'), filament(p)),
         (p.drying || []).map((u) => dryCard(ctx, p, u, refresh)),

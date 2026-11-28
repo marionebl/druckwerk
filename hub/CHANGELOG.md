@@ -1,5 +1,12 @@
 # Changelog
 
+## 3.16.0 (unreleased)
+
+- Fix: the printer page said "Printer offline" when the printer was fine. "Offline" now needs evidence: the bridge's cloud flag must say offline in every reading for 60 s (one reading changes nothing), or the status itself says offline, or the last status is older than 10 min. Otherwise the page keeps the last known status.
+- The last good status of each printer is kept in `/data/status_cache.json` (written at most every 30 s) and read at start, so a restart of the app or of the bridge no longer blanks the page. It shows the old status as stale, with its real age.
+- `GET /api/printers`: `online` is `null` with `status: "connecting"` while no status was ever seen and nothing says offline (first start). The page shows "Connecting" and "Connecting to the printer…". Clients must treat `null` as unknown, not as offline.
+- Fix: a printer page that showed "Printer offline" kept showing it after the printer came back, when the camera URL had not changed.
+
 ## 3.15.0 (unreleased)
 
 - Bridge log: the first-frame line of a live stream also says when the daemon answered, when the first bytes and the first MPEG-TS came, and which H.264 NAL unit types came before the first keyframe. On the H2S the first frame comes about 10 s after the play loop starts, while a snapshot gets its keyframe in about 1.5 s; this line shows where the time goes.

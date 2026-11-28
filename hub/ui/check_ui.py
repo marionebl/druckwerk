@@ -612,6 +612,26 @@ def check_back_online(page, base, ident):
         hook(0)
 
 
+def check_connecting(page, base, ident, shot=None):
+    """No status seen yet (online null): a neutral Connecting badge and text, the same layout, never "offline"."""
+    hook = lambda on: page.evaluate(f"fetch('{PREFIX}api/_mock/hook?set=connecting&serial={H2S}&on={on}')")
+    page.goto(base + PREFIX + "#/printers/" + H2S)
+    page.wait_for_selector(".cam.big")
+    try:
+        hook(1)
+        page.wait_for_selector(".cam.big .off:has-text('Connecting to the printer')", timeout=12000)
+        assert page.locator(".page-head .pill.warn", has_text="Connecting").count() == 1, "Connecting badge"
+        body = page.inner_text("body")
+        assert "ffline" not in body, "connecting must not say offline"
+        assert page.locator("section.card p.muted", has_text="Connecting to the printer").count() == 2, "job and temperature cards"
+        if shot:
+            shot("detail-connecting")
+        hook(0)
+        page.wait_for_function("!document.body.textContent.includes('Connecting to the printer')", timeout=12000)
+    finally:
+        hook(0)
+
+
 def check_live_video(page, go, shot):
     """The printer page plays the H.264 printer's live stream (the mock sends real MPEG-TS) and the video advances."""
     go("#/printers/" + H2S, ".cam.big")
@@ -818,6 +838,7 @@ def walk(page, ident, base, shot, inject):
         check_layout_stable(page, go)
         check_printer_card(page, base, ident, go, shot)
         check_back_online(page, base, ident)
+        check_connecting(page, base, ident, shot)
         check_start_steps(page, base, ident, go, shot)
         check_live_video(page, go, shot)
     go("#/queue", ".job")
@@ -894,6 +915,7 @@ def walk(page, ident, base, shot, inject):
 def main():
     ap = argparse.ArgumentParser()
     ap.add_argument("--shots")
+    ap.add_argument("--scale", type=float, default=1, help="deviceScaleFactor of the screenshots")
     ap.add_argument("--only", choices=["cache", "reslice", "panel", "download", "preview", "printerhistory", "offline"], help="run one check only")
     ap.add_argument("--port", type=int, default=18099, help="port of the mock server")
     ap.add_argument("--inject-absolute", action="store_true")
@@ -927,7 +949,7 @@ def main():
             br = p.chromium.launch(args=["--use-angle=swiftshader", "--enable-unsafe-swiftshader", "--ignore-gpu-blocklist"])  # software WebGL for the 3D preview
             for ident in a.idents.split(","):
                 for sz, (w, h) in SIZES.items():
-                    ctx = br.new_context(viewport={"width": w, "height": h}, is_mobile=w < 500, has_touch=w < 500)
+                    ctx = br.new_context(viewport={"width": w, "height": h}, device_scale_factor=a.scale, is_mobile=w < 500, has_touch=w < 500)
                     page = ctx.new_page()
                     where = f"{ident}@{sz}"
                     page.on("console", lambda m, wh=where: m.type == "error" and not (ALLOW_502 and "status of 502" in m.text) and problems.append(f"console error [{wh}]: {m.text}"))
