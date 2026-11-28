@@ -18,5 +18,4 @@ class AppButton(AppEntity, ButtonEntity):
         self._press = desc["press"]
 
     async def async_press(self) -> None:
-        user_id = self._context.user_id if self._context else None
-        await self.hub.press(self.serial, self._press, user_id)
+        await self.hub.press(self.serial, self._press, self.user_id)

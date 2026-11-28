@@ -24,6 +24,7 @@ HERE = os.path.dirname(os.path.abspath(__file__))
 for _d in (HERE, os.path.dirname(HERE)):  # python -I drops the script dir; the repo keeps externals.py one level up
     sys.path.insert(0, _d)
 import externals  # noqa: E402
+from httplen import content_length  # noqa: E402
 import pack  # noqa: E402
 
 env = os.environ.get
@@ -190,7 +191,7 @@ def read_body(h, f, length):
 
 def refuse(h, status, body):
     """Answer an error to an upload. The body is read first (up to 8 MB), or the client sees a reset connection, not the error."""
-    left = min(int(h.headers.get("Content-Length") or 0), 8 << 20)
+    left = min(content_length(h.headers), 8 << 20)
     while left > 0:
         left -= len(h.rfile.read(min(left, 1 << 20)) or b"\0" * left)
     h.send(status, body)
@@ -205,7 +206,7 @@ def chunk_args(h, q):
         offset, total = int((q.get("offset") or ["0"])[0]), int(q["total"][0])
     except ValueError:
         total = 0
-    length = int(h.headers.get("Content-Length") or 0)
+    length = content_length(h.headers)
     if not 0 < total <= MAX_MODEL or offset < 0 or not 0 < length <= min(MAX_PART, total - offset):
         refuse(h, 413 if length > MAX_PART else 400, {"error": "Send the file in parts of at most %d bytes with a valid offset and total." % MAX_PART})
         return False
@@ -219,7 +220,7 @@ def post_job(h, m, q):
     part = chunk_args(h, q)
     if part is False:
         return
-    length = int(h.headers.get("Content-Length") or 0)
+    length = content_length(h.headers)
     total = part[1] if part else length
     if part and part[0]:
         return h.send(400, {"error": "The first part starts at offset 0."})
@@ -255,7 +256,7 @@ def post_model_part(h, m, q):
     size = os.path.getsize(job["model"])
     if part[0] != size:
         return refuse(h, 409, {"error": "Expected offset %d." % size, "received": size})
-    length = int(h.headers.get("Content-Length") or 0)
+    length = content_length(h.headers)
     with open(job["model"], "ab") as f:
         read_body(h, f, length)
     size = os.path.getsize(job["model"])
@@ -366,7 +367,7 @@ def post_gcode(h, m, q):
     if not job:
         return h.send(404, {"error": "unknown job"})
     arg = {k: v[0] for k, v in q.items()}
-    length = int(h.headers.get("Content-Length") or 0)
+    length = content_length(h.headers)
     part = chunk_args(h, q)
     if part is False:
         return
@@ -496,6 +497,7 @@ def isolation_headers(h):
 
 
 class Handler(BaseHTTPRequestHandler):
+    timeout = 120  # a client that stops sending must not hold a thread
     def head(self, status, ctype, length, cache):
         self.send_response(status)
         self.send_header("Content-Type", ctype)
@@ -515,7 +517,7 @@ class Handler(BaseHTTPRequestHandler):
             shutil.copyfileobj(f, self.wfile, 1 << 20)
 
     def json(self):
-        length = int(self.headers.get("Content-Length") or 0)
+        length = content_length(self.headers)
         if length > 8192:
             raise ValueError("Body too large.")
         body = json.loads(self.rfile.read(length) or b"{}")

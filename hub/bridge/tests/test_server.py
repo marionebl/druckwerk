@@ -4,6 +4,7 @@ import base64
 import http.client
 import json
 import os
+import shlex
 import signal
 import socket
 import stat
@@ -66,6 +67,9 @@ class Server:
         self.base = free_range()  # first daemon port; the next ones are base+1, ...
         self.logpath = os.path.join(self.tmp.name, "server.log")
         self.bodies = []  # every HTTP response body we received
+        # The server gives its daemon only PATH, HOME, LANG and TZ, so the mock's MOCK_* controls go on its command line.
+        mock_env = " ".join("%s=%s" % (k, shlex.quote(v)) for k, v in (extra_env or {}).items() if k.startswith("MOCK_"))
+        daemon_cmd = "env %s %s" % (mock_env, daemon_cmd) if mock_env else daemon_cmd
         env = dict(os.environ, DW_DATA=self.data, DW_PORT=str(self.port), DW_HOST="127.0.0.1",
                    DW_API_BASE="http://127.0.0.1:%d" % cloud.server_port, DW_DAEMON_PORT_BASE=str(self.base),
                    DW_CERT=self.cert, DW_DAEMON_CMD=daemon_cmd, DW_BACKOFF_MIN="0.2", DW_BACKOFF_MAX="0.8",
@@ -1080,6 +1084,62 @@ class MigrationTest(unittest.TestCase):
             self.assertNotIn(b"ACCESS-OLD", b"".join(s.bodies))
         finally:
             s.close()
+
+
+class OpenPathsTest(unittest.TestCase):
+    """Port 8098 has no secret: only loopback may control it; go2rtc and the manual setup need two routes."""
+
+    @classmethod
+    def setUpClass(cls):
+        cls.cloud = mock_cloud.start()
+        cls.s = Server(cls.cloud, extra_env={"SUPERVISOR_TOKEN": "TOKEN-SECRET", "DW_DATA_SECRET": "x"})
+        login(cls.s, "a@example.com")
+        daemon_up(cls.s, cls.s.base)
+
+    @classmethod
+    def tearDownClass(cls):
+        cls.s.close()
+
+    def remote(self, method, path, body=None):
+        # 127.0.0.2 is not the loopback address 127.0.0.1 that the app uses
+        c = http.client.HTTPConnection("127.0.0.1", self.s.port, timeout=30, source_address=("127.0.0.2", 0))
+        c.request(method, path, json.dumps(body) if body is not None else None)
+        r = c.getresponse()
+        data = b"" if path.endswith("/live") else r.read()  # a stream does not end
+        c.close()
+        return r.status, data
+
+    def test_remote_client_cannot_control(self):
+        self.assertEqual(self.remote("POST", "/api/print", {"serial": "SERIAL001"})[0], 403)
+        self.assertEqual(self.remote("POST", "/api/pause/SERIAL001", {"action": "pause"})[0], 403)
+        self.assertEqual(self.remote("DELETE", "/api/accounts/a_example_com")[0], 403)
+        self.assertEqual(self.remote("GET", "/api/printers")[0], 403)
+        self.assertEqual(self.s.json("GET", "/api/printers")[0], 200)  # loopback is unchanged
+
+    def test_remote_client_keeps_live_and_health(self):
+        self.assertEqual(self.remote("GET", "/api/camera/SERIAL001/live")[0], 200)
+        status, data = self.remote("GET", "/api/health")
+        self.assertEqual(status, 200)
+        self.assertEqual(json.loads(data)["server"], "ok")
+        self.assertNotIn(b"a@example.com", data)  # no email address for a remote client
+        self.assertIn(b"a@example.com", self.s.req("GET", "/api/health")[1])
+
+    def test_daemon_does_not_get_the_supervisor_token(self):
+        env = self.s.daemon(self.s.base, "/health")["env"]
+        self.assertEqual([k for k in env if k.startswith(("SUPERVISOR", "DW_"))], [])
+
+    def test_bad_content_length_is_400(self):
+        for value in ("-1", "abc"):
+            sock = socket.create_connection(("127.0.0.1", self.s.port), timeout=10)
+            sock.sendall(("POST /api/login/start HTTP/1.1\r\nHost: x\r\nContent-Length: %s\r\n\r\n" % value).encode()
+                         + b'{"email": "x@y.org", "password": "p"}')
+            sock.shutdown(socket.SHUT_WR)
+            answer = b""
+            while chunk := sock.recv(65536):
+                answer += chunk
+            sock.close()
+            self.assertTrue(answer.startswith(b"HTTP/1.0 400"), answer[:200])
+            self.assertIn(b"non-negative", answer)
 
 
 if __name__ == "__main__":

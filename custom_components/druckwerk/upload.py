@@ -34,7 +34,8 @@ class UploadView(HomeAssistantView):
         if not secret:
             return self.json_message("Uploads are off: set an upload secret in the Druckwerk options.", 403)
         given = request.headers.get(UPLOAD_SECRET_HEADER, "")
-        if not hmac.compare_digest(given.encode(), secret.encode()):
+        # surrogateescape: a byte that is not UTF-8 is a wrong secret, not a crash that skips the failed-login count
+        if not hmac.compare_digest(given.encode(errors="surrogateescape"), secret.encode()):
             await process_wrong_login(request)
             return self.json_message("Wrong or missing upload secret.", 401)
         if not NAME_RE.fullmatch(name):
