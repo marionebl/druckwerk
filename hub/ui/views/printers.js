@@ -33,16 +33,20 @@ function still(p, big) {
   s.url = p.camera_url;
   if (!s.running) {
     s.running = true;
-    const next = () => {
+    let timer = null, probe = null;
+    const next = (fresh) => {
+      clearTimeout(timer);
       if (!s.holder.isConnected) { s.running = false; return; }
-      if (document.hidden || s.holder.closest('.live.playing')) { setTimeout(next, 1000); return; }
-      const probe = new Image();
-      const again = () => setTimeout(next, s.pause);
-      probe.onload = () => { s.img.src = probe.src; s.holder.classList.add('ok'); again(); };
-      probe.onerror = () => { if (!s.holder.classList.contains('ok')) s.text.textContent = 'No camera image'; again(); };
-      probe.src = s.url + (s.url.includes('?') ? '&' : '?') + 'mode=snapshot&t=' + Date.now();
+      if (document.hidden || s.holder.closest('.live.playing')) { timer = setTimeout(next, 1000); return; }
+      if (probe) { probe.onload = probe.onerror = null; probe.src = ''; }  // a fresh request replaces the one in flight
+      const pr = probe = new Image();
+      const again = () => { probe = null; timer = setTimeout(next, s.pause); };
+      pr.onload = () => { s.img.src = pr.src; s.holder.classList.add('ok'); again(); };
+      pr.onerror = () => { if (!s.holder.classList.contains('ok')) s.text.textContent = 'No camera image'; again(); };
+      pr.src = s.url + (s.url.includes('?') ? '&' : '?') + 'mode=snapshot' + (fresh ? '&fresh=1' : '') + '&t=' + Date.now();
     };
-    setTimeout(next, 0);
+    s.fresh = () => next(true);
+    timer = setTimeout(next, 0);
   }
   return s.holder;
 }
@@ -154,7 +158,11 @@ function switchLight(p, b) {
   const on = b.getAttribute('aria-checked') !== 'true';  // what the person sees flips, also on a button drawn earlier
   const l = { on, until: Date.now() + LIGHT_HOLD_MS, busy: true };
   l.sent = (prev?.sent || Promise.resolve()).then(() => api.setLight(p.serial, on)).then(
-    () => { l.busy = false; l.until = Date.now() + LIGHT_HOLD_MS; },
+    () => {
+      l.busy = false; l.until = Date.now() + LIGHT_HOLD_MS;
+      // the bridge reuses a still for 30 s; ask for one taken after the switch, so the picture shows the light
+      for (const k of [p.serial, p.serial + ':big']) stills.get(k)?.fresh?.();
+    },
     (err) => {
       l.busy = false;
       toast(err.message, 'error');

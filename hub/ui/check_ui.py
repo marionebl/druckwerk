@@ -692,6 +692,14 @@ def check_light_instant(page, base, ident):
     assert seen == {want}, "the switch flipped back before the printer reported: %s" % seen
     page.evaluate("fetch('api/_mock/slow').then((r) => r.text())")
     page.evaluate("fetch('api/_mock/light?lag=0').then((r) => r.text())")
+    # a printer card shows stills, which the bridge reuses for 30 s: after the command it asks for one taken after it
+    page.evaluate("location.hash = '#/printers'")
+    page.wait_for_selector(".pcard .light-btn")
+    fresh = []
+    page.on("request", lambda r: "fresh=1" in r.url and "/camera" in r.url and fresh.append(r.url))
+    page.locator(".pcard", has_text="Workshop H2S").get_by_role("switch", name="Chamber light").click()
+    page.wait_for_timeout(1500)
+    assert fresh, "after the light command the card asks for a camera picture taken after it (fresh=1)"
 
 
 def check_library_pick(page, go, shot):

@@ -6,6 +6,7 @@
 - The new state stays on screen until the printer reports it, or 30 s pass. Before, it stayed 10 s, then the switch could show the old state again until the printer's report arrived.
 - A refused command puts the reported state back and shows the error. Commands to one printer go out in click order.
 - On the printer page, the switch on the camera now follows the printer's state too. Before, it was drawn once with the camera and kept the state from that moment.
+- After a light switch, the camera picture shows the change sooner. The page asks for a picture taken after the command (`fresh=1` on the camera snapshot), and the bridge skips its 30 s snapshot cache for it. Before, a printer card could show the old light for 30 to 40 s. While a live stream is open, a fresh snapshot is the newest frame (the bridge decodes from the last keyframe on). Before, it was the last keyframe, whatever its age. Without a live stream, a fresh picture takes one camera mint plus a keyframe (about 3 to 10 s on the H2S).
 
 ## 3.10.0 (unreleased)
 
