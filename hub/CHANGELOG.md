@@ -1,5 +1,9 @@
 # Changelog
 
+## 3.15.0 (unreleased)
+
+- Bridge log: the first-frame line of a live stream also says when the daemon answered, when the first bytes and the first MPEG-TS came, and which H.264 NAL unit types came before the first keyframe. On the H2S the first frame comes about 10 s after the play loop starts, while a snapshot gets its keyframe in about 1.5 s; this line shows where the time goes.
+
 ## 3.14.0 (unreleased)
 
 - Pages show cached data at once after a reload. The identity (`api/me`) and the Access lists (grants, Home Assistant users and entities) are cached in the browser too, so the shell and the lists no longer wait for the network. The cached shape (printer cards, filament slots, list rows) stays on screen, so the page does not jump when the answer arrives.

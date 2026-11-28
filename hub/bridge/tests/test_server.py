@@ -788,7 +788,7 @@ class LiveTest(unittest.TestCase):
 
     def test_log_has_first_frame_time_and_stalls(self):
         self.grab("SERIAL001", 1)
-        self.assertRegex(self.s.logtext(), r"live SERIAL001: first frame after \d+\.\ds")
+        self.assertRegex(self.s.logtext(), r"live SERIAL001: first frame after \d+\.\ds \(headers \d+\.\ds, data \d+\.\ds, ts \d+\.\ds; NAL types before it: 7 8 [56]")
         self.assertTrue(wait_for(lambda: "live SERIAL001: ended after" in self.s.logtext(), self.IDLE + 5))
         self.assertRegex(self.s.logtext(), r"live SERIAL001: ended after \d+s, first frame after \d+\.\ds, \d+\.\d MB, 0 stalls over 2s")
 
