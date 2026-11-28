@@ -609,7 +609,7 @@ def check_cache(page, base, ident):
         assert time.time() - t0 < 4.5 and page.locator("#view .loading").count() == 0, f"{tab}: cached data without a spinner ({time.time() - t0:.1f} s, {page.locator('#view .loading').count()} spinners)"
         assert text in page.locator("#view").text_content()
     page.wait_for_timeout(6500)  # the fresh answer arrives and replaces it without trouble
-    assert page.locator(".spool").count() == 5, f"{page.locator('.spool').count()} spools, page {page.url}"
+    assert page.locator(".spool").count() == 6, f"{page.locator('.spool').count()} spools, page {page.url}"
     page.evaluate("fetch('api/_mock/slow')")
     # the cloud library fails: the cached spools still show at once
     ALLOW_502.append("api/spools")
@@ -1424,7 +1424,7 @@ def walk(page, ident, base, shot, inject):
         check_library_pick(page, go, shot)
     go("#/filament", ".spool")
     shot("filament")
-    assert page.locator(".spool").count() == 5, "the cloud library lists five spools: %d" % page.locator(".spool").count()
+    assert page.locator(".spool").count() == 6, "the cloud library lists six spools: %d" % page.locator(".spool").count()
     assert page.locator("h3", has_text="Not loaded").count() == 1 and page.get_by_text("printer cloud filament library").count() == 1, "not-loaded group and the subtitle"
     if MOCKED:
         assert "unknown" in page.locator(".spool", has_text="Matte Charcoal").text_content(), "a spool without grams says unknown"
