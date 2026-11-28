@@ -1254,6 +1254,8 @@ class Handler(BaseHTTPRequestHandler):
         self.dispatch("DELETE")
 
     def log_message(self, fmt, *args):
+        if getattr(self, "command", None) == "GET" and len(args) > 1 and args[1] == "200":
+            return  # the hub polls every few seconds; an answered poll is not news
         log("%s %s" % (self.command, urlsplit(self.path).path))  # path only, no query
 
 

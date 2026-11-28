@@ -19,6 +19,7 @@ async function call(method, path, body, raw) {
 async function send(method, path, body, raw) {
   if (path.startsWith('/')) throw new Error('absolute path not allowed: ' + path);
   const init = { method, headers: {} };
+  if (method === 'GET') init.signal = AbortSignal.timeout(20000);  // a pending poll must end; a POST may send a file for minutes
   if (body !== undefined) {
     if (raw) init.body = body;
     else { init.body = JSON.stringify(body); init.headers['Content-Type'] = 'application/json'; }

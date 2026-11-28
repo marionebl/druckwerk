@@ -323,6 +323,20 @@ async def test_camera_serves_the_snapshot_with_the_secret_and_caches_it(hass, ap
     assert hass.states.get(CAMERA).attributes["frame_time"]
 
 
+async def test_two_stills_with_the_same_result_write_the_state_once(hass, app, vendor_device):
+    app.get(SNAPSHOT, content=JPEG, headers={"Content-Type": "image/jpeg"})
+    await setup_entry(hass)
+    seen = []
+    hass.bus.async_listen("state_changed", lambda e: seen.append(e) if e.data["entity_id"] == CAMERA else None)
+    cam = get_camera_from_entity_id(hass, CAMERA)
+    for _ in range(2):
+        cam._fetched -= 120  # age the frame so that the next view fetches again
+        await async_get_image(hass, CAMERA)
+        await hass.async_block_till_done()
+    assert len(calls(app, "GET", "/snapshot")) == 2
+    assert len(seen) == 1  # the first still is written (frame_time appears), the second changes nothing that matters
+
+
 async def test_camera_error_is_reported_and_the_last_image_is_kept(hass, app, vendor_device):
     app.get(SNAPSHOT, status=502, json={"error": "timeout after 20s"})
     await setup_entry(hass)

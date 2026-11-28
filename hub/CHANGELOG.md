@@ -1,5 +1,14 @@
 # Changelog
 
+## 3.31.0 (unreleased)
+
+- Less constant load on the Pi: the ticker, watchdog and queue share one status call per printer (a view under 2 s old is reused, never for a start, which needs 60 s or less); the integration poll and the web UI share one printer-list call per 5 s.
+- A burst of requests for one cached item (the Home Assistant user list) makes one call, not eight; a failed call is not repeated for 5 s. A slow item no longer blocks the others.
+- The bridge no longer logs a GET request that answered 200; every other request is still logged.
+- The web UI's pollers skip a hidden tab (and run once when it shows again) and skip a tick while the last call is pending; GET calls stop after 20 s.
+- `vendor/*` files (3D and video libraries, 1.1 MB) carry an `ETag` and `Cache-Control: no-cache`; a matching `If-None-Match` gets `304`. The app code stays `no-store`.
+- Integration 0.15.2: the camera writes its state when `online` or `last_error` changes (and for the first still), not after each still; `frame_time` is no longer refreshed on every still.
+
 ## 3.30.0 (unreleased)
 
 - Cloud files in `data/cloud` are pruned after each fetch: the newest 20 files within 500 MB stay, an older one is fetched again when needed.

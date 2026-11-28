@@ -456,6 +456,22 @@ class LoginLockTest(unittest.TestCase):
             s.close()
 
 
+class RequestLogTest(unittest.TestCase):
+    """The hub polls the bridge every few seconds; a GET that answered 200 must not fill the log."""
+
+    def test_a_200_get_adds_no_line_and_a_404_adds_one(self):
+        s = Server(mock_cloud.start())
+        try:
+            before = s.logtext().count("GET /api/")
+            for _ in range(10):
+                self.assertEqual(s.req("GET", "/api/health")[0], 200)
+            self.assertEqual(s.logtext().count("GET /api/"), before)
+            self.assertEqual(s.req("GET", "/api/nothing-here")[0], 404)
+            self.assertEqual(s.logtext().count("GET /api/nothing-here"), 1)
+        finally:
+            s.close()
+
+
 class StatusTest(unittest.TestCase):
     """A daemon that answers /status slowly must not turn into 503 for the hub."""
 

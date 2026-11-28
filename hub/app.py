@@ -63,6 +63,8 @@ TASKS_TTL = 60  # seconds a printer's cloud task list is reused
 SPOOLS_TTL = 30  # seconds an account's cloud filament library is reused
 STALE_AFTER = 60  # seconds after which a printer view from an earlier status call is marked stale
 STATUS_STALE_MAX = 600  # seconds the queue may still act on such a view
+STATUS_REUSE = 2  # seconds a printer view is shared by the ticker, watchdog, queue and UI
+FAIL_HOLD = 5  # seconds a failed cached call is not tried again
 STATUS_CACHE_EVERY = 30  # seconds between writes of a printer's last good view to the data dir
 CLOUD_OFFLINE_AFTER = 60  # seconds the cloud flag must say offline, reading after reading, before the page does
 CLOUD_READING_GAP = 30  # a longer pause between two offline readings starts the count again
@@ -211,6 +213,7 @@ class App:
         self.cloud_locks = {}  # task id -> lock, one download per cloud file
         self.cloud_miss = {}  # task id -> (time, reason) of a failed cloud file fetch
         self._cache_lock = threading.Lock()
+        self._key_locks, self._failures = {}, {}  # per cache key: its lock; (time, error) of its last failed call
         self._cloud_false = {}  # serial -> (first, latest) reading time of an unbroken run of offline readings
         self._saved_at = {}  # serial -> when its view was last written to status_cache.json
         self._load_views()
@@ -249,20 +252,32 @@ class App:
         return Caller(act_as, user["name"], user["name"])  # not internal: this user's rules apply
 
     def _cached(self, key, ttl, fn):
-        """fn() result for ttl seconds; on failure the last good value, else the error."""
+        """fn() result for ttl seconds; on failure the last good value, else the error (a failure holds for FAIL_HOLD s).
+        One lock per key: callers of one key share a call, a slow key does not block the others."""
         with self._cache_lock:
-            at, val = self._cache.get(key, (0, None))
-        if self.clock() - at < ttl and val is not None:
+            key_lock = self._key_locks.setdefault(key, threading.Lock())
+        with key_lock:
+            with self._cache_lock:
+                at, val = self._cache.get(key, (0, None))
+                failed = self._failures.get(key)
+            if self.clock() - at < ttl and val is not None:
+                return val
+            if failed and self.clock() - failed[0] < FAIL_HOLD:
+                if val is None:
+                    raise failed[1]
+                return val
+            try:
+                val = fn()
+            except (HAError, HttpError) as e:
+                with self._cache_lock:
+                    self._failures[key] = (self.clock(), e)
+                if val is None:
+                    raise
+                return val
+            with self._cache_lock:
+                self._cache[key] = (self.clock(), val)
+                self._failures.pop(key, None)
             return val
-        try:
-            val = fn()
-        except (HAError, HttpError):
-            if val is None:
-                raise
-            return val
-        with self._cache_lock:
-            self._cache[key] = (self.clock(), val)
-        return val
 
     def get_user(self, user_id):
         try:
@@ -405,6 +420,10 @@ class App:
         except HttpError:
             return []
 
+    def listed_printers(self):
+        """bridge_printers shared for 5 s by the UI, the integration poll and the online check."""
+        return self._cached("printers", 5, self.bridge_printers)
+
     def ha_users(self):
         users = self.ha.command("config/auth/list")
         return [{"id": u["id"], "name": u.get("name") or "",
@@ -466,8 +485,13 @@ class App:
         except OSError as e:
             log("cannot write status_cache.json: %s" % e)
 
-    def status_entry(self, serial):
-        """(view, age in s) of the printer: fresh from the bridge, else the last good one (one failed call is not offline)."""
+    def status_entry(self, serial, max_age=STATUS_REUSE):
+        """(view, age in s) of the printer: fresh from the bridge, else the last good one (one failed call is not offline).
+        A view younger than STATUS_REUSE and than max_age is reused: the ticker, watchdog and queue read it together."""
+        with self._cache_lock:
+            at, last = self._cache.get("view:" + serial, (0, None))
+        if last is not None and self.clock() - at < min(STATUS_REUSE, max_age):
+            return last, self.clock() - at
         data, served = self.bridge_print(serial)
         v = printer_state.view(data, self.clock())
         with self._cache_lock:
@@ -482,14 +506,14 @@ class App:
     def printer_status(self, serial, max_age=STATUS_STALE_MAX):
         """What the printer reports now (hub/printer_state.py), from the bridge; None when the bridge cannot say.
         The queue acts on it, so a last good view counts for 10 min only (a start passes a shorter max_age)."""
-        v, age = self.status_entry(serial)
+        v, age = self.status_entry(serial, max_age)
         return v if age <= max_age else None
 
     def cloud_online(self, serial):
         """False only when the bridge's printer list has said offline, reading after reading, for CLOUD_OFFLINE_AFTER s;
         one reading, a gap or unknown counts as online."""
         try:
-            printers = self._cached("printers", 5, self.bridge_printers)
+            printers = self.listed_printers()
         except (HAError, HttpError):
             return True
         flag = next((p.get("online") for p in printers if p.get("serial") == serial), None)
@@ -776,9 +800,17 @@ class App:
         name = (m.group(1) if m.re.groups else None) or "index.html"
         try:
             with open(os.path.join(self.ui_dir, name), "rb") as f:
-                h.send(200, f.read(), MIME[name.rsplit(".", 1)[1]])
+                data = f.read()
         except OSError:
             raise NotFound("no such file")
+        ctype = MIME[name.rsplit(".", 1)[1]]
+        if not name.startswith("vendor/"):
+            return h.send(200, data, ctype)  # the app code stays no-store until its files are versioned (UI-05)
+        etag = '"%s"' % hashlib.sha256(data).hexdigest()[:32]  # the libraries are 1 MB: the browser asks, the Pi answers 304
+        if etag in [t.strip() for t in (h.headers.get("If-None-Match") or "").split(",")]:
+            return h.head(304, ctype, 0, "no-cache", etag)
+        h.head(200, ctype, len(data), "no-cache", etag)
+        h.wfile.write(data)
 
     # -- route functions --
     def role_or_none(self, c, serial):
