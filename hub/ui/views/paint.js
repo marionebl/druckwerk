@@ -29,7 +29,13 @@ export async function paintModel(local, existing, rot = [1, 0, 0, 0, 1, 0, 0, 0,
     const canvas = h('canvas', { class: 'paint-canvas', tabindex: '0', 'aria-label': 'Model to paint' });
     const dlg = h('dialog', { class: 'paint', 'data-ready': '' });
     const info = h('small', { class: 'muted', id: 'paint-info' });
-    const done = (v) => { ro.disconnect(); cancelAnimationFrame(raf); renderer.dispose(); dlg.close(); dlg.remove(); resolve(v); };
+    // Browsers allow about 16 GL contexts: free the buffers and let go of the context at once.
+    const done = (v) => {
+      ro.disconnect(); cancelAnimationFrame(raf);
+      scene.traverse((o) => { o.geometry?.dispose(); o.material?.dispose(); });
+      renderer.dispose(); renderer.forceContextLoss();
+      dlg.close(); dlg.remove(); resolve(v);
+    };
 
     // --- scene
     const renderer = new T.WebGLRenderer({ canvas, antialias: true });
