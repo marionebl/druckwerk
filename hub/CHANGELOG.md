@@ -1,5 +1,12 @@
 # Changelog
 
+## 3.9.1 (unreleased)
+
+- Fix: the printer page said "Printer offline" when the printer was fine. "Offline" now needs evidence: the bridge's cloud flag must say offline in every reading for 60 s (one reading changes nothing), or the status itself says offline, or the last status is older than 10 min. Otherwise the page keeps the last known status.
+- The last good status of each printer is kept in `/data/status_cache.json` (written at most every 30 s) and read at start, so a restart of the app or of the bridge no longer blanks the page. It shows the old status as stale, with its real age.
+- `GET /api/printers`: `online` is `null` with `status: "connecting"` while no status was ever seen and nothing says offline (first start). The page shows "Connecting" and "Connecting to the printer…". Clients must treat `null` as unknown, not as offline.
+- Fix: a printer page that showed "Printer offline" kept showing it after the printer came back, when the camera URL had not changed.
+
 ## 3.9.0 (unreleased)
 
 - Fix: New print failed with "HTTP 413" for a model or a G-code file above about 1 MB. A proxy between the browser and the app (Home Assistant's ingress) refuses bigger request bodies, and the app's own limit is 100 MB. The page now sends models and G-code in parts of 512 KB and the app joins them (`total` and `offset` in the query of `POST /api/jobs`, `POST /api/jobs/{id}/model` (new) and `POST /api/jobs/{id}/gcode`, see API.md). A request without `total` works as before.

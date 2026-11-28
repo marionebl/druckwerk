@@ -242,19 +242,28 @@ class Hub:
         FakeBridge.library, FakeBridge.library_fail, FakeBridge.library_calls = {}, None, []
         self.bridge = ThreadingHTTPServer(("127.0.0.1", 0), FakeBridge)
         threading.Thread(target=self.bridge.serve_forever, kwargs={"poll_interval": 0.02}, daemon=True).start()
+        self.vendor = vendor
+        self._boot()
+        self.server = ThreadingHTTPServer(("127.0.0.1", 0), self.s.Handler)
+        threading.Thread(target=self.server.serve_forever, kwargs={"poll_interval": 0.02}, daemon=True).start()
+        self.port = self.server.server_address[1]
+
+    def _boot(self):
         from app import App
+        tmp_path = self.tmp
         self.app = App(self.ha, str(tmp_path / "data"), self.s.SHARE, ("127.0.0.1", self.bridge.server_address[1]), self.s,
                        lambda: "hub-host", 8099, clock=lambda: self.now, trusted_ips=["127.0.0.1"],
                        ui_dir=os.path.join(REPO, "hub", "ui"))
         media = tmp_path / "media"
-        (media / "druckwerk").mkdir(parents=True)
+        (media / "druckwerk").mkdir(parents=True, exist_ok=True)
         self.media = media
         self.app.media_roots = [os.path.realpath(media)]
         self.app.media_dir = str(media / "druckwerk")
         self.app.install()
-        self.server = ThreadingHTTPServer(("127.0.0.1", 0), self.s.Handler)
-        threading.Thread(target=self.server.serve_forever, kwargs={"poll_interval": 0.02}, daemon=True).start()
-        self.port = self.server.server_address[1]
+
+    def restart(self):
+        """A new App on the same data dir, as after an add-on restart: every in-memory cache is empty."""
+        self._boot()
 
     def req(self, method, path, body=None, user=None, secret=False, headers=None, raw=None):
         h = dict(headers or {})
