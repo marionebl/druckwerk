@@ -1,5 +1,14 @@
 # Changelog
 
+## 3.30.0 (unreleased)
+
+- Cloud files in `data/cloud` are pruned after each fetch: the newest 20 files within 500 MB stay, an older one is fetched again when needed.
+- A cancelled or rejected job, and a job that leaves the history, loses its share copy, plate picture and saved settings. A failed job keeps them (retry needs the file); so does the file that a printer reports as its last sent file. A retry of a job whose file is gone is refused with a clear text.
+- Zip members are read only up to a size (config 1 MB, picture 10 MB, G-code 150 MB); the history downloads are streamed; the plate preview no longer loads a whole G-code. A small file that unpacks to gigabytes cannot take the app's memory any more.
+- Cloud downloads: a redirect, a cut connection, a protocol error and a body shorter than its `Content-Length` are a 502; a cover must be PNG, JPEG, WebP or GIF.
+- The bridge takes a print body for the whole 64 MiB upload limit (was 50 MiB: a file between 37.5 and 64 MiB passed the upload and failed at print time with `Broken pipe`). The app refuses a file over 64 MB with a readable 413.
+- The plates inbox skips a folder whose files were rejected until the folder changes (it cost 3 GitHub calls per poll), and quotes file names in URLs (a name with a space raised `InvalidURL`).
+
 ## 3.28.0 (unreleased)
 
 - A damaged or empty data file (`queue.json`, `printers.json`, `grants.json`, the sender, notification, price and request files) no longer stops the app at start: it is renamed to `<name>.corrupt-<time>`, one line goes to the log and the app starts with that file empty.

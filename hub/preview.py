@@ -7,13 +7,14 @@ import logging
 import re
 import zipfile
 
+import files
+
 _LOGGER = logging.getLogger(__name__)
 
 _PLATE_GCODE = re.compile(r"Metadata/plate_(\d+)\.gcode")
 _WORD = re.compile(r"([XYZEIJ])\s*(-?\d*\.?\d+)")
 _SIZE = 640
 _PAD = 24
-_MAX_GCODE = 200 * 1024 * 1024
 
 
 def plate_png(path: str) -> bytes | None:
@@ -28,27 +29,28 @@ def plate_png(path: str) -> bytes | None:
             for name in ("plate_{}.png", "plate_no_light_{}.png", "top_{}.png"):
                 name = "Metadata/" + name.format(plates[0])
                 if name in names:
-                    return z.read(name)
+                    return files.read_member(z, name, files.PNG_MAX)
             info = z.getinfo(f"Metadata/plate_{plates[0]}.gcode")
-            if info.file_size > _MAX_GCODE:
+            if info.file_size > files.GCODE_MAX:
                 _LOGGER.warning("G-code in %s is too big to render (%d bytes)", path, info.file_size)
                 return None
             _LOGGER.info("No preview image in %s, rendering it from the G-code", path)
-            return render_gcode(z.read(info).decode("utf-8", "replace"))
-    except (zipfile.BadZipFile, OSError, KeyError) as err:
+            with z.open(info) as raw:  # line by line: the member can be far bigger than the file
+                return render_gcode(io.TextIOWrapper(raw, encoding="utf-8", errors="replace"))
+    except (zipfile.BadZipFile, OSError, KeyError, ValueError) as err:
         _LOGGER.warning("Cannot read the plate preview from %s: %s", path, err)
     except Exception:  # noqa: BLE001 - a broken render must not take the route down
         _LOGGER.exception("Cannot render the plate preview from %s", path)
     return None
 
 
-def _segments(text: str):
-    """Extruding XY moves as (x0, y0, x1, y1, layer), arcs as chords."""
+def _segments(text):
+    """Extruding XY moves as (x0, y0, x1, y1, layer), arcs as chords. text is a string or an iterable of lines."""
     x = y = e = 0.0
     rel_e = False
     layer = -1
     segs = []
-    for raw in text.split("\n"):
+    for raw in text.split("\n") if isinstance(text, str) else text:
         if not raw:
             continue
         if raw[0] == ";":
@@ -83,7 +85,7 @@ def _segments(text: str):
     return segs
 
 
-def render_gcode(text: str) -> bytes | None:
+def render_gcode(text) -> bytes | None:
     """Top view of all extruded paths, colour by layer height, as PNG."""
     from PIL import Image, ImageDraw
 
