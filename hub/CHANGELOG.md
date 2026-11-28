@@ -1,5 +1,12 @@
 # Changelog
 
+## Unreleased
+
+- New print has a step "Object settings" with the per-object settings of Bambu Studio and OrcaSlicer. Always visible: seam (position, gap, scarf joint), supports (type, style, threshold angle, on build plate only, distances), fuzzy skin ("surface randomisation": mode, thickness, point distance, generator, noise), walls and shells, infill, layer height, ironing and brim. The list "Add a setting" has every other object setting of the engine (about 300). A changed value replaces the preset value in all three slices. The form, the greyed rows, the warnings and the values that an edit changes along with it come from the engine's own settings service. The arrow returns a value to the preset.
+- Paint supports and seam on the model: support enforcers and blockers, seam enforcers and blockers. A brush and a "fill by angle" tool work on a refined copy of the mesh (same shape). Painted support turns supports on by itself. The slice button is now its own card below the settings.
+- Gap: fuzzy skin painting is not offered. With this engine (v0.6.0-m1.9) fuzzy skin "painted only" gives the same G-code as no fuzzy skin. The fuzzy skin setting itself works.
+- Gap: the model cannot be rotated or scaled in New print yet. Painted meshes are sent as they are (no repair), so a broken STL can fail with painting where it slices without.
+
 ## 3.7.1 (unreleased)
 
 - Fix: a printer that was online showed "Printer offline". The daemon asks the printer for a full push on every status call that finds its cache older than 10 s, and an idle printer sends no updates, so the calls queued on one thread and timed out.
