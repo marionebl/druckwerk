@@ -154,3 +154,13 @@ def test_a_slow_pause_does_not_hold_the_ticker(hub):
     release.set()
     wait_threads("druckwerk-pause")
     assert len(pauses()) == 1
+
+
+def test_a_failed_notification_is_logged(hub, monkeypatch, capsys):
+    def boom(*a, **k):
+        raise OSError("HA down")
+    monkeypatch.setattr(hub.app.ha, "call_service", boom)
+    hub.app.watchdog.started(SERIAL, FILE)
+    replay(hub, 150, BAD)
+    assert len(pauses()) == 1
+    assert "air-print notification for Lab (%s) failed: HA down. The print was paused." % SERIAL in capsys.readouterr().err
