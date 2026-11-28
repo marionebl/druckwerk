@@ -374,12 +374,18 @@ class FlowTest(unittest.TestCase):
                                                            "file_b64": "!!notbase64"})[0], 400)
         c = http.client.HTTPConnection("127.0.0.1", self.s.port, timeout=10)
         c.putrequest("POST", "/api/print")
-        c.putheader("Content-Length", str(50 * 1024 * 1024 + 1))
+        c.putheader("Content-Length", str(64 * 1024 * 1024 * 4 // 3 + 4096 + 1))
         c.endheaders()  # headers only: the server must answer without waiting for the body
         r = c.getresponse()
         self.assertEqual(r.status, 413)
         self.s.bodies.append(r.read())
         c.close()
+
+    def test_08b_print_takes_every_file_the_hub_uploads(self):
+        # The hub takes uploads up to 64 MiB; base64 makes the body a third larger. 47 MiB used to answer 413.
+        file = base64.b64encode(b"\0" * (47 * 1024 * 1024)).decode()
+        st, d = self.s.json("POST", "/api/print", {"serial": "SERIAL001", "filename": "big.gcode.3mf", "file_b64": file})
+        self.assertEqual(st, 200, d)
 
     def test_09_page_uses_relative_urls(self):
         st, page = self.s.req("GET", "/")
@@ -446,6 +452,22 @@ class LoginLockTest(unittest.TestCase):
             self.assertEqual(s.req("GET", "/api/health")[0], 200)
             self.assertLess(time.time() - t0, 0.5)
             t.join()
+        finally:
+            s.close()
+
+
+class RequestLogTest(unittest.TestCase):
+    """The hub polls the bridge every few seconds; a GET that answered 200 must not fill the log."""
+
+    def test_a_200_get_adds_no_line_and_a_404_adds_one(self):
+        s = Server(mock_cloud.start())
+        try:
+            before = s.logtext().count("GET /api/")
+            for _ in range(10):
+                self.assertEqual(s.req("GET", "/api/health")[0], 200)
+            self.assertEqual(s.logtext().count("GET /api/"), before)
+            self.assertEqual(s.req("GET", "/api/nothing-here")[0], 404)
+            self.assertEqual(s.logtext().count("GET /api/nothing-here"), 1)
         finally:
             s.close()
 

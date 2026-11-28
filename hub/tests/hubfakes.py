@@ -6,6 +6,7 @@ import os
 import re
 import sys
 import threading
+import time
 import zipfile
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 
@@ -185,6 +186,14 @@ class FakeBridge(BaseHTTPRequestHandler):
             return self.reply(200, FakeBridge.upload.get(self.path.rsplit("/", 1)[1], {}))
         if self.path.startswith("/api/drying/"):
             return self.reply(200, FakeBridge.drying)
+        if self.path.startswith("/api/camera/") and "trickle" in self.path:  # a slow live stream: 1 kB, a pause, 1 kB
+            self.send_response(200)
+            self.send_header("Content-Type", "video/mp2t")
+            self.end_headers()
+            self.wfile.write(b"a" * 1000)
+            self.wfile.flush()
+            time.sleep(1.5)
+            return self.wfile.write(b"b" * 1000)
         if self.path.startswith("/api/camera/"):
             return self.reply(200, b"FRAME:" + self.path.encode(), "image/jpeg")
         self.reply(404, {"error": "no"})
@@ -293,6 +302,8 @@ class Hub:
         if secret:
             h["X-Hub-Secret"] = self.app.secret
         data = raw if raw is not None else (json.dumps(body).encode() if body is not None else None)
+        if data is not None and not any(k.lower() == "content-type" for k in h):
+            h["Content-Type"] = "application/json"
         c = http.client.HTTPConnection("127.0.0.1", self.port, timeout=20)
         c.request(method, path, data, h)
         r = c.getresponse()
@@ -308,6 +319,10 @@ class Hub:
         def merge(old, new):
             return dict(old, **{k: merge(old.get(k) or {}, v) if isinstance(v, dict) else v for k, v in new.items()})
         FakeBridge.status[serial] = merge(FakeBridge.status.get(serial) or DEFAULT_PRINT.get(serial, {}), fields)
+        with self.app._cache_lock:  # the app shares a view for 2 s; the printer changed now, so the next read must ask the bridge
+            at, view = self.app._cache.get("view:" + serial, (0, None))
+            if view is not None:
+                self.app._cache["view:" + serial] = (at - 3, view)
 
     def seed_share(self):
         """a, b, c and d .gcode.3mf in the share: a start sends the real file, so tests that start jobs need them."""

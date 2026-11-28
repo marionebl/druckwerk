@@ -8,6 +8,46 @@
 - Image build: the bridge's Rust tests run before `cargo build`, and the patch is stored as plain text (`hub/bridge/bridge.patch`). Ten camera tests need `tests/fake_bambusource.c`, which the patch lacks; they are skipped. boo-cloud and FFmpeg are fetched by commit id. The certificate (now pinned to a commit of its repository) and the three engine downloads are checked against SHA-256 values in `hub/externals.env`.
 - The base image tag no longer changes with edits of `hub/externals.py` outside `PRINTERS`. The base image is rebuilt once for this release.
 
+## 3.32.0 (unreleased)
+
+- Web UI: a button whose action is still running cannot be pressed again (a double click on "Add to queue" made two jobs).
+- Web UI: the page frame draws first and the name, tabs and cached lists come after `api/me` has answered. Before, the cached identity showed the previous user's name and lists to the next person on the same browser profile. The cached lists of other users are removed when the user changes, and a full storage drops the other cached lists instead of no cache at all.
+- Web UI: leaving New print stops the engine worker and frees the 3D views; a late answer for a cached list no longer mounts New print again (it removed the models); the G-code preview of a chosen variant loads once, not at each redraw; the paint dialog frees its GL context.
+- Web UI: after a Home Assistant restart the page reloads, so new view files meet the new `api.js`. A part of a model or G-code upload that meets a restart or a gateway error (status 0, 502, 503, 504) is sent again up to 3 times. A lost connection says "Cannot reach Home Assistant", not "restarting".
+- Web UI: history covers come through the app (`GET /api/history/{id}/cover`); the cloud CDN image is cross-origin and may be blocked by the page's isolation. `cover_url` of history items is now `api/history/{id}/cover`.
+- Web UI: smaller fixes: an unknown route such as `#/constructor` shows the printers; the history list sets no timer after the route changed; buttons do not act on a key press while cached data is shown; typing in the drying fields survives the redraw; STL files with bytes after the last triangle load.
+- `feedback.js` loads snapdom from `vendor/snapdom.mjs` (3.8.3, MIT) instead of jsdelivr.
+- `POST /api/feedback`: the item ends with the caller's display name ("... · from Name"), each user may send 10 items per hour (429 above), the description is at most 300000 bytes (400 above).
+- Routes that read a JSON body refuse a body without `Content-Type: application/json` (400). A form from another site can send `text/plain` without a preflight. Calls without a body are unchanged.
+
+## 3.31.0 (unreleased)
+
+- Less constant load on the Pi: the ticker, watchdog and queue share one status call per printer (a view under 2 s old is reused, never for a start, which needs 60 s or less); the integration poll and the web UI share one printer-list call per 5 s.
+- A burst of requests for one cached item (the Home Assistant user list) makes one call, not eight; a failed call is not repeated for 5 s. A slow item no longer blocks the others.
+- The bridge no longer logs a GET request that answered 200; every other request is still logged.
+- The web UI's pollers skip a hidden tab (and run once when it shows again) and skip a tick while the last call is pending; GET calls stop after 20 s.
+- `vendor/*` files (3D and video libraries, 1.1 MB) carry an `ETag` and `Cache-Control: no-cache`; a matching `If-None-Match` gets `304`. The app code stays `no-store`.
+- Integration 0.15.2: the camera writes its state when `online` or `last_error` changes (and for the first still), not after each still; `frame_time` is no longer refreshed on every still.
+
+## 3.30.0 (unreleased)
+
+- Cloud files in `data/cloud` are pruned after each fetch: the newest 20 files within 500 MB stay, an older one is fetched again when needed.
+- A job that leaves the history (the newest entries stay) loses its share copy, plate picture and saved settings. Until then a cancelled or failed job keeps them, so Retry works; the file that a printer reports as its last sent file always stays. A retry of a job whose file is gone is refused with a clear text.
+- Zip members are read only up to a size (config 1 MB, picture 10 MB, G-code 150 MB); the history downloads are streamed; the plate preview no longer loads a whole G-code. A small file that unpacks to gigabytes cannot take the app's memory any more.
+- Cloud downloads: a redirect, a cut connection, a protocol error and a body shorter than its `Content-Length` are a 502; a cover must be PNG, JPEG, WebP or GIF.
+- The bridge takes a print body for the whole 64 MiB upload limit (was 50 MiB: a file between 37.5 and 64 MiB passed the upload and failed at print time with `Broken pipe`). The app refuses a file over 64 MB with a readable 413.
+- The plates inbox skips a folder whose files were rejected until the folder changes (it cost 3 GitHub calls per poll), and quotes file names in URLs (a name with a space raised `InvalidURL`).
+
+## 3.29.0 (unreleased)
+
+- Bridge: `Live` and the camera functions moved from `server.py` to `camera.py` (no behaviour change), so `Live` can be unit tested without a subprocess.
+- Bridge: three races in the live fan-out are closed. The idle timer closes a live upstream only when no client joined meanwhile, and removes it from the list in the same step. A client that the fan-out drops no longer ends the reader thread when its queue was emptied at the same moment. After a drop that leaves no client, the idle timer is armed. A viewer socket has a 30 s write timeout.
+- Bridge: a closed live upstream waits for its ffmpeg process (no defunct process stays) and closes its pipe.
+- Bridge: parallel stills of one keyframe share one decode.
+- Bridge: `Daemon.restart()` kills a daemon that is still running 10 s after SIGTERM (`DW_TERM_WAIT`).
+- Plugin: an install stores the zip hash and the library sizes in `<data>/plugin/<version>/.sha256`, and `installed()` compares both. Libraries of a wrong size trigger a new download. An install from an older version has no `.sha256` and is downloaded once more at the next start.
+- App: the camera proxy forwards the bridge stream as it arrives (`read1`). Before, it waited for 64 kB.
+
 ## 3.28.0 (unreleased)
 
 - A damaged or empty data file (`queue.json`, `printers.json`, `grants.json`, the sender, notification, price and request files) no longer stops the app at start: it is renamed to `<name>.corrupt-<time>`, one line goes to the log and the app starts with that file empty.

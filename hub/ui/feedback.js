@@ -1,5 +1,5 @@
 // Copy of schaltpult web/feedback.js (third host: plain page, used by Druckwerk). Keep the HA and Unity paths unchanged
-// so the file can be synced back to Schaltpult.
+// so the file can be synced back to Schaltpult. Only the SNAPDOM line differs: here snapdom is vendored, not loaded from a CDN.
 // Feedback tool for Mario's smart home. One file for three hosts:
 //  - Home Assistant frontend (dashboard resource): a button, then click-select any element.
 //  - Schaltpult web page (injected by serve.py): a button, then drag-select a rectangle of the 3D view.
@@ -12,7 +12,7 @@
 
   var HA_EL = document.querySelector("home-assistant");
   var IS_HA = !!HA_EL;
-  var SNAPDOM = "https://cdn.jsdelivr.net/npm/@zumer/snapdom@3.8.3/dist/snapdom.mjs";
+  var SNAPDOM = new URL("vendor/snapdom.mjs", document.baseURI).href;
   var LIST = "todo.feedback";
   // Without unity-canvas the page gets element selection like HA; checked at use time, as Unity may add its canvas later.
   function clickSelect() { return IS_HA || !document.getElementById("unity-canvas"); }
