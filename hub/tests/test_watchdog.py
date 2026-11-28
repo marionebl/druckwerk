@@ -2,7 +2,7 @@
 import pytest
 
 import watchdog
-from hubfakes import SERIAL, FakeBridge, make_3mf
+from hubfakes import SERIAL, FakeBridge, make_3mf, wait_threads
 
 FILE = "benchy.gcode.3mf"
 STAGES = {"idle": -1, "printing": 0, "changing_filament": 4, "cooling_chamber": 29, "homing_toolhead": 13,
@@ -41,6 +41,7 @@ def replay(hub, seconds, timeline=()):
         hub.now += 1
         if sec % watchdog.CHECK_EVERY == 0:
             hub.app.watchdog.tick()
+            wait_threads("druckwerk-pause")
 
 
 def pauses():
@@ -128,3 +129,28 @@ def test_a_print_with_ams_starts_a_watch_and_one_without_does_not(hub):
     run = lambda **d: hub.req("POST", "/api/actions/print_file", dict({"serial": SERIAL, "file": FILE}, **d), secret=True)
     assert run(use_ams=False)[0] == 200 and hub.app.watchdog.watches == {}
     assert run()[0] == 200 and hub.app.watchdog.watches[SERIAL]["filename"] == FILE
+
+
+def test_a_slow_pause_does_not_hold_the_ticker(hub):
+    import threading
+    import time
+    inside, release = threading.Event(), threading.Event()
+    real = hub.app.bridge_ok
+
+    def slow(method, path, *a, **kw):
+        if path.startswith("/api/pause/"):
+            inside.set()
+            release.wait(15)
+        return real(method, path, *a, **kw)
+    hub.app.bridge_ok = slow
+    hub.app.watchdog.started(SERIAL, FILE)
+    set_states(hub, *BAD[0][1:])
+    set_states(hub, *BAD[1][1:])
+    hub.app.watchdog.tick()
+    hub.now += 130
+    t0 = time.time()
+    hub.app.watchdog.tick()  # the 120 s of air are over: the pause starts
+    assert time.time() - t0 < 0.5 and inside.wait(5)
+    release.set()
+    wait_threads("druckwerk-pause")
+    assert len(pauses()) == 1

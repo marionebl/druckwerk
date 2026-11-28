@@ -71,7 +71,8 @@ class Watchdog:
                 w["air_since"] = now
             if now - w["air_since"] >= AIR_FOR:
                 self._stop(w)  # pause once, never again for this print
-                self._pause(w)
+                # The bridge call takes up to 60 s; the ticker must go on with the other printers.
+                threading.Thread(target=self._pause, args=(w,), name="druckwerk-pause", daemon=True).start()
         else:
             w["air_since"] = None
 

@@ -43,6 +43,13 @@ def make_3mf(path, slice_info=SLICE_INFO, gcode=GCODE):
     return str(path)
 
 
+def wait_threads(*names):
+    """Join the short-lived threads the app starts for a send or a pause (they are named)."""
+    for t in threading.enumerate():
+        if t.name in names:
+            t.join(10)
+
+
 def st(state, **attrs):
     return {"state": state, "attributes": attrs}
 

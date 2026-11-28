@@ -4,6 +4,7 @@ Every login issues new tokens (server.tokens: latest per email, server.issued: a
 import json
 import re
 import threading
+import time
 from urllib.parse import parse_qs, urlsplit
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 import os
@@ -76,6 +77,7 @@ class Handler(BaseHTTPRequestHandler):
         body = json.loads(self.rfile.read(int(self.headers.get("Content-Length") or 0)) or b"{}")
         self.server.calls.append((self.path, body, self.headers.get(externals.CLOUD_CLIENT_HEADER)))
         if self.path == "/v1/user-service/user/login":
+            time.sleep(self.server.login_delay)
             acct = body.get("account", "")
             if "password" in body:
                 if body["password"] != "pw":
@@ -168,6 +170,7 @@ class Handler(BaseHTTPRequestHandler):
 def start():
     server = ThreadingHTTPServer(("127.0.0.1", 0), Handler)
     server.calls, server.issued, server.tokens, server.owner = [], [], {}, {}
+    server.login_delay = 0  # seconds the login endpoint waits before it answers
     server.task_calls, server.filament_calls, server.filaments, server.list_shape = [], [], {}, "hits"
     threading.Thread(target=server.serve_forever, daemon=True).start()
     return server

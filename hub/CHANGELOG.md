@@ -1,5 +1,14 @@
 # Changelog
 
+## 3.22.0 (unreleased)
+
+- No call to Home Assistant, the bridge or the cloud runs while the queue lock is held. A slow send, spool settlement or cloud login no longer holds up `GET /api/queue`, `GET /api/events` or the bridge status (before: up to the 300 s send timeout).
+- New job state `sending` (visible in `GET /api/queue`, shown as "Sending" in the queue): the job holds its printer while the file goes out, so a second start is still refused, then it becomes `starting`, or goes back to `queued` with the error. A job found in `sending` after an app restart is marked failed, because the print may have begun; check the printer before a retry.
+- A tick reads the printer status once, before it takes the lock (it read it up to 4 times under the lock).
+- Settling a finished job (spools, cost) runs after the queue and sync locks are released; `job_done` follows the settlement as before.
+- The "Plate clear, start" notification button and the air-print pause run in their own short-lived thread, so a slow send or pause no longer stops the delivery of Home Assistant events or the ticker.
+- Bridge: a cloud login, its code step and the account write hold the global lock only around the account and pending lists; one lock per account keeps two logins of one account in order.
+
 ## 3.20.0 (unreleased)
 
 - Bridge: the live camera upstream of each printer stays open at all times (`DW_LIVE_KEEP`, on by default). A viewer gets video without the 12 to 14 s mint and keyframe wait on the H2S, and stills and fresh stills (after a light switch) come from the live frames. A dropped upstream opens again after 5 s, then up to 120 s between tries. No new upstream opens while a print is sent. Cost on a Pi 4: about one core and the camera's bit rate per printer, all the time.
