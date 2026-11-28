@@ -9,6 +9,16 @@
 - The bridge takes a print body for the whole 64 MiB upload limit (was 50 MiB: a file between 37.5 and 64 MiB passed the upload and failed at print time with `Broken pipe`). The app refuses a file over 64 MB with a readable 413.
 - The plates inbox skips a folder whose files were rejected until the folder changes (it cost 3 GitHub calls per poll), and quotes file names in URLs (a name with a space raised `InvalidURL`).
 
+## 3.29.0 (unreleased)
+
+- Bridge: `Live` and the camera functions moved from `server.py` to `camera.py` (no behaviour change), so `Live` can be unit tested without a subprocess.
+- Bridge: three races in the live fan-out are closed. The idle timer closes a live upstream only when no client joined meanwhile, and removes it from the list in the same step. A client that the fan-out drops no longer ends the reader thread when its queue was emptied at the same moment. After a drop that leaves no client, the idle timer is armed. A viewer socket has a 30 s write timeout.
+- Bridge: a closed live upstream waits for its ffmpeg process (no defunct process stays) and closes its pipe.
+- Bridge: parallel stills of one keyframe share one decode.
+- Bridge: `Daemon.restart()` kills a daemon that is still running 10 s after SIGTERM (`DW_TERM_WAIT`).
+- Plugin: an install stores the zip hash and the library sizes in `<data>/plugin/<version>/.sha256`, and `installed()` compares both. Libraries of a wrong size trigger a new download. An install from an older version has no `.sha256` and is downloaded once more at the next start.
+- App: the camera proxy forwards the bridge stream as it arrives (`read1`). Before, it waited for 64 kB.
+
 ## 3.28.0 (unreleased)
 
 - A damaged or empty data file (`queue.json`, `printers.json`, `grants.json`, the sender, notification, price and request files) no longer stops the app at start: it is renamed to `<name>.corrupt-<time>`, one line goes to the log and the app starts with that file empty.

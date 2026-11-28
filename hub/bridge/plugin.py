@@ -51,9 +51,17 @@ class Plugin:
         return {"state": self.state, "version": VERSION, "error": self.error, "attempt": self.attempt,
                 "retry_in": self.retry_in}
 
+    def stamp(self, sizes):
+        return "\n".join([self.sha256] + ["%s %d" % (n, sizes[n]) for n in LIBS]) + "\n"
+
     def installed(self):
-        paths = [os.path.join(self.dir, n) for n in LIBS]
-        return all(os.path.isfile(p) and os.path.getsize(p) > 0 for p in paths)
+        """The pinned zip's hash and the library sizes are stored with the install; a truncated or other install fails."""
+        try:
+            sizes = {n: os.path.getsize(os.path.join(self.dir, n)) for n in LIBS}
+            with open(os.path.join(self.dir, ".sha256")) as f:
+                return all(sizes.values()) and f.read() == self.stamp(sizes)
+        except OSError:
+            return False
 
     def run(self):
         delay = self.backoff_min
@@ -102,6 +110,8 @@ class Plugin:
                         raise ValueError("zip does not hold exactly one usable %s" % name)
                     with z.open(hits[0]) as src, open(os.path.join(stage, name), "wb") as dst:
                         shutil.copyfileobj(src, dst)
+            with open(os.path.join(stage, ".sha256"), "w") as f:
+                f.write(self.stamp({n: os.path.getsize(os.path.join(stage, n)) for n in LIBS}))
             if os.path.isdir(self.dir):
                 shutil.rmtree(self.dir)
             os.replace(stage, self.dir)  # a half-extracted directory never carries the final name
