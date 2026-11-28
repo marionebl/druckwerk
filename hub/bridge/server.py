@@ -334,6 +334,12 @@ class Daemon:
                 code = self.proc.wait()
             except OSError as e:
                 code = "start failed: %s" % type(e).__name__
+            except Exception as e:  # noqa: BLE001 - the loop is the only restarter of this daemon
+                code = "loop error: %s" % type(e).__name__
+                log(tag + code)
+                if self.proc and self.proc.poll() is None:
+                    self.proc.kill()
+                    self.proc.wait()
             if self.dead:
                 return
             if self.wake.is_set():  # restart requested by a new login
@@ -1642,8 +1648,12 @@ class Handler(BaseHTTPRequestHandler):
         self.send_header("Cache-Control", "no-store")
         for k, v in (headers or {}).items():
             self.send_header(k, v)
-        self.end_headers()
-        self.wfile.write(data)
+        try:
+            self.end_headers()
+            self.wfile.write(data)
+        except (BrokenPipeError, ConnectionResetError):  # the client gave up before the answer
+            self.close_connection = True
+            log("client went away: %s %s" % (self.command, urlsplit(self.path).path))
 
     def dispatch(self, method):
         path = urlsplit(self.path).path

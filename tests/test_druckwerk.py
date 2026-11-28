@@ -11,6 +11,7 @@ from homeassistant.core import State
 from homeassistant.exceptions import HomeAssistantError, ServiceValidationError
 from homeassistant.helpers import device_registry as dr
 from homeassistant.helpers import entity_registry as er
+from homeassistant.helpers import issue_registry as ir
 from pytest_homeassistant_custom_component.common import mock_restore_cache
 from pytest_homeassistant_custom_component.test_util.aiohttp import AiohttpClientMockResponse
 
@@ -127,12 +128,17 @@ async def test_app_down_makes_entities_unavailable_until_it_answers(hass, app, v
     assert hass.states.get(SENSOR).state == "sent"
 
 
-async def test_a_401_from_the_app_is_a_failed_poll(hass, app, vendor_device):
+async def test_a_401_from_the_app_is_a_failed_poll_with_a_repair_issue(hass, app, vendor_device):
     await setup_entry(hass)
     app.get(f"{HUB_URL}/api/integration/state", status=401, json={"error": "no"})
     app._mocks.insert(0, app._mocks.pop())
     await tick(hass)
     assert hass.states.get(SENSOR).state == STATE_UNAVAILABLE
+    assert {i for (_, i) in ir.async_get(hass).issues} == {"hub_secret_rejected"}  # not "not reachable"
+    mock_hub(app)
+    await tick(hass, 12)
+    assert hass.states.get(SENSOR).state == "sent"
+    assert ir.async_get(hass).issues == {}
 
 
 async def test_setup_does_not_wait_for_an_app_that_is_down_and_entities_appear_later(hass, app, vendor_device):
