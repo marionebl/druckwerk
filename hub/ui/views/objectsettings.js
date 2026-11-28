@@ -18,7 +18,7 @@ const SUPPORT_KEYS = /^(support_|tree_support|enable_support$)/;
 
 const first = (v) => (Array.isArray(v) ? v[0] : v);
 
-// ctx: {engine(), model, quality, bed, filament} for the engine requests. The card edits the objects of S.objects whose id is in
+// ctx: {engine(), model, nozzle, quality, bed, filament} for the engine requests. The card edits the objects of S.objects whose id is in
 // S.sel (the plate selection): each keeps its own settings in `config`, an edit goes to all of them.
 export function objectCard(S, ctx, { onChange, paintSummary }) {
   const box = h('section', { class: 'card stack', id: 'object-settings' });
@@ -54,7 +54,7 @@ export function objectCard(S, ctx, { onChange, paintSummary }) {
 
   async function load() {
     if (!eng() || !sel().length) return;
-    process = (await loadPresets(ctx.model)).process[ctx.quality];
+    process = (await loadPresets(ctx.model, ctx.nozzle)).process[ctx.quality];
     take(await call('settings.view', { form: form?.id }));
     render();
   }

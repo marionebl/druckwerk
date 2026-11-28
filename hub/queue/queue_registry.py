@@ -1,10 +1,24 @@
 """Printer registry: printers keyed by serial, stored as JSON in the data dir (no serials in code)."""
 import json
 import os
+import re
 import tempfile
 import threading
 
-FIELDS = ("name", "model", "account", "prefix", "plate_type", "nozzle", "pause_entities", "electricity_kwh_price", "owner")  # owner: HA user id or ""
+NOZZLE_SIZES = ("0.2", "0.4", "0.6", "0.8")  # mm, the sizes Bambu printers take
+FIELDS = ("name", "model", "account", "prefix", "plate_type", "nozzles", "pause_entities", "electricity_kwh_price", "owner")  # owner: HA user id or ""
+
+
+def check_nozzles(nozzles):
+    """The library as a list of {"diameter", "type"} without repeats; ValueError on anything else."""
+    out = []
+    for n in nozzles or []:
+        d, t = (n.get("diameter"), n.get("type") or "") if isinstance(n, dict) else (None, "")
+        if d not in NOZZLE_SIZES or not isinstance(t, str) or not re.fullmatch(r"[a-z_]{0,30}", t):
+            raise ValueError("nozzles must be a list of {diameter: %s, type?: e.g. hardened_steel}" % " | ".join(NOZZLE_SIZES))
+        if not any(o["diameter"] == d and o["type"] == t for o in out):
+            out.append({"diameter": d, "type": t})
+    return out
 
 
 def write_json(path, data):
@@ -24,6 +38,12 @@ class Registry:
         if os.path.exists(self.path):
             with open(self.path) as f:
                 self.printers = json.load(f)
+            old = [p for p in self.printers.values() if "nozzle" in p]
+            for p in old:  # the single nozzle of earlier versions becomes the library's first entry
+                p["nozzles"] = p.get("nozzles") or ([{"diameter": p["nozzle"], "type": ""}] if p["nozzle"] in NOZZLE_SIZES else [])
+                del p["nozzle"]
+            if old:
+                write_json(self.path, self.printers)
         # Serials an admin removed: auto-registration skips them. Own file, so printers.json keeps its format.
         self.removed_path = os.path.join(data_dir, "removed_printers.json")
         self.removed = []
@@ -46,6 +66,7 @@ class Registry:
             raise ValueError("pause_entities must be a list of entity ids")
         entry = {k: fields.get(k) or "" for k in FIELDS}
         entry["pause_entities"] = pause
+        entry["nozzles"] = check_nozzles(fields.get("nozzles"))
         with self.lock:
             self.printers[serial] = entry
             write_json(self.path, self.printers)

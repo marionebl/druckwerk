@@ -4,6 +4,7 @@ get_state(entity_id) -> str | None          fresh state of the vendor integratio
 call_service(domain, service, data) -> any  raises on refusal (pausing and resuming automations)
 send_print(data) -> any                     sends one file to a printer; raises on refusal, the message is kept on the job
 get_trays(serial) -> [{"type": "PLA", "colour": "#RRGGBB"}]   loaded AMS trays
+get_nozzle(serial) -> "0.4" | None (optional)   installed nozzle diameter in mm; None when unknown, which never blocks a start
 dry (optional): start(serial, {"ams_id", "temp", "hours", "filament"}) and stop(serial, ams_id) raise on refusal;
     state(serial, ams_id) -> {"active": bool, "left_min": int} | None (None: unknown)
 """
@@ -71,7 +72,7 @@ def _tray_ok(v):
 
 class Queue:
     def __init__(self, registry, data_dir, get_state, call_service, get_trays=None,
-                 clock=time.time, start_timeout=START_TIMEOUT, job_allowed=None, dry=None, send_print=None):
+                 clock=time.time, start_timeout=START_TIMEOUT, job_allowed=None, dry=None, send_print=None, get_nozzle=None):
         self.registry = registry
         self.path = os.path.join(data_dir, "queue.json")
         self.get_state, self.call_service = get_state, call_service
@@ -81,6 +82,7 @@ class Queue:
         # job_allowed(job, serial) lets the access layer veto a job at start time (grant lapsed).
         self.job_allowed = job_allowed
         self.dry = dry
+        self.get_nozzle = get_nozzle or (lambda serial: None)
         self.lock = threading.RLock()
         self.jobs, self.history = [], []
         # changing_filament lasts ~1 s, shorter than a poll; observe() latches it per serial.
@@ -330,6 +332,8 @@ class Queue:
             dry = job.get("kind") == "dry"
             if dry and confirmed is not True:
                 raise QueueError("confirm the start of the drying")
+            if not dry:
+                self._check_nozzle(job, serial)
             if not dry and plate_clear is not True:
                 raise QueueError("confirm that the plate is clear")
             err = self._send_dry(serial, job) if dry else self._send(printer, serial, job)
@@ -341,6 +345,11 @@ class Queue:
             self.seen_change[serial] = False
             self._save()
             return job
+
+    def _check_nozzle(self, job, serial):
+        need, have = job.get("nozzle"), self.get_nozzle(serial)
+        if need and have and float(need) != float(have):
+            raise QueueError("This job needs a %s mm nozzle; the printer has %s mm." % (need, have))
 
     def _send_dry(self, serial, job):
         if not self.dry:

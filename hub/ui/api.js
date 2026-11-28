@@ -46,9 +46,9 @@ function restarting(err) {
 // Stale-while-revalidate for the lists people open first. The first read of a list in a page load is answered from the
 // cache (per HA user, localStorage) while the network answers behind it; when the answer differs the shell redraws the view
 // ('druckwerk:fresh'). Every storage call may throw (private window, blocked data): then there is no cache and nothing changes.
-const SWR = /^api\/(printers|spools|queue|history|load-requests|grants|ha\/(users|entities))(\?.*)?$/;
-const RELATED = { history: ['queue', 'history', 'printers'], queue: ['queue', 'history', 'printers'], jobs: ['queue', 'history'], spools: ['spools', 'load-requests'], 'load-requests': ['load-requests', 'spools'],
-  printers: ['printers', 'queue'], setup: ['printers'], grants: ['grants', 'printers'], ha: ['grants'] };
+const SWR = /^api\/(printers|spools|queue|history|load-requests|nozzle-requests|grants|ha\/(users|entities))(\?.*)?$/;
+const RELATED = { history: ['queue', 'history', 'printers'], queue: ['queue', 'history', 'printers'], jobs: ['queue', 'history'], spools: ['spools', 'load-requests'], 'load-requests': ['load-requests', 'spools'], 'nozzle-requests': ['nozzle-requests'],
+  printers: ['printers', 'queue', 'nozzle-requests'], setup: ['printers'], grants: ['grants', 'printers'], ha: ['grants'] };
 let user = '';
 const seen = new Set(), pending = new Set(), served = new Set(), hot = new Map();  // network answered / fetching / read stale this route / fresh answer waiting
 const key = (p) => `dw1:${user}:${p}`;
@@ -166,6 +166,9 @@ export const api = {
   loadRequests: () => get('api/load-requests'),
   askLoad: (id, printer, note) => post(`api/spools/${q(id)}/load-request`, { printer, note }),
   cancelLoad: (id) => del('api/load-requests/' + q(id)),
+  nozzleRequests: () => get('api/nozzle-requests'),
+  askNozzle: (serial, body) => post(`api/printers/${q(serial)}/nozzle-request`, body),
+  cancelNozzle: (id) => del('api/nozzle-requests/' + q(id)),
   // access
   grants: () => get('api/grants'),
   addGrant: (g) => post('api/grants', g),

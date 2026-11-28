@@ -11,6 +11,7 @@ import { objectCard } from './objectsettings.js';
 import { paintModel } from './paint.js';
 import { paintedCount } from './paintcodes.js';
 import { sliceProgress } from './progress.js';
+import { nozzleRow, chosenNozzle } from './nozzlerow.js';
 
 const QUALITIES = [['good', 'Good', 'Fastest, visible layers'], ['better', 'Better', 'Balanced'], ['best', 'Best', 'Finest detail, slowest']];
 const BEDS = ['Textured PEI Plate', 'Cool Plate', 'Engineering Plate', 'High Temp Plate', 'Supertack Plate'];
@@ -166,6 +167,7 @@ export async function mount(ctx, root) {
           h('button', { class: 'chip', 'aria-pressed': String(S.target === v), onclick: () => { S.target = v; S.tray = null; S.spool = null; S.variants = null; draw(); loadMachine(); } },
             l, h('small', null, sub))))),
       S.target && filamentPicker(),
+      S.target && nozzleRow(S, refPrinter(), draw),
       S.target && engineNote(),
       S.target && field('Build plate', h('select', { onchange: (e) => { S.bed = e.target.value; S.variants = null; draw(); } }, BEDS.map((b) => h('option', { selected: b === S.bed }, b)))));
   }
@@ -190,10 +192,10 @@ export async function mount(ctx, root) {
   function ensureFilament() {
     const ref = refPrinter(), fil = filChoice();
     if (!ref || !fil) return null;
-    const key = ref.serial + JSON.stringify(fil);
+    const nz = chosenNozzle(S, ref), key = ref.serial + JSON.stringify(fil) + JSON.stringify(nz);
     if (S.filKey !== key) {
       S.filKey = key; S.filName = null;
-      api.engineFilament(ref.serial, fil).then((r) => { if (S.filKey === key) { S.filName = r.filament; if (box.isConnected) draw(); } }, () => {});
+      api.engineFilament(ref.serial, { ...fil, ...(nz && { nozzle: nz.diameter, nozzle_type: nz.type }) }).then((r) => { if (S.filKey === key) { S.filName = r.filament; if (box.isConnected) draw(); } }, () => {});
     }
     return S.filName;
   }
@@ -220,7 +222,7 @@ export async function mount(ctx, root) {
   function objectSection() {
     const name = ensureFilament(), ref = refPrinter();
     if (!name || !ref) return h('section', { class: 'card' }, h('h2', null, '3 · Object settings'), h('p', { class: 'muted', style: 'margin:0' }, 'Pick a printer and a filament first.'));
-    return objectCard(S, { engine: () => S.engine, model: ref.model, quality: 'better', bed: S.bed, filament: name },
+    return objectCard(S, { engine: () => S.engine, model: ref.model, nozzle: chosenNozzle(S, ref)?.diameter, quality: 'better', bed: S.bed, filament: name },
       { onChange: () => { refreshList(); if (S.variants) { invalidate(); draw(); } }, paintSummary });
   }
 
@@ -257,7 +259,7 @@ export async function mount(ctx, root) {
 
   // The chosen variants one after another in the warm engine: each multi-thread slice already uses every core.
   async function sliceAll() {
-    const ref = refPrinter(), objs = [...S.objects], qs = ALL.filter((q) => S.want.has(q));
+    const ref = refPrinter(), nz = chosenNozzle(S, ref), objs = [...S.objects], qs = ALL.filter((q) => S.want.has(q));
     S.busy = true; S.pick = null;
     S.variants = qs.map((q) => ({ q, state: 'queued' }));
     draw();
@@ -271,7 +273,7 @@ export async function mount(ctx, root) {
       for (const v of S.variants) {
         v.state = 'slicing'; v.elapsed = 0;
         const t0 = performance.now(), ticker = setInterval(() => { v.elapsed = Math.round((performance.now() - t0) / 1000); draw(); }, 1000);
-        const opts = { objects: objs, names, jobId: v.id, model: ref.model, serial: ref.serial, fil: filChoice(), bed: S.bed, quality: v.q,
+        const opts = { objects: objs, names, jobId: v.id, model: ref.model, serial: ref.serial, fil: filChoice(), nozzle: nz?.diameter, nozzleType: nz?.type, bed: S.bed, quality: v.q,
           onProgress: (p) => (v.progress = { percent: p.percent, message: p.message || p.stage || '' }) };  // drawn by the 1 s ticker
         try {
           let r;

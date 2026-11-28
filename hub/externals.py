@@ -29,13 +29,33 @@ CLOUD_NAME = "Bambu"  # shown in error messages
 CLOUD_CLIENT_HEADER = "X-BBL-Client-Name"  # the mock cloud in tests reads it
 
 # -- printer models the browser slicer supports (preset names are those of the engine's flattened presets, verbatim)
-PRINTERS = {  # dev_product_name -> machine preset, bed type and process presets per quality
+PRINTERS = {  # dev_product_name -> machine preset, bed type and process presets per quality (0.4 mm); "nozzles" has the others
     "H2S": {"preset": "Bambu Lab H2S 0.4 nozzle", "bed": "High Temp Plate", "model_id": "O1S",
             "quality": {"good": "0.24mm Standard @BBL H2S", "better": "0.20mm Standard @BBL H2S",
-                        "best": "0.16mm High Quality @BBL H2S"}},
+                        "best": "0.16mm High Quality @BBL H2S"},
+            "nozzles": {
+                "0.2": {"preset": "Bambu Lab H2S 0.2 nozzle",
+                        "quality": {"good": "0.12mm Balanced Quality @BBL H2S 0.2 nozzle", "better": "0.10mm Standard @BBL H2S 0.2 nozzle",
+                                    "best": "0.08mm High Quality @BBL H2S 0.2 nozzle"}},
+                "0.6": {"preset": "Bambu Lab H2S 0.6 nozzle",
+                        "quality": {"good": "0.30mm Standard @BBL H2S 0.6 nozzle", "better": "0.24mm Balanced Quality @BBL H2S 0.6 nozzle",
+                                    "best": "0.18mm Balanced Quality @BBL H2S 0.6 nozzle"}},
+                "0.8": {"preset": "Bambu Lab H2S 0.8 nozzle",
+                        "quality": {"good": "0.40mm Standard @BBL H2S 0.8 nozzle", "better": "0.32mm Balanced Quality @BBL H2S 0.8 nozzle",
+                                    "best": "0.24mm Balanced Quality @BBL H2S 0.8 nozzle"}}}},
     "P1S": {"preset": "Bambu Lab P1S 0.4 nozzle", "bed": "Textured PEI Plate", "model_id": "C12",
             "quality": {"good": "0.24mm Draft @BBL X1C", "better": "0.20mm Standard @BBL X1C",
-                        "best": "0.16mm High Quality @BBL X1C"}},
+                        "best": "0.16mm High Quality @BBL X1C"},
+            "nozzles": {
+                "0.2": {"preset": "Bambu Lab P1S 0.2 nozzle",
+                        "quality": {"good": "0.12mm Standard @BBL X1C 0.2 nozzle", "better": "0.10mm Standard @BBL X1C 0.2 nozzle",
+                                    "best": "0.08mm High Quality @BBL X1C 0.2 nozzle"}},
+                "0.6": {"preset": "Bambu Lab P1S 0.6 nozzle",
+                        "quality": {"good": "0.36mm Standard @BBL X1C 0.6 nozzle", "better": "0.30mm Standard @BBL X1C 0.6 nozzle",
+                                    "best": "0.18mm Standard @BBL X1C 0.6 nozzle"}},
+                "0.8": {"preset": "Bambu Lab P1S 0.8 nozzle",
+                        "quality": {"good": "0.48mm Standard @BBL X1C 0.8 nozzle", "better": "0.40mm Standard @BBL X1C 0.8 nozzle",
+                                    "best": "0.32mm Standard @BBL X1C 0.8 nozzle"}}}},
 }
 
 # -- the vendor's Home Assistant integration (ha-bambulab): registry domain of its devices and entities

@@ -1,6 +1,7 @@
+import os
 import zipfile
 
-from gcode_guard import check_gcode_3mf
+from gcode_guard import check_gcode_3mf, file_nozzle
 
 MODEL_H2S = "Bambu Lab H2S"  # a real `; printer_model` value
 
@@ -46,3 +47,24 @@ def test_model_names_and_not_a_3mf(tmp_path):
     bad = tmp_path / "n.gcode.3mf"
     bad.write_bytes(b"nope")
     assert "Cannot read" in check_gcode_3mf(str(bad), "H2S")[0]
+
+
+def test_file_nozzle_reads_the_header_of_a_real_slice(tmp_path):
+    here = os.path.join(os.path.dirname(os.path.abspath(__file__)), "fixtures", "gcode")
+    for name in ("bambu_arcs", "orca_multi_object"):
+        with zipfile.ZipFile(str(tmp_path / (name + ".3mf")), "w") as z:  # extruder_nozzle_diameter must not be taken for it
+            z.write(os.path.join(here, name + ".gcode"), "Metadata/plate_1.gcode")
+        assert file_nozzle(str(tmp_path / (name + ".3mf"))) == "0.4"
+
+
+def test_file_nozzle_normalises_and_takes_the_first_extruder(tmp_path):
+    def nozzle(*lines):
+        p = tmp_path / "n.gcode.3mf"
+        with zipfile.ZipFile(p, "w") as z:
+            z.writestr("Metadata/plate_1.gcode", "".join(l + "\n" for l in lines))
+        return file_nozzle(str(p))
+    assert nozzle("; nozzle_diameter = 0.60") == "0.6"
+    assert nozzle("; nozzle_diameter = 0.4,0.4") == "0.4"
+    assert nozzle("; extruder_nozzle_diameter = 0.4") is None
+    assert nozzle("; EXECUTABLE_BLOCK_START", "; nozzle_diameter = 0.4") is None  # only the header counts
+    assert file_nozzle(str(tmp_path / "missing.3mf")) is None

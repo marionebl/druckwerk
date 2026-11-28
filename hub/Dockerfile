@@ -16,6 +16,7 @@ COPY hub/ui/vendor/LICENSE-three.txt /usr/share/licenses/three/LICENSE
 COPY hub/ui/vendor/LICENSE-mpegts.txt /usr/share/licenses/mpegts.js/LICENSE
 COPY hub/app.py hub/actions.py hub/ha.py hub/filament.py hub/history.py hub/slice_settings.py hub/printer_state.py hub/progress.py hub/queue/queue_*.py /srv/
 COPY hub/entities.py hub/files.py hub/gcode_guard.py hub/integration.py hub/notify.py hub/preview.py hub/sender.py hub/watchdog.py hub/plates_inbox.py hub/offline.jpg /srv/
+COPY hub/nozzles.py /srv/
 COPY hub/run.sh /run.sh
 
 FROM ${BASE}

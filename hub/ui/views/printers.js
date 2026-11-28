@@ -1,6 +1,7 @@
 // Printer grid and printer detail.
 import { api } from '../api.js';
 import { h, clear, icon, ring, btn, empty, dur, clock, attempt, pill, swatch, modal, field, toast } from '../util.js';
+import { nozzleName } from './nozzlerow.js';
 import { statusPill, isPrinting, hmsBanners, amsBlock, temps, timeLeft, finishAt } from './common.js';
 import { stepsView, watchStart } from './progress.js';
 import { gcodePreview } from './preview.js';
@@ -219,7 +220,7 @@ function card(p) {
         h('div', { class: 'bar' }, h('i', { style: `width:${p.progress}%` })),
         h('small', null, `Layer ${p.layer}/${p.total_layers}`)),
       p.online && h('div', { class: 'row between' },
-        h('small', null, `Nozzle ${Math.round(p.nozzle_temp)}° · Bed ${Math.round(p.bed_temp)}°`),
+        h('small', null, `Nozzle ${Math.round(p.nozzle_temp)}° · Bed ${Math.round(p.bed_temp)}°`, p.nozzle && h('span', { id: 'nozzle-installed', title: nozzleName(p.nozzle) }, ` · ${p.nozzle.diameter} mm`)),
         p.stale && h('small', { class: 'muted' }, `status from ${Math.max(1, Math.round(p.status_age / 60))} min ago`)),
       filament(p, true)));
 }
@@ -423,6 +424,7 @@ function draw(ctx, body, { camHost, model, recent }, p, mine, refresh) {
       h('div', { class: 'stack' }, camHost, jobCard(p), model, ctx.canManage(p.serial) && startNext(ctx, p, mine, refresh)),
       h('div', { class: 'stack' },
         h('section', { class: 'card' }, h('h2', null, 'Temperatures'), p.online ? temps(p) : h('p', { class: 'muted' }, p.online === null ? 'Connecting to the printer…' : 'No data while offline.'),
+          p.nozzle && h('small', { class: 'muted', id: 'nozzle-installed', style: 'display:block;margin-top:8px' }, 'Installed nozzle: ' + nozzleName(p.nozzle)),
           p.online && p.light != null && h('div', { class: 'row between', style: 'margin-top:12px' }, h('span', null, 'Chamber light'), lightButton(p))),
         (p.ams?.length || p.external) && h('section', { class: 'card' }, h('h2', null, 'Filament'), filament(p)),
         (p.drying || []).map((u) => dryCard(ctx, p, u, refresh)),

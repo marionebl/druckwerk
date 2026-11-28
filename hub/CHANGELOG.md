@@ -1,5 +1,14 @@
 # Changelog
 
+## 3.18.0 (unreleased)
+
+- Nozzle library. Each printer has a list of the nozzles its owner has (0.2, 0.4, 0.6 or 0.8 mm, with a type such as hardened steel), edited in Setup. The single "Nozzle" choice of the printer form is gone: an old value becomes the first entry of the library at the first start. `PUT /api/setup/printers/{serial}` takes `nozzles: [{diameter, type?}]` instead of `nozzle`.
+- The installed nozzle is read live from Home Assistant (`sensor.<prefix>_nozzle_size` and `sensor.<prefix>_nozzle_type` of the vendor integration) and never stored. `GET /api/printers` has `nozzle` (the installed one, `null` when unknown) and `nozzles` (the library plus the installed nozzle if it is not in it). The printer card shows the diameter after "Nozzle X° · Bed Y°", the printer page the diameter and type.
+- New print has a nozzle row next to the filament: one chip per nozzle of the printer, the installed one picked at first. The row has the same height while it loads and with one or many nozzles. The slice uses that nozzle's machine and process presets (`engine/presets/<model>-<diameter>.json`; 0.4 mm stays `<model>.json`, unchanged). H2S and P1S have 0.2, 0.6 and 0.8 mm presets with good, better and best layer heights. `nozzle_diameters` in the sliced file follows the choice. A carbon or glass fibre filament (`required_nozzle_HRC` above 3) is refused for a stainless steel nozzle (`GET /api/engine/filament?nozzle=&nozzle_type=`).
+- A job keeps its nozzle diameter (`nozzle` in the queue job): from the slice, else from the `; nozzle_diameter` line of the file's G-code (uploads, files under /media or /share, the plates inbox). Starting a job whose nozzle differs from the installed one is refused: "This job needs a 0.6 mm nozzle; the printer has 0.4 mm." An unknown installed nozzle never blocks. The queue shows a "needs 0.6 nozzle" pill and disables Start.
+- Ask the owner to change the nozzle: `POST /api/printers/<serial>/nozzle-request`, `GET /api/nozzle-requests`, `DELETE /api/nozzle-requests/<id>`. New print offers "Ask owner to change nozzle" when a nozzle that is not installed is picked, then shows "change requested". One open request per printer, diameter and type. It closes when the installed nozzle matches. The owner gets a notification and the bus event `druckwerk_nozzle_requested`; the Filament tab lists open requests.
+- Gap: the direct print `POST /api/jobs/<id>/print` does not check the nozzle (the web UI does not use it).
+
 ## 3.17.0 (unreleased)
 
 - The chamber light switch answers at once. It shows the new state on click and sends the command behind it, like the vendor app. Before, the switch was disabled until the command came back (0.7 to 0.9 s on the H2S through Home Assistant, more through ingress), and a poll that drew the card again in that time showed the old state until the next poll (up to 5 s more).

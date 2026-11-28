@@ -57,20 +57,21 @@ PRINTERS = {
               tray(0, "PLA", "F2F2F2", "Acme PLA White", 88, "5000"), tray(1, "PETG", "1F6FEB", "Prusament PETG Blue", 61, "5001"),
               tray(2, "PLA", "E4572E", "Sunlu PLA Red", 14, "5002"), tray(3, "", "", "", -1)]},
               {"unit": 1, "humidity_index": 2, "temp": 31, "trays": [tray(0, "TPU", "222222", "TPU 95A Black", 73, "5003")]}],
-          "external": None, "hms": []},
+          "external": None, "hms": [], "nozzle": {"diameter": "0.4", "type": "hardened_steel"},
+          "nozzles": [{"diameter": "0.4", "type": "hardened_steel"}, {"diameter": "0.6", "type": "hardened_steel"}]},
     P1S: {"serial": P1S, "name": "Office P1S", "model": "P1S", "online": True, "status": "idle", "stage": "idle",
           "progress": 0, "remaining_min": 0, "layer": 0, "total_layers": 0, "nozzle_temp": 31, "nozzle_target": 0,
           "bed_temp": 29, "bed_target": 0, "chamber_temp": 27, "task_name": "", "active_tray": None,
           "ams": [{"unit": 0, "humidity_index": 5, "temp": 24, "trays": [
               tray(0, "PLA", "2E2E2E", "Generic PLA Black", 95), tray(1, "PLA", "F2C94C", "Generic PLA Yellow", 40),
               tray(2, "", "", "", -1), tray(3, "", "", "", -1)]}],
-          "external": None, "hms": []},
+          "external": None, "hms": [], "nozzle": {"diameter": "0.4", "type": "stainless_steel"}, "nozzles": [{"diameter": "0.4", "type": "stainless_steel"}]},
     X1C: {"serial": X1C, "name": "Garage X1C", "model": "X1C", "online": False, "status": "offline", "stage": "offline",
           "progress": 0, "remaining_min": 0, "layer": 0, "total_layers": 0, "nozzle_temp": 22, "nozzle_target": 0,
           "bed_temp": 21, "bed_target": 0, "chamber_temp": 21, "task_name": "", "active_tray": None, "ams": [],
           "external": {"type": "PLA", "colour": "3FB68B", "name": "Spool on holder"},
           "hms": [{"code": "0300-0100-0001-0007", "severity": "serious", "text": "The nozzle temperature is abnormal; the heater may be loose.",
-                   "url": "https://example.com/hms/0300_0100_0001_0007"}]},
+                   "url": "https://example.com/hms/0300_0100_0001_0007"}], "nozzle": None, "nozzles": []},
 }
 T0 = {H2S: NOW() - 58 * 60}
 # Test hooks the UI check switches: a printer whose camera answers 502, one whose AMS slots are all empty, what was sent.
@@ -114,6 +115,7 @@ JOBS = [
     job("a00000000004", "bracket_shelf_left.gcode.3mf", "any", "u-jonas", "queued", model="P1S", grams=71.4, cost=1.62),
     job("a00000000005", "toy_dragon_articulated.gcode.3mf", P1S, "u-lena", "pending_approval", grams=96.0, cost=2.10),
     job("a00000000006", "drawer_divider_s.gcode.3mf", P1S, "u-alex", "queued", grams=8.9, cost=0.22),
+    job("a00000000007", "vase_wide_walls.gcode.3mf", H2S, "u-alex", "queued", grams=30.0, cost=0.66, nozzle="0.6"),  # the printer has 0.4
 ]
 JOBS[1]["name"] = "Cable clips for the desk"
 
@@ -280,6 +282,7 @@ SPOOLS = [
 ]
 PRICES = {"5000": 19.99, "5001": 27.5, "5002": 14.0, "5003": 32.0}
 LOAD_REQUESTS = []  # open "ask to load" requests
+NOZZLE_REQUESTS = []  # open "change the nozzle" requests
 SPOOLS_DOWN = {"on": False}  # test hook: the cloud library does not answer
 GRANTS = [
     {"id": "c00000000001", "user_id": "u-lena", "user_name": "Lena Tester", "printer": H2S, "role": "user",
@@ -799,6 +802,32 @@ class H(BaseHTTPRequestHandler):
             return ok({"on": SPOOLS_DOWN["on"]})
         if path.startswith("api/spools") and SPOOLS_DOWN["on"]:
             raise Err(502, "Bambu Cloud filament library: Bambu cloud answered HTTP 401 for /v1/design-user-service/my/filament/v2")
+        if path == "api/_mock/nozzles":  # ?serial=..&d=0.4,0.6: the owner's library of a printer (hardened steel)
+            PRINTERS[q["serial"][0]]["nozzles"] = [{"diameter": d, "type": "hardened_steel"} for d in q["d"][0].split(",") if d]
+            return ok(PRINTERS[q["serial"][0]]["nozzles"])
+        if path == "api/nozzle-requests" and m == "GET":
+            return ok([r for r in NOZZLE_REQUESTS if admin or r["printer"] in USER_PRINTERS])
+        r = re.fullmatch(r"api/nozzle-requests/([0-9a-f]{12})", path)
+        if r and m == "DELETE":
+            req = next((x for x in NOZZLE_REQUESTS if x["id"] == r.group(1)), None)
+            if not req:
+                raise Err(404, "no such nozzle request")
+            if not admin and req["user_id"] != uid:
+                raise Err(403, "rule: only the requester or an admin of the printer can cancel this request")
+            NOZZLE_REQUESTS.remove(req)
+            return ok({"removed": req["id"]})
+        r = re.fullmatch(r"api/printers/([^/]+)/nozzle-request", path)
+        if r and m == "POST":
+            b, s = J(), r.group(1)
+            if s not in PRINTERS or not (admin or s in USER_PRINTERS):
+                raise Err(403, "rule: you have no active grant on this printer")
+            old = next((x for x in NOZZLE_REQUESTS if (x["printer"], x["diameter"], x["type"]) == (s, b.get("diameter"), b.get("type") or "")), None)
+            if old:
+                return ok(old)
+            req = {"id": secrets.token_hex(6), "printer": s, "diameter": b.get("diameter"), "type": b.get("type") or "", "note": b.get("note") or "",
+                   "job_id": b.get("job_id"), "user_id": uid, "user_name": IDENT[ident]["name"], "created_at": int(NOW())}
+            NOZZLE_REQUESTS.append(req)
+            return ok(req)
         if path == "api/load-requests" and m == "GET":
             return ok([r for r in LOAD_REQUESTS if admin or r["printer"] in USER_PRINTERS])
         r = re.fullmatch(r"api/load-requests/([0-9a-f]{12})", path)

@@ -3,11 +3,12 @@
 import { api } from '../api.js';
 import { h, clear, icon, btn, field, swatch, empty, modal, attempt, money, pill, hex, loading, dateTime } from '../util.js';
 import * as D from './detail.js';
+import { nozzleName } from './nozzlerow.js';
 
 export async function mount(ctx, root, parts = []) {
   if (parts[0]) return spoolView(ctx, root, decodeURIComponent(parts[0]));
   const list = h('div', { class: 'grid' }, loading());
-  let printers = [], spools = [], requests = [];
+  let printers = [], spools = [], requests = [], nozzleReqs = [];
   const canEdit = (s) => ctx.me.is_admin || (s?.printer && ctx.canManage(s.printer));
   const canCancel = (r) => ctx.me.is_admin || r.user_id === ctx.me.user_id || ctx.canManage(r.printer);
   const pname = (serial) => printers.find((p) => p.serial === serial)?.name || serial;
@@ -20,7 +21,7 @@ export async function mount(ctx, root, parts = []) {
   async function load() {
     try {
       // A failing request list must not hide the spools.
-      [spools, printers, requests] = await Promise.all([api.spools(), api.printers(), api.loadRequests().catch(() => [])]);
+      [spools, printers, requests, nozzleReqs] = await Promise.all([api.spools(), api.printers(), api.loadRequests().catch(() => []), api.nozzleRequests().catch(() => [])]);
     } catch (e) { clear(list, empty(e.message)); return; }
     draw();
   }
@@ -57,13 +58,18 @@ export async function mount(ctx, root, parts = []) {
     });
   }
   // What is loaded now comes first, by printer and AMS unit; then the other known spools.
+  // Open requests to change a printer's nozzle, shown where the owner sees the load requests.
+  const nozzleSection = () => nozzleReqs.length > 0 && h('section', { class: 'group', id: 'nozzle-requests', style: 'grid-column:1/-1' }, h('h3', null, 'Nozzle change requests'),
+    h('div', { class: 'stack', style: 'gap:8px' }, nozzleReqs.map((r) => h('div', { class: 'card row between', 'data-nozzle-request': r.id },
+      h('span', null, `${r.user_name} asks for a ${nozzleName(r)} nozzle in ${pname(r.printer)}`, r.note && `: ${r.note}`),
+      canCancel(r) && btn('Cancel request', async () => { if (await attempt(() => api.cancelNozzle(r.id), 'Request cancelled')) load(); }, 'sm')))));
   function draw() {
-    if (!spools.length) return clear(list, empty('No spools in the Bambu Cloud filament library yet.'));
+    if (!spools.length) return clear(list, nozzleSection(), empty('No spools in the Bambu Cloud filament library yet.'));
     const loaded = spools.filter((s) => s.printer).sort((a, b) => pname(a.printer).localeCompare(pname(b.printer)) || (a.unit ?? -1) - (b.unit ?? -1) || (a.slot ?? -1) - (b.slot ?? -1));
     const groups = new Map();
     for (const s of loaded) { const k = `${pname(s.printer)}${s.unit != null ? ` · AMS ${s.unit + 1}` : ''}`; (groups.get(k) || groups.set(k, []).get(k)).push(s); }
     const other = spools.filter((s) => !s.printer);
-    clear(list, h('div', { class: 'stack', style: 'grid-column:1/-1' },
+    clear(list, nozzleSection(), h('div', { class: 'stack', style: 'grid-column:1/-1' },
       [...groups].map(([k, items]) => h('section', { class: 'group' }, h('h3', null, k), h('div', { class: 'grid' }, items.map(card)))),
       other.length > 0 && h('section', { class: 'group' }, h('h3', null, 'Not loaded'), h('div', { class: 'grid' }, other.map(card)))));
   }

@@ -26,7 +26,7 @@ MODEL = (
     ' <resources/><build/>\n</model>')
 
 
-def pack(dest, gcode, presets, filament, bed, model_id, tray_colour, seconds, grams, metres, object_name):
+def pack(dest, gcode, presets, filament, bed, model_id, tray_colour, seconds, grams, metres, object_name, nozzle="0.4"):
     """presets: the app's flattened presets for the printer (machine, process of the quality); filament: its entry in presets/<model>.json (name, type, config)."""
     settings = dict(presets["machine"])
     settings.update(presets["process"])
@@ -39,12 +39,12 @@ def pack(dest, gcode, presets, filament, bed, model_id, tray_colour, seconds, gr
     info = ('<?xml version="1.0" encoding="UTF-8"?>\n<config>\n <plate>\n'
             '  <metadata key="index" value="1"/>\n'
             '  <metadata key="printer_model_id" value=%s/>\n'
-            '  <metadata key="nozzle_diameters" value="0.4"/>\n'
+            '  <metadata key="nozzle_diameters" value=%s/>\n'
             '  <metadata key="prediction" value="%d"/>\n'
             '  <metadata key="weight" value="%.2f"/>\n'
             '  <object identify_id="1" name=%s skipped="false"/>\n'
             '  <filament id="1" type=%s color=%s used_m="%.2f" used_g="%.2f"/>\n'
-            ' </plate>\n</config>\n' % (quoteattr(model_id), seconds, grams, quoteattr(object_name),
+            ' </plate>\n</config>\n' % (quoteattr(model_id), quoteattr(nozzle), seconds, grams, quoteattr(object_name),
                                          quoteattr(filament["type"]), quoteattr(tray_colour), metres, grams))
     with zipfile.ZipFile(dest, "w", zipfile.ZIP_DEFLATED) as z:
         z.writestr("[Content_Types].xml", CONTENT_TYPES)

@@ -189,6 +189,82 @@ def check_load_request(page, base, go, shot):
     assert card().get_by_role("button", name="Ask to load").count() == 1, "the spool can be requested again"
 
 
+def check_nozzle(page, base, go, shot, ident):
+    """The nozzle row of New print has one height in every state; the installed nozzle shows on the printer; a nozzle
+    that is not installed offers the ask, asking shows the pill, the owner's Filament tab lists the request; the queue
+    says which job needs another nozzle."""
+    heights = {}
+    row = lambda: page.evaluate("document.querySelector('#nozzle-row').getBoundingClientRect().height")
+    drawn = lambda: page.wait_for_selector("#nozzle-row .nstat", timeout=5000)
+    open_new = lambda target: (go("#/new", ".drop"), page.set_input_files("input[type=file]", files=[MODEL]),
+                               page.get_by_role("button", name=target).click(), drawn())
+    # the installed nozzle on the printer card and page
+    go("#/printers", ".pcard")
+    assert "0.4 mm" in page.locator(".pcard", has_text="Workshop H2S").locator("#nozzle-installed").text_content(), "the card shows the nozzle"
+    go("#/printers/" + H2S, ".cam.big")
+    assert "Installed nozzle: 0.4 mm hardened steel" in page.locator("#nozzle-installed").text_content(), "the page shows the nozzle"
+    # before and after the open requests have loaded
+    page.evaluate("fetch('api/_mock/slow?path=api/nozzle-requests&s=1.2')")
+    open_new("Workshop H2S")
+    heights["H2S, requests loading"] = row()
+    page.wait_for_timeout(1700)
+    heights["H2S, requests loaded"] = row()
+    page.evaluate("fetch('api/_mock/slow')")  # no path: back to normal
+    assert page.locator("#nozzle-row .chip").count() == 2, "two nozzles in the library"
+    assert page.locator("#nozzle-row .chip[aria-pressed=true]").text_content().startswith("0.4 mm hardened steel"), "the installed nozzle is the default"
+    # one nozzle, and none
+    page.get_by_role("button", name="Office P1S").click()
+    heights["P1S, 1 nozzle"] = row()
+    assert page.locator("#nozzle-row .chip").count() == 1
+    page.get_by_role("button", name="Garage X1C").click()
+    heights["X1C, no nozzle known"] = row()
+    assert "No nozzle known" in page.locator("#nozzle-row").text_content()
+    # three nozzles: a fresh page, the library changed behind it
+    page.evaluate("fetch('api/_mock/nozzles?serial=%s&d=0.4,0.6,0.8')" % H2S)
+    page.goto(f"{base}/?as={ident}")
+    page.wait_for_selector(".pcard")
+    page.wait_for_timeout(800)  # the cached list is replaced by the fresh one
+    open_new("Workshop H2S")
+    page.wait_for_selector("#nozzle-row .chip[data-nozzle='0.8']")
+    heights["H2S, 3 nozzles"] = row()
+    # a nozzle that is not installed: ask, then the pill
+    page.locator("#nozzle-row .chip[data-nozzle='0.6']").click()
+    ask = page.get_by_role("button", name="Ask owner to change nozzle")
+    ask.wait_for()
+    heights["H2S, 0.6 picked (ask)"] = row()
+    shot("new-print-nozzle-ask")
+    page.locator("#nozzle-note").fill("for the vase")
+    ask.click()
+    page.locator("#nozzle-row .pill", has_text="change requested").wait_for()
+    assert page.get_by_role("button", name="Ask owner to change nozzle").count() == 0, "asked once"
+    heights["H2S, 0.6 picked (requested)"] = row()
+    shot("new-print-nozzle-requested")
+    page.locator("#nozzle-row .chip[data-nozzle='0.4']").click()
+    page.locator("#nozzle-row .pill", has_text="installed").wait_for()
+    heights["H2S, installed picked"] = row()
+    shot("new-print-nozzle")
+    assert max(heights.values()) - min(heights.values()) < 0.5, "the nozzle row changes height: %r" % heights
+    print("nozzle row height [%s]: %s px in %d states" % (ident, round(heights["H2S, 3 nozzles"], 1), len(heights)))
+    # the owner's view of the request
+    mine = page.evaluate("fetch('api/nozzle-requests').then((r) => r.json())")
+    assert [(r["printer"], r["diameter"], r["type"], r["note"]) for r in mine] == [(H2S, "0.6", "hardened_steel", "for the vase")], mine
+    go("#/filament", ".spool")
+    item = page.locator("#nozzle-requests [data-nozzle-request]")
+    assert "asks for a 0.6 mm hardened steel nozzle in Workshop H2S: for the vase" in item.text_content()
+    item.get_by_role("button", name="Cancel request").click()
+    page.wait_for_selector("#nozzle-requests", state="detached")
+    page.evaluate("fetch('api/_mock/nozzles?serial=%s&d=0.4,0.6')" % H2S)
+    # the queue: a job for a 0.6 nozzle while the printer has 0.4
+    go("#/queue", ".job")
+    job = page.locator(".job", has_text="vase_wide_walls")
+    assert job.locator("[data-nozzle-pill]").text_content() == "needs 0.6 nozzle"
+    if ident == "admin":
+        start = job.get_by_role("button", name="Start", exact=True)
+        assert start.is_disabled() and start.get_attribute("title") == "This job needs a 0.6 mm nozzle; the printer has 0.4 mm."
+    assert page.locator(".job [data-nozzle-pill]").count() == 1, "only that job needs another nozzle"
+    shot("queue-needs-nozzle")
+
+
 JOB_CLIPS, TASK_BENCHY, TASK_CLIPS, TASK_CLOUD, TASK_OWNED_CLOUD, JOB_ONLY = "a00000000002", "5", "8", "7", "10", "job-b00000000004"
 HOLDS = {"printers": ".pcard", "queue": ".job", "history": ".tl-card", "new": ".drop", "filament": ".spool", "access": "table"}
 
@@ -830,6 +906,19 @@ def walk(page, ident, base, shot, inject):
                 card.get_by_role("button", name="Save printer").click()
                 page.wait_for_selector("text=Printer saved")
                 page.wait_for_function("[...document.querySelectorAll('input')].some(i => i.value === 'Workshop H2S (renamed)')", timeout=5000)
+                lib = card.locator("[data-nozzle-lib]")
+                while lib.get_by_role("button", name="Remove").count():
+                    lib.get_by_role("button", name="Remove").first.click()
+                for _ in range(2):
+                    card.get_by_role("button", name="Add nozzle").click()
+                lib.locator("select").nth(1).select_option("hardened_steel")
+                lib.locator("select").nth(2).select_option("0.6")  # the second entry: 0.6 mm
+                lib.locator("select").nth(3).select_option("hardened_steel")
+                shot("setup-nozzle-library")
+                with page.expect_response(lambda r: r.request.method == "PUT" and r.ok):
+                    card.get_by_role("button", name="Save printer").click()
+                saved = page.evaluate("fetch('api/setup').then((r) => r.json())")["printers"]
+                assert next(p for p in saved if p["serial"] == H2S)["config"]["nozzles"] == [{"diameter": "0.4", "type": "hardened_steel"}, {"diameter": "0.6", "type": "hardened_steel"}], saved
                 # the owner is stored; the user id differs between the mock and the real-image fakes, so match by label
                 page.wait_for_function("[...document.querySelectorAll('select[data-field=owner]')].some(s => s.selectedOptions[0]?.textContent.includes('Lena Tester'))", timeout=5000)
         return
@@ -900,6 +989,7 @@ def walk(page, ident, base, shot, inject):
         check_loading(page, go)
         if ident == "admin":
             check_inside_ha_panel(page, base, ident)
+        check_nozzle(page, base, go, shot, ident)
         go("#/queue", ".job")
     if MOCKED and HAS_ENGINE:
         check_plate(page, go, shot)

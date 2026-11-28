@@ -19,7 +19,7 @@ def dump(name, obj):
 
 
 dump("printers.json", {s: {"name": NAMES[s][0], "model": NAMES[s][1], "account": "acc1", "prefix": PREFIX[s], "plate_type": "Textured PEI Plate",
-                           "nozzle": "0.4", "pause_entities": [], "electricity_kwh_price": 0.32} for s in (H2S, P1S, X1C)})
+                           "nozzles": [{"diameter": "0.4", "type": "hardened_steel"}], "pause_entities": [], "electricity_kwh_price": 0.32} for s in (H2S, P1S, X1C)})
 dump("grants.json", [{"id": "a00000000001", "user_id": "u-user", "printer": H2S, "role": "user"},
                      {"id": "a00000000002", "user_id": "u-user", "printer": P1S, "role": "user"}])
 dump("spool_prices.json", {"5000": 21.0, "5001": 26.0, "5002": 15.0, "5003": 30.0, "5004": 18.0})  # by cloud spool id, see e2e_mock.SPOOLS

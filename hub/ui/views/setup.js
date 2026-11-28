@@ -4,6 +4,7 @@ import { h, clear, icon, btn, field, pill, empty, attempt, toast } from '../util
 
 const PLATES = ['Textured PEI Plate', 'Cool Plate', 'Engineering Plate', 'High Temp Plate', 'Supertack Plate'];
 const NOZZLES = ['0.2', '0.4', '0.6', '0.8'];
+const NOZZLE_TYPES = [['', 'Type not set'], ['stainless_steel', 'Stainless steel'], ['hardened_steel', 'Hardened steel'], ['tungsten_carbide', 'Tungsten carbide'], ['brass', 'Brass']];
 
 export async function mount(ctx, root) {
   let step = 1, data;
@@ -50,11 +51,18 @@ export async function mount(ctx, root) {
       name: h('input', { type: 'text', value: c.name || p.device_name || '' }),
       prefix: h('input', { type: 'text', value: c.ha_prefix || p.suggested_prefix || '', placeholder: 'e.g. workshop_h2s' }),
       plate: h('select', null, PLATES.map((x) => h('option', { selected: x === (c.plate || PLATES[0]) }, x))),
-      nozzle: h('select', null, NOZZLES.map((x) => h('option', { selected: x === String(c.nozzle || '0.4') }, x))),
       pause: h('input', { type: 'text', value: (c.pause_entities || []).join(', '), placeholder: 'switch.printer_power, input_boolean.pause_printing' }),
       price: h('input', { type: 'number', step: '0.01', min: 0, value: c.electricity_kwh_price || '' }),
       owner: h('select', { 'data-field': 'owner' }, h('option', { value: '' }, 'No owner')),
     };
+    // The nozzles the owner has; the one in the printer is read from Home Assistant and never saved.
+    const lib = (c.nozzles || []).map((n) => ({ ...n })), libBox = h('div', { class: 'stack', 'data-nozzle-lib': p.serial, style: 'gap:8px' });
+    const drawLib = () => clear(libBox, lib.map((n, i) => h('div', { class: 'row', style: 'gap:8px;flex-wrap:wrap' },
+      h('select', { style: 'flex:1;min-width:110px', 'aria-label': 'Diameter', 'data-nozzle-d': i, onchange: (e) => (n.diameter = e.target.value) }, NOZZLES.map((x) => h('option', { value: x, selected: x === n.diameter }, x + ' mm'))),
+      h('select', { style: 'flex:2;min-width:140px', 'aria-label': 'Type', onchange: (e) => (n.type = e.target.value) }, NOZZLE_TYPES.map(([v, l]) => h('option', { value: v, selected: v === n.type }, l))),
+      btn('Remove', () => { lib.splice(i, 1); drawLib(); }, 'sm danger'))),
+      btn([icon('plus', 16), 'Add nozzle'], () => { lib.push({ diameter: '0.4', type: 'stainless_steel' }); drawLib(); }, 'sm', { 'data-nozzle-add': p.serial }));
+    drawLib();
     // The owner administers this printer; the list is the HA users.
     api.haUsers().then((us) => f.owner.append(...us.map((u) => h('option', { value: u.id, selected: u.id === c.owner }, u.name || u.id)))).catch(() => {});
     return h('section', { class: 'card' }, h('div', { class: 'row between' }, h('div', null, h('h2', { style: 'margin:0' }, p.device_name), h('small', null, `${p.model} · ${p.serial.slice(0, 4)}…${p.serial.slice(-3)}`)),
@@ -62,12 +70,13 @@ export async function mount(ctx, root) {
       h('div', { class: 'form', style: 'margin-top:14px' },
         h('div', { class: 'form two' }, field('Name', f.name),
           field('Prefix (optional)', f.prefix, 'Only a name for the printer in the hub. If you also use the printer integration, use its entity prefix.')),
-        h('div', { class: 'form two' }, field('Build plate', f.plate), field('Nozzle (mm)', f.nozzle)),
+        h('div', { class: 'form two' }, field('Build plate', f.plate)),
+        h('div', { class: 'field' }, h('span', null, 'Nozzles'), libBox, h('small', null, 'The nozzles you own. New print offers these; the nozzle in the printer is read from Home Assistant.')),  // not a label: its buttons would be activated by it
         field('Owner', f.owner, 'Administers this printer: manages its queue and spools, gets load requests, and is named for prints nobody started here.'),
         field('Pause entities', f.pause, 'Entity ids, comma separated. The hub turns these on to pause printing, for example a smart plug.'),
         field('Electricity price (EUR per kWh)', f.price, 'Used for the cost estimate. Optional.'),
         h('div', { class: 'row' }, btn('Save printer', async () => {
-          const body = { name: f.name.value.trim(), ha_prefix: f.prefix.value.trim(), plate: f.plate.value, nozzle: f.nozzle.value,
+          const body = { name: f.name.value.trim(), ha_prefix: f.prefix.value.trim(), plate: f.plate.value, nozzles: lib,
             pause_entities: f.pause.value.split(',').map((x) => x.trim()).filter(Boolean), owner: f.owner.value };
           if (f.price.value !== '') body.electricity_kwh_price = +f.price.value;
           if (await attempt(() => api.savePrinter(p.serial, body), 'Printer saved')) load();
