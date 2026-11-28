@@ -30,7 +30,7 @@ jobs:
           cache: pip
           cache-dependency-path: requirements-test.txt
       # The three browser-module tests (hub/tests/test_*.py with a .mjs harness) fail without node when CI is set.
-      - uses: actions/setup-node@v4
+      - uses: actions/setup-node@v7
         with:
           node-version: "22"
       - name: Node must be there
