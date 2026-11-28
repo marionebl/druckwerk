@@ -66,6 +66,7 @@ main { max-width: 1240px; margin: 0 auto; padding: 20px 16px 96px; }
 .btn { display: inline-flex; align-items: center; justify-content: center; gap: 6px; min-height: 40px; padding: 0 16px; border-radius: 10px; border: 1px solid var(--line); background: var(--card); cursor: pointer; font-weight: 550; white-space: nowrap; }
 .btn:hover:not(:disabled) { background: var(--soft); }
 .btn.primary { background: var(--accent); border-color: var(--accent); color: var(--accent-fg); }
+a.btn { text-decoration: none; color: var(--fg); }
 .btn.primary:hover:not(:disabled) { background: color-mix(in srgb, var(--accent) 88%, #000); }
 .btn.danger { color: var(--err); }
 .btn.sm { min-height: 32px; padding: 0 10px; font-size: 13.5px; border-radius: 8px; }
@@ -98,6 +99,12 @@ input:focus, select:focus { border-color: var(--accent); }
 .tag { font-size: 11.5px; font-weight: 650; text-transform: uppercase; letter-spacing: .05em; color: var(--muted); }
 .kv { display: grid; grid-template-columns: auto 1fr; gap: 6px 16px; margin: 0; }
 .kv dt { color: var(--muted); } .kv dd { margin: 0; text-align: right; font-variant-numeric: tabular-nums; }
+.sgroups { display: grid; grid-template-columns: repeat(auto-fit, minmax(260px, 1fr)); gap: 18px 28px; }
+.sgroup h3 { margin: 0 0 6px; font-size: 13px; text-transform: uppercase; letter-spacing: .05em; color: var(--muted); }
+.allsettings summary { cursor: pointer; font-weight: 600; padding: 6px 0; }
+.allsettings input { width: 100%; margin: 6px 0 10px; }
+.allkeys { max-height: 340px; overflow: auto; font-size: 13px; }
+.allkeys dt { font-family: ui-monospace, monospace; overflow-wrap: anywhere; } .allkeys dd { overflow-wrap: anywhere; }
 .bar { height: 8px; border-radius: 99px; background: var(--soft); overflow: hidden; }
 .bar > i { display: block; height: 100%; background: var(--accent); border-radius: 99px; }
 .bar.low > i { background: var(--warn); }
@@ -294,6 +301,18 @@ details.adv .form { margin-top: 12px; }
 .detail-img img { object-fit: contain; }
 .detail-top { display: grid; gap: var(--gap); grid-template-columns: 1fr; align-items: start; }
 @media (min-width: 720px) { .detail-top { grid-template-columns: 360px 1fr; } }
+/* Time axis: every day is 00:00 to 24:00, so bar lengths compare across days. */
+.tl-day { --bar-min: 4px; }
+.tl-axis { position: relative; height: 16px; margin: -4px 0 6px 24px; font-size: 11px; color: var(--muted); font-variant-numeric: tabular-nums; }
+.tl-axis span { position: absolute; top: 0; transform: translateX(-50%); }
+.tl-axis span:first-child { transform: none; } .tl-axis span:last-child { transform: translateX(-100%); }
+.tl-span { position: relative; height: 6px; margin-top: 4px; border-radius: 3px; background: var(--soft); overflow: hidden;
+  background-image: repeating-linear-gradient(90deg, var(--line) 0 1px, transparent 1px 25%); }
+.tl-bar { position: absolute; top: 0; bottom: 0; min-width: var(--bar-min); border-radius: 3px; background: var(--muted); }
+.tl-bar.st-finished, .tl-bar.st-running { background: var(--accent); }
+.tl-bar.st-failed, .tl-bar.st-stopped { background: var(--err); }
+.tl-bar.st-running { background-image: repeating-linear-gradient(135deg, rgba(255, 255, 255, .35) 0 4px, transparent 4px 8px); }
+.tl-bar.cut { border-top-right-radius: 0; border-bottom-right-radius: 0; box-shadow: inset -3px 0 0 var(--card); }
 .tl-card { color: inherit; text-decoration: none; } a.tl-card:hover, .job .title a:hover { border-color: var(--accent); }
 .job .title a { color: inherit; text-decoration: none; } .job { cursor: pointer; }
 .spoolprint { display: flex; justify-content: space-between; gap: 12px; padding: 8px 0; border-top: 1px solid var(--line); color: inherit; text-decoration: none; }
@@ -308,6 +327,8 @@ details.adv .form { margin-top: 12px; }
 .sstep[data-state=active] .mark .spin { width: 10px; height: 10px; border-width: 2px; vertical-align: 0; }
 .sstep[data-state=done] .mark { background: var(--accent); border-color: var(--accent); color: var(--accent-fg); }
 .slice-progress { display: grid; gap: 6px; }
+.tl-list { list-style: none; margin: 12px 0 0; padding: 0; display: grid; gap: 8px; }
+.tl-list .tl-item::before { content: none; }
 
 /* Cached data on screen while the network answers (api.js stale()): decisions wait, lists say so without moving anything. */
 #view.stale button, #view.stale .btn:not(a) { pointer-events: none; opacity: .5; }

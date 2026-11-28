@@ -1,12 +1,19 @@
 # Changelog
 
-## 3.10.0 (unreleased)
+## 3.11.0 (unreleased)
 
 - Pages show cached data at once after a reload. The identity (`api/me`) and the Access lists (grants, Home Assistant users and entities) are cached in the browser too, so the shell and the lists no longer wait for the network. The cached shape (printer cards, filament slots, list rows) stays on screen, so the page does not jump when the answer arrives.
 - While a cached list is still being checked, buttons in the view are dimmed and cannot be clicked (links still work), so nobody decides on old data. The filament view shows cached data as is. Queue and History show a small "Checking for newer items…" pill over the top of the list. It takes no layout space.
 - The last camera frame of each printer is kept in the browser (640 px wide) and shows at once with an "n s ago" label until a live frame loads.
 - A thin loading bar at the top of the page appears when a request takes 3 s or more.
 - Without usable browser storage the UI behaves as before.
+
+## 3.10.0 (unreleased)
+
+- The printer page shows the running print in 3D ("Current print in 3D"). It is the same preview as on a History print, read from that print's stored file. It loads when the cloud lists the print, up to a minute after the start. A user who is not admin of the printer sees it only for their own prints, as in History.
+- The printer page has a History card with the last 5 prints of this printer and a link "All prints on this printer".
+- History reads a filter from the URL: `#/history?printer=<serial>` (and `user=` for admins). The admin selects start from it. A user sees "One printer" and a link to all their prints.
+- This version includes the History work from the history-settings branch (PR 22) (settings, duration bars, download, 3D preview).
 
 ## 3.9.0 (unreleased)
 
@@ -45,6 +52,14 @@
 - Models that are not STL (3MF, STEP, OBJ) can no longer be sliced in the app. Slice them elsewhere and add the `.gcode.3mf` to the share.
 - The CI image test checks that the image is at most 450 MB and that `/slice` answers 404. It stores a real Bambu Studio G-code through `/gcode` instead of slicing on the server.
 - The Pi half of the slicing progress from 3.6.0 (step lines from the slicer log, `progress` on `GET /api/jobs/{id}` while the Pi slices) is gone with the Pi slicer. Browser slicing progress and the print start steps stay.
+
+- History detail shows all slicing settings of a print: Quality, Strength, Support and adhesion, Speed, Filament, Plate and bed, Printer, and an "All settings" list with every key and a search field. They are read from the sliced file (`Metadata/project_settings.config` and `slice_info.config`) by `hub/slice_settings.py`. `GET /api/history/{id}/settings` is new. The settings are saved when a job is queued, so they stay after the slicer forgot the slice.
+- One primary action on a history item: "New print job with the same settings". It queues the stored file again with the print's target and options (`POST /api/history/{id}/queue` is new). When the file is gone it opens New print with the same printer, options, quality, filament and plate; choose the model again. "Print again" is replaced by this button.
+- Prints that were not started in Druckwerk: the bridge now passes `model_id`, `profile_id` and `design_id` of the Bambu cloud task, and `GET /api/tasks/file` asks the cloud for the file URL. The hub fetches the 3MF once into `data/cloud` and reads the same settings. If the cloud gives no file, the detail says so and shows the fields of the cloud record. The cloud file request is not checked against a real account yet.
+
+- History shows how long each print took: under every entry a bar sits on the day's 00:00 to 24:00 axis, as wide as the print ran (start to end; a running print reaches to now). Colour is the status. A print past midnight is cut at 24:00 and marked, very short prints get a minimum width, and prints without times show no bar.
+- History detail has a download button for the print's model (the STL, 3MF or STEP the slicer still stores), else for the sliced 3MF (Druckwerk's, or the Bambu cloud's). With no stored file the button is not shown. `GET /api/history/{id}/file` is new and follows the same visibility as the history.
+- History detail shows the 3D preview of the print, read from the same stored file as the download (the slicer's sliced file, a file in the share, or the Bambu cloud's 3MF), so prints from the cloud have it too. It loads only when the details open, shows a placeholder while loading and when no file is stored. `GET /api/history/{id}/gcode` is new; `GET /api/history/{id}/settings` now also says `download` and `preview`.
 
 ## 3.6.0 (unreleased)
 

@@ -90,7 +90,9 @@ let seq = 0;
 async function route(keep) {
   newRoute();
   ctx.timers.splice(0).forEach(clearInterval);
-  const parts = location.hash.replace(/^#\/?/, '').split('/').filter(Boolean);
+  const [path, search] = location.hash.replace(/^#\/?/, '').split('?');
+  ctx.query = new URLSearchParams(search || '');  // #/history?printer=<serial>
+  const parts = path.split('/').filter(Boolean);
   let id = parts[0] || 'printers';
   if (!VIEWS[id] || (id === 'access' || id === 'setup') && !ctx.isAdmin()) id = 'printers';
   const mine = ++seq;
