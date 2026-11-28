@@ -1,10 +1,11 @@
 #!/usr/bin/env python3
-"""Slices the test plate in headless Chromium through the real UI (New print) against the running hub image, then slices
-it natively. Cases: top-level (isolated, mt engine), cross-origin iframe without COOP/COEP in the parent (Document-
-Isolation-Policy, mt), a gateway that strips the isolation headers (default Pi, st engine by hand). Prints the numbers and
-runs the G-code guard and the slice checks on every browser result. Exits 1 on any failure, after all cases ran.
+"""Slices the test plate in headless Chromium through the real UI (New print) against the running hub image. Cases:
+top-level (isolated, mt engine), cross-origin iframe without COOP/COEP in the parent (Document-Isolation-Policy, mt), a
+gateway that strips the isolation headers (st engine). The app has no server-side slicer, so these are the only slices.
+Prints the numbers and runs the G-code guard and the slice checks on every browser result. Exits 1 on any failure,
+after all cases ran.
 
-env: HUB (hub base URL), STL, JOBS (the hub's job dir), SECRET (hub secret, for the native slice), MODE (ALL | CASE name)."""
+env: HUB (hub base URL), STL, JOBS (the hub's job dir)."""
 import http.server
 import json
 import os
@@ -12,7 +13,6 @@ import re
 import sys
 import threading
 import time
-import urllib.request
 
 from playwright.sync_api import sync_playwright
 
@@ -24,8 +24,8 @@ sys.path.insert(0, os.path.join(REPO, "hub", "queue"))
 import ingress_proxy  # noqa: E402
 import filament  # noqa: E402
 
-HUB, STL, JOBS, SECRET = (os.environ[k] for k in ("HUB", "STL", "JOBS", "SECRET"))
-H2S, SNAPDOM = "FAKE-H2S-0001", "https://cdn.jsdelivr.net/npm/@zumer/snapdom@3.8.3/dist/snapdom.mjs"
+HUB, STL, JOBS = (os.environ[k] for k in ("HUB", "STL", "JOBS"))
+SNAPDOM = "https://cdn.jsdelivr.net/npm/@zumer/snapdom@3.8.3/dist/snapdom.mjs"
 UP = (HUB.split("//")[1].split(":")[0], int(HUB.rsplit(":", 1)[1]))
 failures, results = [], {}
 
@@ -44,13 +44,6 @@ def guard():
 
 def job_dirs():
     return {d for d in os.listdir(JOBS) if os.path.isfile(os.path.join(JOBS, d, "job.json"))}
-
-
-def api(path, method="GET", body=None, data=None):
-    req = urllib.request.Request(HUB + path, method=method, data=data if data is not None else (json.dumps(body).encode() if body is not None else None),
-                                 headers={"X-Hub-Secret": SECRET})
-    with urllib.request.urlopen(req, timeout=60) as r:
-        return json.loads(r.read())
 
 
 def run_case(br, name, base, ident, framed=None, manual_device=False, feedback=False):
@@ -77,13 +70,16 @@ def run_case(br, name, base, ident, framed=None, manual_device=False, feedback=F
     root.get_by_role("button", name="Workshop H2S").click()
     root.locator(".chip", has_text="AMS 1·2").click()  # PETG
     chips = root.locator("#where")
-    default = chips.locator("button[aria-pressed=true]").inner_text().strip()
+    has_chips = chips.count() > 0  # a UI with a "Slice on" choice; without it every slice runs on this device
+    default = chips.locator("button[aria-pressed=true]").inner_text().strip() if has_chips else "This device"
     body_text = root.locator("body").inner_text()
-    if manual_device:
+    if manual_device and has_chips:
         chips.get_by_role("button", name="This device").click()
-    root.locator("#engine-info[data-state=ready], #engine-info[data-state=error]").wait_for(timeout=300000) if (manual_device or default == "This device") else None
+    on_device = default == "This device" or (manual_device and has_chips)
+    if on_device:
+        root.locator("#engine-info[data-state=ready], #engine-info[data-state=error]").wait_for(timeout=300000)
     engine, load_ms = "", 0
-    if manual_device or default == "This device":
+    if on_device:
         info = root.locator("#engine-info")
         if info.get_attribute("data-state") == "error":
             fail(f"{name}: the engine did not load: {info.inner_text()}")
@@ -161,22 +157,6 @@ def parent_page(url, port):
     return srv
 
 
-def native():
-    """Bambu Studio on the Pi path of the same image, same runner: the three variants one after another."""
-    out = {}
-    for quality in ("good", "better", "best"):
-        t = time.time()
-        jid = api("/api/jobs?name=test_plate.stl", "POST", data=open(STL, "rb").read())["id"]
-        api(f"/api/jobs/{jid}/slice", "POST", {"serial": H2S, "quality": quality, "tray": "0:1", "bed": "Textured PEI Plate"})
-        while (j := api("/api/jobs/" + jid))["state"] not in ("done", "failed"):
-            time.sleep(1)
-        out[quality] = time.time() - t
-        print(f"CASE native-bambu-studio {quality}: {j['state']} in {out[quality]:.1f}s", flush=True)
-        if j["state"] != "done":
-            fail("native slice failed: " + str(j.get("error")))
-    return out
-
-
 def main():
     check_gcode = guard()
     top = ingress_proxy.start(UP)
@@ -204,11 +184,9 @@ def main():
     if f and not (f["isolated"] and f["engine"] == "mt" and f["default"] == "This device"):
         fail(f"iframe: expected crossOriginIsolated=true and mt (Document-Isolation-Policy); got isolated={f['isolated']} engine={f['engine']} default={f['default']!r}")
     if n:
-        if n["isolated"] or n["default"] != "Pi (Bambu Studio)" or n["engine"] != "st":
-            fail(f"not-isolated: got isolated={n['isolated']} default={n['default']!r} engine={n['engine']}")
-        if "open in" in n["text"].lower() or "own tab" in n["text"].lower() or "new tab" in n["text"].lower():
-            fail("not-isolated: the page suggests browser slicing")
-        print(f"  not-isolated: no browser-slicing suggestion on the page, 'This device' chosen by hand ran the {n['engine']} engine", flush=True)
+        if n["isolated"] or n["engine"] != "st":
+            fail(f"not-isolated: got isolated={n['isolated']} engine={n['engine']}")
+        print(f"  not-isolated: the page is not cross-origin isolated and slices with the {n['engine']} engine", flush=True)
     # Guard and slice checks on every browser result.
     for name, r in results.items():
         for jid in r.get("jobs", []):
@@ -220,12 +198,10 @@ def main():
             print(f"GUARD {name} {jid} ({job['quality']}): {'PASS' if not problems else 'FAIL ' + str(problems)}; slice_usage={use['seconds']}s {use['grams']}g {use['filaments']}", flush=True)
             if problems or not (use["seconds"] > 0 and use["grams"] > 0):
                 fail(f"{name}: {jid} guard/slice checks: {problems}")
-    nat = native()
     print("SUMMARY (same image, same runner), seconds good/better/best", flush=True)
     for name, r in results.items():
         if "slice_ms" in r:
             print(f"  browser {r['engine']} {name:15s}: " + " / ".join(f"{m / 1000:.1f}" for m in r["slice_ms"]) + f"  (engine start {r['load_ms'] / 1000:.1f})", flush=True)
-    print("  native Bambu Studio       : " + " / ".join(f"{nat[q]:.1f}" for q in ("good", "better", "best")), flush=True)
     sys.exit(1 if failures else 0)
 
 

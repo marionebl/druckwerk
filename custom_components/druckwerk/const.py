@@ -21,7 +21,7 @@ DEFAULT_HUB_URL = "http://c9a833d4-druckwerk:8098"
 SUPERVISOR_URL = "http://supervisor"
 STATE_INTERVAL = timedelta(seconds=5)
 API_VERSION = 1  # highest manifest api_version this integration speaks
-FORWARD_TIMEOUT = 1860  # seconds; a slice that waits runs up to 30 minutes in the app
+FORWARD_TIMEOUT = 1860  # seconds; the longest app call is a start (400 s), this leaves room
 PRESS_TIMEOUT = 400  # seconds; a print send waits up to 300 s for the bridge
 UPLOAD_TIMEOUT = 300
 CAMERA_MAX_AGE = 5  # seconds before a viewer triggers a new snapshot

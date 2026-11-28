@@ -25,7 +25,6 @@ sys.path.insert(0, HERE)
 import ingress_proxy  # noqa: E402
 MODEL = {"name": "demo_part.stl", "mimeType": "model/stl", "buffer": b"solid x\nendsolid x\n"}
 SLICE_TIMEOUT = 15000
-SLICE_ON = None
 MOCKED = True  # False against a real hub (--base-url): no mock hooks, other spool names
 ONLY = None
 ALLOW_502 = []  # path fragments whose 502 answer is the point of the step
@@ -62,6 +61,10 @@ def check_viewer(page, shot):
     setrange = lambda name, v: page.evaluate("([n, v]) => { const e = document.querySelector(`.preview3d input[aria-label='${n}']`); e.value = v; e.dispatchEvent(new Event('input', { bubbles: true })); }", [name, v])
 
     full = read()
+    for _ in range(50):  # software WebGL on a slow arm runner can need seconds for the first frame; poll, do not guess
+        if full["lit"] > 50:
+            break
+        full = read()
     if MODEL["name"] != "demo_part.stl":  # a real slice (image run): the checks below need the mock's two-object plate
         m = re.fullmatch(r"Layers 1 to (\d+) of (\d+) · Z .* mm", text())
         assert m and m[1] == m[2], text()
@@ -526,8 +529,6 @@ def check_library_pick(page, go, shot):
     assert page.locator("#load-note").get_by_role("button", name="Ask to load").count() == 1
     assert not slice_btn.is_disabled()
     shot("newprint-filament-pick")
-    if SLICE_ON:
-        page.locator("#where").get_by_role("button", name=SLICE_ON).click()
     slice_btn.click()
     page.wait_for_selector(".variant[aria-pressed=true]", timeout=SLICE_TIMEOUT)
     sent = page.evaluate("fetch('api/_mock/slices').then((r) => r.json())")[-3:]
@@ -613,8 +614,6 @@ def walk(page, ident, base, shot, inject):
     page.set_input_files("input[type=file]", files=[MODEL])
     page.get_by_role("button", name="Workshop H2S").click()
     page.locator(".chip", has_text="AMS 1·1").click()
-    if SLICE_ON:  # the page defaults to "This device" where it is isolated; the real image run covers the Pi path here
-        page.locator("#where").get_by_role("button", name=SLICE_ON).click()
     shot("new-print-ready")
     page.get_by_role("button", name="Slice good, better and best").click()
     page.wait_for_selector(".variant[aria-pressed=true]", timeout=SLICE_TIMEOUT)
@@ -674,12 +673,10 @@ def main():
     ap.add_argument("--model")
     ap.add_argument("--slice-timeout", type=int, default=15)
     ap.add_argument("--expect-403", default="")
-    ap.add_argument("--slice-on", help="chip to press under Slice on, e.g. \"Pi (Bambu Studio)\"")
     a = ap.parse_args()
-    global PREFIX, MODEL, SLICE_TIMEOUT, SLICE_ON, MOCKED, ONLY
+    global PREFIX, MODEL, SLICE_TIMEOUT, MOCKED, ONLY
     ONLY = a.only
     MOCKED = not a.base_url
-    SLICE_ON = a.slice_on
     SLICE_TIMEOUT = a.slice_timeout * 1000
     if a.model:
         MODEL = {"name": os.path.basename(a.model), "mimeType": "model/stl", "buffer": open(a.model, "rb").read()}

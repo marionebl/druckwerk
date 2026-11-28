@@ -1,4 +1,4 @@
-# Base image: the large parts that rarely change (slicer, WASM engine, qemu, ffmpeg, bridge). CI builds it once per
+# Base image: the large parts that rarely change (WASM engine, qemu, ffmpeg, bridge). CI builds it once per
 # content hash (hub/tests/base_tag.sh) and the app image starts FROM it, so an app update reuses these layers on the device.
 # Build context is the repo root: docker build -f hub/base.Dockerfile .
 # No RUN runs under emulation: the x86_64 pieces are cross-compiled or only COPYed.
@@ -27,12 +27,6 @@ COPY hub/externals.env /externals.env
 RUN apt-get update && apt-get install -y --no-install-recommends curl ca-certificates && rm -rf /var/lib/apt/lists/*
 RUN . /externals.env && mkdir /out && curl -fsSL -o /out/slicer_base64.cer "$CERT_URL" && test -s /out/slicer_base64.cer
 
-# The slicer from Flathub: the only ready-made aarch64 Linux build (see hub/slicer/flatpak-app.sh).
-FROM debian:trixie-slim AS studio
-RUN apt-get update && apt-get install -y --no-install-recommends flatpak ca-certificates && rm -rf /var/lib/apt/lists/*
-COPY hub/slicer/flatpak-app.sh hub/externals.env /
-RUN /flatpak-app.sh /opt/bs && rm -rf /var/lib/flatpak
-
 # OrcaSlicer compiled to WebAssembly (Muon3D Slicer Engine, AGPL-3.0) for slicing in the browser, with the presets flattened
 # at build time. The output is the same on every arch, so it is built natively on the builder. Only /out/engine is used.
 FROM --platform=$BUILDPLATFORM node:22-bookworm AS engine
@@ -57,9 +51,8 @@ RUN git clone --depth 1 --branch n7.1.1 https://github.com/FFmpeg/FFmpeg /src &&
 FROM debian:trixie-slim AS qemu
 RUN apt-get update && apt-get install -y --no-install-recommends qemu-user-static && rm -rf /var/lib/apt/lists/*
 
-# libunistring5: the slicer's runtime links it but does not ship it; it used to arrive with the ffmpeg package.
 FROM debian:trixie-slim AS base
-RUN apt-get update && apt-get install -y --no-install-recommends python3 python3-pil ca-certificates libunistring5 && rm -rf /var/lib/apt/lists/*
+RUN apt-get update && apt-get install -y --no-install-recommends python3 python3-pil ca-certificates && rm -rf /var/lib/apt/lists/*
 COPY --from=ffmpeg /out/bin/ffmpeg /usr/local/bin/ffmpeg
 
 # aarch64: run the x86_64 bridge and plugin under qemu in an x86_64 rootfs (COPY only, the Pi has no amd64 binfmt).
@@ -94,5 +87,4 @@ ENV DW_PLUGIN_LINK_DIR=/opt/bridge/lib
 FROM arch-${TARGETARCH}
 COPY --from=cert /out/slicer_base64.cer /opt/bridge/
 COPY --from=bridge /out/LICENSE /usr/share/licenses/boo-cloud/LICENSE
-COPY --from=studio /opt/bs /opt/bs
 COPY --from=engine /out/engine /srv/engine

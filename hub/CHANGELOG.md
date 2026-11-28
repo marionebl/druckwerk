@@ -1,5 +1,20 @@
 # Changelog
 
+## 3.7.0 (unreleased)
+
+- The "Slice on the Pi" choice is gone. New print slices in the browser only.
+- On iPhone and iPad, New print opens the app as a top-level page by itself, so the fast multi-thread slicer can run. Without isolation the single-thread engine runs, which is slower.
+- New print accepts STL files only.
+- Remove all server-side slicing. The app slices only in the browser, with the OrcaSlicer WebAssembly engine. Reason: the native slicer was 733 MB of the 967 MB aarch64 image, and the browser engine is as fast (CI test plate on an arm runner: native 7.0, 7.0 and 9.0 s per variant, WebAssembly with threads 8.8, 8.2 and 10.1 s).
+- The image is much smaller: 248 MB instead of 967 MB on aarch64, 185 MB instead of 938 MB on amd64 (CI, `docker image ls`). The slicer, its flatpak runtime and the scripts that ran it are gone. The WebAssembly engine, ffmpeg, qemu and the bridge stay.
+- `POST /api/jobs/{id}/slice` is gone and answers 404. The browser routes stay: `POST /api/jobs`, `GET /api/jobs/{id}`, `GET /api/jobs/{id}/model`, `POST /api/jobs/{id}/gcode`, the plate and G-code files, `POST /api/jobs/{id}/queue` and `POST /api/jobs/{id}/print`.
+- The actions `druckwerk.slice` and `druckwerk.get_slice` and the LLM tools `druckwerk_slice` and `druckwerk_get_slice_results` are gone. An agent can no longer slice. It can only queue a sliced `.gcode.3mf` that is already in the share.
+- `druckwerk.add_to_queue` and `druckwerk_add_to_queue` lose the field `slice_job_id`. No tool hands out a job id any more. `file` is now required. The LLM prompt says that the app has no slice tool.
+- A job that an older version left in state `queued` or `slicing` is marked `failed` at start ("Slice again in the browser").
+- Models that are not STL (3MF, STEP, OBJ) can no longer be sliced in the app. Slice them elsewhere and add the `.gcode.3mf` to the share.
+- The CI image test checks that the image is at most 450 MB and that `/slice` answers 404. It stores a real Bambu Studio G-code through `/gcode` instead of slicing on the server.
+- The Pi half of the slicing progress from 3.6.0 (step lines from the slicer log, `progress` on `GET /api/jobs/{id}` while the Pi slices) is gone with the Pi slicer. Browser slicing progress and the print start steps stay.
+
 ## 3.6.0 (unreleased)
 
 - Progress from Start to the first layer. Slicing shows its percent and the slicer's step text, in the browser (the engine's progress messages) and on the Pi (step lines from the slicer log, `GET /api/jobs/{id}` has `progress` `{percent, message}`). After Start, a list of steps shows where the print is: upload to the Bambu cloud (percent), the printer downloads the plate (percent from `gcode_file_prepare_percent`), the printer prepares (stage name, such as heating the bed), then printing. The steps are on the printer card, the printer page, the queue row and the job page, and in the Start dialogs while the request runs. `GET /api/printers` adds `start` (the steps, or null) and `start_job` (the job being started, or null).
