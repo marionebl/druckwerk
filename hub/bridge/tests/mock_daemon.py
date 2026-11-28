@@ -8,7 +8,8 @@ The status is idle: sequence_id and t_utc change only when a pushall command arr
   MOCK_STATUS_LOG=<file>  one line is appended at every /status call
   MOCK_STATUS_SLOW=<file>  while the file exists /status waits the seconds written in it before it answers
   MOCK_SLOW=<seconds>  a /print for slow.gcode.3mf takes this long
-  MOCK_LIVE_MINT_FAIL=<file>  while the file exists, the next /camera/<serial>/live answers the callback timeout and deletes it"""
+  MOCK_LIVE_MINT_FAIL=<file>  while the file exists, the next /camera/<serial>/live answers the callback timeout and deletes it
+  MOCK_LIVE_DROP=<file>  when the file exists, the running /live stream of the serial in it ends, as when the cloud tunnel drops"""
 import base64
 import json
 import os
@@ -93,6 +94,13 @@ class Handler(BaseHTTPRequestHandler):
                 self.wfile.flush()
                 i += 1
                 time.sleep(pause)
+                drop = os.environ.get("MOCK_LIVE_DROP", "/nonexistent")
+                if os.path.exists(drop) and open(drop).read() == serial:
+                    os.remove(drop)
+                    self.wfile.write(b"0\r\n\r\n")
+                    self.wfile.flush()
+                    s.live_log.append(["drop", serial])
+                    raise OSError
         except OSError:
             s.live_active.discard(serial)
             s.live_log.append(["disconnect", serial])
