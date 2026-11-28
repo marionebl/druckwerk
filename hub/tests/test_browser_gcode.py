@@ -68,3 +68,15 @@ def test_granted_user_slices_and_queues_a_browser_slice(web):
 def test_global_admin_slices_their_own_upload(web):
     jid = upload(web, ADMIN)
     assert web.req("POST", "/api/jobs/%s/gcode?%s" % (jid, QS), raw=GCODE, user=ADMIN)[0] == 200
+
+
+def test_gcode_in_parts_is_joined_and_stored_like_a_whole_upload(web):
+    web.grant(USER)
+    jid = upload(web)
+    big = GCODE + b"; padding\n" * 120000  # over 1 MB, so three parts of 512 KB
+    part = 512 * 1024
+    for at in range(0, len(big), part):
+        st, body = web.req("POST", "/api/jobs/%s/gcode?%s&offset=%d&total=%d" % (jid, QS, at, len(big)), raw=big[at:at + part], user=USER)
+        assert st == 200, body
+        assert (body.get("state") == "done") == (at + part >= len(big))
+    assert web.req("GET", "/api/jobs/%s/plate.gcode" % jid, user=USER)[1] == big
