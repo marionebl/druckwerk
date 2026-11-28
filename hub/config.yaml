@@ -16,7 +16,7 @@ panel_title: Druckwerk
 homeassistant_api: true
 hassio_api: true
 map: ["share:rw", "media:rw"]
-panel_admin: false
+panel_admin: true
 watchdog: http://[HOST]:8098/api/health
 options:
   plates_repo: marionebl/druckwerk-plates
