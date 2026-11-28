@@ -33,7 +33,7 @@ jobs:
     runs-on: ${{ matrix.runner }}
     timeout-minutes: 90
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
       - name: Version must change with the app
         if: github.event_name == 'pull_request'
         run: |
