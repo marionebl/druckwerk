@@ -7,7 +7,8 @@ The status is idle: sequence_id and t_utc change only when a pushall command arr
   MOCK_SNAPSHOT=<file>  while the file exists /camera/<serial>/snapshot answers a JPEG instead of the callback timeout
   MOCK_STATUS_LOG=<file>  one line is appended at every /status call
   MOCK_STATUS_SLOW=<file>  while the file exists /status waits the seconds written in it before it answers
-  MOCK_SLOW=<seconds>  a /print for slow.gcode.3mf takes this long"""
+  MOCK_SLOW=<seconds>  a /print for slow.gcode.3mf takes this long
+  MOCK_LIVE_MINT_FAIL=<file>  while the file exists, the next /camera/<serial>/live answers the callback timeout and deletes it"""
 import base64
 import json
 import os
@@ -60,6 +61,11 @@ class Handler(BaseHTTPRequestHandler):
         s = self.server
         if serial in s.live_active:  # the bridge allows one tunnel per printer
             return self.reply(409, {"stage": "busy", "code": -1, "error": "a live stream is running"})
+        fail = os.environ.get("MOCK_LIVE_MINT_FAIL", "/nonexistent")
+        if os.path.exists(fail):
+            os.remove(fail)
+            s.live_log.append(["mint-timeout", serial])
+            return self.reply(502, {"error": "timeout after 20s waiting for camera URL callback", "stage": "mint"})
         h264 = serial == H264_SERIAL
         if h264:
             data = sample_h264()

@@ -11,6 +11,8 @@ import mimetypes
 import os
 import re
 import secrets
+import shutil
+import subprocess
 import sys
 import threading
 import time
@@ -22,6 +24,7 @@ HERE = os.path.dirname(os.path.abspath(__file__))
 sys.path.insert(0, os.path.dirname(HERE))
 import progress  # noqa: E402  the hub's own step logic, so the mock cannot drift from it
 PREFIX = "/api/hassio_ingress/MOCKTOKEN/"
+LIVE_LOG = []  # start times of live camera streams
 NOW = time.time
 
 IDENT = {
@@ -356,6 +359,7 @@ def printer_out(ident, p):
         p["end_time"] = None
     p["cover_url"] = f"api/printers/{s}/cover" if p["online"] else None
     p["camera_url"] = f"api/printers/{s}/camera" if p["online"] else None
+    p["camera_live"] = "mjpeg" if p["model"].startswith(("P1", "A1")) else "mpegts"
     p["current_job"] = next((j for j in JOBS if j["state"] == "printing" and j.get("printer") == s), None)
     p["start"], p["start_job"] = start_out(p)
     p["drying"] = drying_out(s)
@@ -514,6 +518,10 @@ class H(BaseHTTPRequestHandler):
             return self.send(200, {"until": RESTART["until"]})
         if path.startswith("api/") and NOW() < RESTART["until"]:
             return self.send(502, b"<html><body>502: Bad Gateway</body></html>", "text/html")
+        live = re.fullmatch(r"api/printers/([^/]+)/camera", path)
+        if live and method == "GET" and "mode" not in q and live.group(1) in visible(ident) and live.group(1) not in CAMERA_DOWN \
+                and not PRINTERS[live.group(1)]["model"].startswith(("P1", "A1")) and shutil.which("ffmpeg"):
+            return self.stream_ts()
         try:
             for frag, secs in list(SLOW.items()):  # outside the lock: a slow answer must not block the others
                 if frag in u.path:
@@ -525,6 +533,26 @@ class H(BaseHTTPRequestHandler):
             return self.static(path or "index.html", extra)
         except Err as e:
             return self.send(e.code, {"error": e.msg}, extra=extra)
+
+    def stream_ts(self):
+        """A real-time H.264 test picture as MPEG-TS, like the bridge's live route of an H.264 printer."""
+        LIVE_LOG.append(time.time())
+        proc = subprocess.Popen(["ffmpeg", "-loglevel", "error", "-re", "-f", "lavfi", "-i", "testsrc=size=640x360:rate=15",
+                                 "-pix_fmt", "yuv420p", "-c:v", "libx264", "-preset", "ultrafast", "-tune", "zerolatency",
+                                 "-g", "15", "-bf", "0", "-f", "mpegts", "-"], stdout=subprocess.PIPE)
+        self.send_response(200)
+        self.send_header("Content-Type", "video/mp2t")
+        self.send_header("Cache-Control", "no-store")
+        self.end_headers()
+        self.close_connection = True
+        try:
+            while chunk := proc.stdout.read1(65536):
+                self.wfile.write(chunk)
+                self.wfile.flush()
+        except OSError:
+            pass  # the viewer left
+        finally:
+            proc.kill()
 
     def static(self, rel, extra):
         f = os.path.normpath(os.path.join(HERE, rel))
@@ -540,6 +568,8 @@ class H(BaseHTTPRequestHandler):
         ok = lambda o: (200, o, "application/json")
         svg = lambda s: (200, s.encode(), "image/svg+xml")
         need_admin = lambda: None if admin else (_ for _ in ()).throw(Err(403, "rule: only Home Assistant admins can do this"))
+        if path == "api/_mock/live":  # how many live streams were opened
+            return ok({"opened": len(LIVE_LOG)})
         if path == "api/_mock/slow":
             SLOW.clear()
             for frag in q.get("path") or []:

@@ -8,6 +8,15 @@
 - A thin loading bar at the top of the page appears when a request takes 3 s or more.
 - Without usable browser storage the UI behaves as before.
 
+## 3.8.0 (unreleased)
+
+- The printer page plays the live camera stream. H.264 printers (H2S, X1) send MPEG-TS, which the vendored mpegts.js 1.8.0 (Apache-2.0) plays through Media Source, or ManagedMediaSource on iOS 17.1+. JPEG printers (P1, A1) show the multipart stream in an `<img>`. Before, the page showed a still that the bridge cached for 30 s.
+- The still stays under the video as poster and as fallback. A stream that fails, ends or freezes for 10 s starts again (backoff 1 s to 30 s). A hidden page drops its stream. Printer cards on the grid keep the stills.
+- Bridge: an unused live upstream stays open 90 s (was 30 s, `DW_LIVE_IDLE`), so a viewer who comes back gets a frame at once. A live upstream costs about one Pi 4 core while open (qemu runs the vendor plugin).
+- Bridge: when the camera URL mint times out on a live open, the bridge mints once more before it answers 502. Mints fail about 1 in 7 on the H2S.
+- Bridge log: `live <serial>: first frame after N s` and, at close, the duration, MB, stalls (gaps over 2 s, `DW_LIVE_STALL`) and the longest gap.
+- `GET /api/printers` has `camera_live`: `mpegts` or `mjpeg`.
+
 ## 3.7.1 (unreleased)
 
 - Fix: a printer that was online showed "Printer offline". The daemon asks the printer for a full push on every status call that finds its cache older than 10 s, and an idle printer sends no updates, so the calls queued on one thread and timed out.
