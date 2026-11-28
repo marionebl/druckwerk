@@ -126,7 +126,8 @@ def write_private(path, text):
 # ---- accounts and daemon supervision ----
 
 accounts = {}  # id -> Account
-lock = threading.RLock()  # guards accounts, pending and the login calls
+lock = threading.RLock()  # guards the accounts and pending dicts only; never held during a cloud call
+login_locks = {}  # account id -> Lock: two logins of one account run one after the other
 
 
 def slug(email):
@@ -403,16 +404,23 @@ def cloud(method, path, body=None, token=None, parse=True):
         raise Upstream("%s cloud sent invalid JSON for %s" % (externals.CLOUD_NAME, path))
 
 
+def login_lock(email):
+    with lock:
+        return login_locks.setdefault(slug(email), threading.Lock())
+
+
 def advance(email, data):
     """Look at a login answer: finish, or say which code is needed next."""
     if data.get("accessToken"):
         finish(email, data["accessToken"], data.get("refreshToken", ""))
         return "done"
     if data.get("tfaKey"):
-        pending[email.lower()] = {"email": email, "kind": "tfa", "tfaKey": data["tfaKey"]}
+        with lock:
+            pending[email.lower()] = {"email": email, "kind": "tfa", "tfaKey": data["tfaKey"]}
         return "need_tfa"
     if data.get("loginType") == "verifyCode":
-        pending[email.lower()] = {"email": email, "kind": "code"}
+        with lock:
+            pending[email.lower()] = {"email": email, "kind": "code"}
         # The real cloud answers this call without a JSON body (upstream auth.py checks only the status).
         cloud("POST", "/v1/user-service/user/sendemail/code", {"email": email, "type": "codeLogin"}, parse=False)
         return "need_code"
@@ -421,8 +429,9 @@ def advance(email, data):
 
 def finish(email, token, refresh):
     id = slug(email)
-    if id in accounts and accounts[id].email.lower() != email.lower():
-        raise ValueError("Another account already uses the id " + id)
+    with lock:
+        if id in accounts and accounts[id].email.lower() != email.lower():
+            raise ValueError("Another account already uses the id " + id)
     secrets_seen.update(s for s in (token, refresh) if s)
     uid = str(cloud("GET", "/v1/design-user-service/my/preference", token=token).get("uid", ""))
     devices = [d for d in cloud("GET", "/v1/iot-service/api/user/bind", token=token).get("devices", []) if d.get("dev_id")]
@@ -436,24 +445,26 @@ def finish(email, token, refresh):
             slug_ += "_" + d["dev_id"].lower()
         used.add(slug_)
         lines += ["", "[printers.%s]" % slug_, "serial = %s" % q(d["dev_id"])]
-    acc = accounts.get(id)
-    if not acc:
-        os.makedirs(os.path.join(ACCOUNTS, id), exist_ok=True)
-        acc = Account(id, email)
-    write_private(acc.printers, json.dumps(devices))
-    write_private(acc.creds, "\n".join(lines) + "\n")
-    pending.pop(email.lower(), None)
-    if id in accounts:
+    with lock:
+        acc = accounts.get(id)
+        known = acc is not None
+        if not acc:
+            os.makedirs(os.path.join(ACCOUNTS, id), exist_ok=True)
+            acc = Account(id, email)
+        write_private(acc.printers, json.dumps(devices))
+        write_private(acc.creds, "\n".join(lines) + "\n")
+        pending.pop(email.lower(), None)
+        if not known:
+            accounts[id] = acc
+            acc.daemon = Daemon(acc)
+    if known:
         acc.daemon.restart()
-    else:
-        accounts[id] = acc
-        acc.daemon = Daemon(acc)
 
 
 def login_start(email, password):
-    with lock:
-        if not slug(email):
-            raise ValueError("That is not an email address.")
+    if not slug(email):
+        raise ValueError("That is not an email address.")
+    with login_lock(email):
         return advance(email, cloud("POST", "/v1/user-service/user/login",
                                     {"account": email, "password": password, "apiError": ""}))
 
@@ -461,13 +472,14 @@ def login_start(email, password):
 def login_code(code, email):
     with lock:
         key = email.lower() if email else next(iter(pending)) if len(pending) == 1 else None
-        p = pending.get(key)
-        if not p:
-            raise ValueError("No pending login. Start it first, and send the email when several are pending.")
-        if p["kind"] == "tfa":
-            body, path = {"tfaKey": p["tfaKey"], "tfaCode": code}, "/v1/user-service/user/tfa"
-        else:
-            body, path = {"account": p["email"], "code": code}, "/v1/user-service/user/login"
+        p = dict(pending.get(key) or {})
+    if not p:
+        raise ValueError("No pending login. Start it first, and send the email when several are pending.")
+    if p["kind"] == "tfa":
+        body, path = {"tfaKey": p["tfaKey"], "tfaCode": code}, "/v1/user-service/user/tfa"
+    else:
+        body, path = {"account": p["email"], "code": code}, "/v1/user-service/user/login"
+    with login_lock(p["email"]):
         return p["email"], advance(p["email"], cloud("POST", path, body))
 
 

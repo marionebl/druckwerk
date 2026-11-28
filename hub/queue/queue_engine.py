@@ -32,7 +32,8 @@ DRY_TEMP, DRY_HOURS = (45, 85), (1, 72)
 DRY_GRACE = 120  # seconds after the start in which the AMS may not report drying yet
 DRY_SLACK = 600  # seconds past the set time before a job whose state is unknown counts as done
 WAITING = ("queued", "pending_approval")  # not yet sent to a printer
-BUSY = ("starting", "printing", "drying")
+# "sending": reserved for a printer while the file goes out, with no lock held; "starting": sent, the printer has not begun.
+BUSY = ("sending", "starting", "printing", "drying")
 
 
 class QueueError(Exception):
@@ -94,6 +95,9 @@ class Queue:
             with open(self.path) as f:
                 saved = json.load(f)
             self.jobs, self.history = saved["jobs"], saved["history"]
+            for j in list(self.jobs):  # the hub stopped during a send: the print may or may not have begun
+                if j.get("state") == "sending":
+                    self._finish(j, "failed", "the app restarted while the file was sent; check the printer before a retry")
             for j in self.jobs + self.history:  # jobs saved before kinds and names existed
                 j.setdefault("kind", "print")
                 j.setdefault("name", str(j.get("file", ""))[:-len(".gcode.3mf")] if str(j.get("file", "")).endswith(".gcode.3mf") else j.get("file", ""))
@@ -317,14 +321,14 @@ class Queue:
     # -- start --
     def start(self, serial, plate_clear=False, job_id=None, confirmed=False):
         # Only a person starts a job: a print after confirming the plate is clear, a drying after confirming the start.
+        # The lock covers the choice and the reservation only; the send itself runs without it.
+        printer = self.registry.get(serial)
+        if not printer:
+            raise NotFound("unknown printer")
+        status = self.get_state(self.registry.entities(serial)["print_status"])
         with self.lock:
-            printer = self.registry.get(serial)
-            if not printer:
-                raise NotFound("unknown printer")
             if self._busy(serial):
                 raise QueueError("this printer already has a job starting, printing or drying")
-            ent = self.registry.entities(serial)
-            status = self.get_state(ent["print_status"])
             if status not in STARTABLE:
                 raise QueueError("printer is not ready (status: %s)" % status)
             if job_id:
@@ -347,15 +351,28 @@ class Queue:
                 self._check_nozzle(job, serial)
             if not dry and plate_clear is not True:
                 raise QueueError("confirm that the plate is clear")
-            err = self._send_dry(serial, job) if dry else self._send(printer, serial, job)
-            if err:
-                job["error"] = err  # stays first in the queue
-                self._save()
-                raise QueueError(err)
-            job.update(state="drying" if dry else "starting", error=None, printer=serial, started_at=self.clock())
+            job.update(state="sending", printer=serial, started_at=self.clock())
             self.seen_change[serial] = False
             self._save()
+        try:
+            err = self._send_dry(serial, job) if dry else self._send(printer, serial, job)
+        except BaseException as e:  # a bad request: nothing was sent
+            self._unreserve(job, str(e))
+            raise
+        if err:
+            self._unreserve(job, err)  # stays first in the queue
+            raise QueueError(err)
+        with self.lock:
+            job.update(state="drying" if dry else "starting", error=None, started_at=self.clock())
+            self._save()
             return job
+
+    def _unreserve(self, job, error):
+        with self.lock:
+            job.update(state="queued", error=error)
+            job.pop("printer", None)
+            job.pop("started_at", None)
+            self._save()
 
     def _check_nozzle(self, job, serial):
         need, have = job.get("nozzle"), self.get_nozzle(serial)
@@ -368,9 +385,7 @@ class Queue:
         try:
             self.dry.start(serial, dict(job["dry"]))
             return None
-        except ValueError as e:  # the bridge refused the values: a bad request, not a busy printer
-            job["error"] = str(e)
-            self._save()
+        except ValueError:  # the bridge refused the values: a bad request, not a busy printer
             raise
         except Exception as e:  # the bridge's refusal text is the useful part
             return str(e) or e.__class__.__name__
@@ -417,51 +432,57 @@ class Queue:
     # -- progress --
     def observe(self, serial, stage):
         """Feed stage changes from state events so a short changing_filament is not missed."""
-        if stage == "changing_filament" and self._starting(serial):
+        j = self._busy(serial)
+        if stage == "changing_filament" and j and j["state"] in ("sending", "starting"):
             self.seen_change[serial] = True
 
-    def _starting(self, serial):
-        j = self._busy(serial)
-        return j if j and j["state"] == "starting" else None
-
     def tick(self, serial):
+        # Read Home Assistant and the bridge first, then apply under the lock: a slow answer must not block the queue.
         with self.lock:
             job = self._busy(serial)
-            if not job:
-                return None
-            if job["state"] == "drying":
-                self._tick_drying(job, serial)
-                self._save()
+            if not job or job["state"] == "sending":
                 return job
-            ent = self.registry.entities(serial)
+            job_id, state = job["id"], job["state"]
+        ent = self.registry.entities(serial)
+        dry_state = status = stage = tray = progress = None
+        if state == "drying":
+            try:
+                dry_state = self.dry.state(serial, job["dry"]["ams_id"]) if self.dry else None
+            except Exception:
+                dry_state = None  # the bridge may be down; the set time still ends the job
+        else:
             status, stage, tray = (self.get_state(ent[k]) for k in ("print_status", "current_stage", "active_tray"))
-            if job["state"] == "starting":
-                self._tick_starting(job, serial, ent, status, stage, tray)
+            if state == "starting" and _tray_ok(tray) and stage == "printing":
+                progress = self.get_state(ent["print_progress"])
+        with self.lock:
+            job = self._busy(serial)
+            if not job or job["id"] != job_id or job["state"] != state:  # changed while we read
+                return job
+            if state == "drying":
+                self._tick_drying(job, dry_state)
+            elif state == "starting":
+                self._tick_starting(job, serial, status, stage, tray, progress)
             else:
                 self._tick_printing(job, status)
             self._save()
             return job
 
-    def _tick_drying(self, job, serial):
+    def _tick_drying(self, job, state):
         d, age = job["dry"], self.clock() - job["started_at"]
-        try:
-            state = self.dry.state(serial, d["ams_id"]) if self.dry else None
-        except Exception:
-            state = None  # the bridge may be down; the set time still ends the job
         if state is None:
             if age > d["hours"] * 3600 + DRY_SLACK:
                 self._finish(job, "done")
         elif age > DRY_GRACE and not state.get("active"):
             self._finish(job, "done")
 
-    def _tick_starting(self, job, serial, ent, status, stage, tray):
+    def _tick_starting(self, job, serial, status, stage, tray, progress):
         if stage == "changing_filament":
             self.seen_change[serial] = True
         loaded = _tray_ok(tray)
         started = loaded and (stage == "changing_filament" or self.seen_change.get(serial))
         if not started and loaded and stage == "printing":
             try:
-                started = float(self.get_state(ent["print_progress"])) > 0
+                started = float(progress) > 0
             except (TypeError, ValueError):
                 started = False
         # "running" alone proves nothing: a print once ran an hour with stage idle and no tray.

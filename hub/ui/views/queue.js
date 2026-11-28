@@ -10,7 +10,7 @@ const WAITING = ['queued', 'pending_approval'];
 // Open requests for a nozzle or spool change block a job; the hub sends them with the job.
 const waitText = (j) => (j.requests?.length ? 'Waiting for ' + j.requests.map((r) => r.wait).join(' and ') : '');
 const askedBy = (j) => (j.requests || []).map((r) => r.user_name + (r.note ? ': ' + r.note : '')).join('; ');
-const STATE = { pending_approval: ['Needs approval', 'warn'], queued: ['Queued', ''], starting: ['Starting', 'ok'], printing: ['Printing', 'ok'], drying: ['Drying', 'ok'], done: ['Done', 'ok'], failed: ['Failed', 'err'], cancelled: ['Cancelled', ''] };
+const STATE = { pending_approval: ['Needs approval', 'warn'], queued: ['Queued', ''], sending: ['Sending', 'ok'], starting: ['Starting', 'ok'], printing: ['Printing', 'ok'], drying: ['Drying', 'ok'], done: ['Done', 'ok'], failed: ['Failed', 'err'], cancelled: ['Cancelled', ''] };
 
 export async function mount(ctx, root, parts = []) {
   if (parts[0]) return detailView(ctx, root, decodeURIComponent(parts[0]));
@@ -111,7 +111,7 @@ export async function mount(ctx, root, parts = []) {
     if (waiting && admin) acts.push(btn('Start', () => startDialog(j), 'sm', { disabled: !!why, title: why || null }), btn('Skip', () => act(j, 'skip', undefined, 'Skipped'), 'sm'),
       j.kind !== 'dry' && btn('Move…', () => moveDialog(j), 'sm'));
     if (j.state === 'drying' && admin) acts.push(btn('Stop drying', () => act(j, 'stop', undefined, 'Drying stopped'), 'sm danger'));
-    if (['queued', 'pending_approval', 'starting', 'printing'].includes(j.state) && (admin || own)) acts.push(btn('Cancel', () => act(j, 'cancel', undefined, 'Cancelled'), 'sm danger'));
+    if (['queued', 'pending_approval', 'sending', 'starting', 'printing'].includes(j.state) && (admin || own)) acts.push(btn('Cancel', () => act(j, 'cancel', undefined, 'Cancelled'), 'sm danger'));
     const el = h('div', { class: 'job' + (pending ? ' pending' : ''), draggable: canOrder && waiting ? 'true' : null, 'data-id': j.id },
       canOrder && waiting ? h('div', { class: 'grip', title: 'Drag to reorder', 'aria-hidden': 'true' }, icon('grip')) : h('div', { class: 'pos' }, waiting ? idx + 1 : ''),
       j.kind === 'dry' ? h('div', { class: 'thumb' }, '♨') : thumb(j.plate_png),
@@ -249,7 +249,7 @@ async function detailView(ctx, root, id) {
         source && btn('Reslice', () => D.reslice(ctx, j, source), 'primary'),
         j.state === 'pending_approval' && admin && btn('Approve', act('approve', 'Approved'), 'primary'),
         j.state === 'pending_approval' && admin && btn('Reject', act('reject', 'Rejected'), 'danger'),
-        ['queued', 'pending_approval', 'starting', 'printing'].includes(j.state) && (admin || own) && btn('Cancel job', act('cancel', 'Cancelled'), 'danger'),
+        ['queued', 'pending_approval', 'sending', 'starting', 'printing'].includes(j.state) && (admin || own) && btn('Cancel job', act('cancel', 'Cancelled'), 'danger'),
         ['failed', 'cancelled'].includes(j.state) && admin && j.kind !== 'dry' && btn('Retry', act('retry', 'Requeued')),
       ],
     }));

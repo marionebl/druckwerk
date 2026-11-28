@@ -191,6 +191,7 @@ class App:
         self.seq = int(clock())
         self.events = collections.deque(maxlen=500)
         self.sync_lock = threading.RLock()
+        self.emit_lock = threading.Lock()  # settle() emits after it left sync_lock
         self.known = self._states_of_jobs()
         self.waiting = self._waiting_ids()
 
@@ -509,7 +510,7 @@ class App:
         # null: no view was ever seen and nothing says offline (fresh start); the page waits instead of calling it offline
         online = None if not seen and self.cloud_online(serial) else v is not None and b["status"] != "offline"
         tray = b.get("active_tray")
-        job = next((j for j in self.queue.jobs if j.get("printer") == serial and j["state"] in ("starting", "printing")), None)
+        job = next((j for j in self.queue.jobs if j.get("printer") == serial and j["state"] in ("sending", "starting", "printing")), None)
         start, start_job = self.start_steps(serial, v, job)
         now = self.installed_nozzle(p)
         return {
@@ -543,14 +544,16 @@ class App:
         return [j["id"] for j in self.queue.jobs if j["state"] in WAITING]
 
     def emit(self, type_, serial, job, **extra):
-        self.seq += 1
-        # job always carries id, file, owner_name, target and printer (None until a printer took it).
-        event = {"seq": self.seq, "type": type_, "serial": serial or "", "job": dict({"printer": None}, **job) if job else None, **extra}
-        self.events.append(event)
+        with self.emit_lock:
+            self.seq += 1
+            # job always carries id, file, owner_name, target and printer (None until a printer took it).
+            event = {"seq": self.seq, "type": type_, "serial": serial or "", "job": dict({"printer": None}, **job) if job else None, **extra}
+            self.events.append(event)
         self.notifier.put(event)
 
     def sync(self):
         """Turn queue changes into events, and settle a finished job's spools and cost exactly once."""
+        done = []
         with self.sync_lock, self.queue.lock:
             now = self._states_of_jobs()
             changed = now != self.known or self._waiting_ids() != self.waiting
@@ -566,14 +569,22 @@ class App:
                 elif state == "starting":
                     self.emit("job_started", serial, j)
                 elif state == "done":
-                    self.settle(j)
-                    self.emit("job_done", serial, j)
-                elif state == "failed" and before in ("starting", "printing"):
+                    done.append((serial, j))
+                elif state == "failed" and before in ("sending", "starting", "printing"):
                     self.emit("job_failed", serial, j)
             if changed:
-                self.emit("queue_changed", "", None)
                 self.queue._save()
+                if not done:
+                    self.emit("queue_changed", "", None)
             self.known, self.waiting = now, self._waiting_ids()
+        for serial, j in done:  # settle() calls the cloud, so it runs without a lock; known already counts the job as done
+            try:
+                self.settle(j)
+            except Exception as e:  # noqa: BLE001 - the job is done either way; the event must still go out
+                log("settle %s: %s" % (j["id"], e))
+            self.emit("job_done", serial, j)
+        if done:  # after the job_done events, as before
+            self.emit("queue_changed", "", None)
 
     def settle(self, job):
         """Take the grams off the spools in use and price the job."""
@@ -591,9 +602,11 @@ class App:
                     sp["grams_left"] = max(0, sp["grams_left"] - g)  # a second filament on this spool starts from here
                     self.update_cloud_spool(sp["account"], sp["id"], {"grams_left": sp["grams_left"]})
                 used.append({"spool_id": sp["id"], "grams": g})
-        job["spools_used"] = used
-        job["cost"] = filament.job_cost(grams, prices, job.get("print_seconds") or 0, printer.get("model"),
-                                        printer.get("electricity_kwh_price") or 0)
+        cost = filament.job_cost(grams, prices, job.get("print_seconds") or 0, printer.get("model"),
+                                 printer.get("electricity_kwh_price") or 0)
+        with self.queue.lock:
+            job["spools_used"], job["cost"] = used, cost
+            self.queue._save()
         try:  # the shared copy is only needed until the print is done; retry is for failed jobs
             os.remove(os.path.join(self.share, job["file"]))
         except OSError:
