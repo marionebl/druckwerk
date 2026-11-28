@@ -25,11 +25,6 @@ def test_env_matches_python():
     assert e["BRIDGE_LIB_ENV"] == externals.BRIDGE_LIB_ENV
     assert e["PLUGIN_AGENT_DIR"] == externals.PLUGIN_AGENT_DIR
     assert e["CERT_URL"] == externals.CERT_URL
-    assert e["FLATHUB_APP_ID"] == externals.FLATHUB_APP_ID
-    assert e["STUDIO_BINARY_NAMES"].split() == list(externals.STUDIO_BINARY_NAMES)
-    assert e["PROFILE_ROOT_FILE"] == externals.PROFILE_ROOT_FILE and e["PROFILE_DIR"] == externals.PROFILE_DIR
-    assert e["PROFILE_SEARCH"] == externals.PROFILE_SEARCH
-    assert e["DEFAULT_PRINTER"] == externals.DEFAULT_PRINTER == externals.PRINTERS["H2S"]["preset"]
 
 
 def test_plugin_net_lib_is_one_of_the_libs():

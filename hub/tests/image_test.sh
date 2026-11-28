@@ -1,14 +1,19 @@
 #!/bin/bash
 # Builds the app image, then checks what a user depends on: no vendor libs in the image, the plugin is downloaded at start
 # (from a local fake CDN serving the real zip, so the pinned hash is really checked; a wrong hash must install nothing),
-# the bridge answers on its own port and through ingress and runs on this arch, and a test plate slices and prints
-# through the slicer API (bridge and HA mocked). SKIP_BUILD=1 reuses an existing image $IMG.
+# the bridge answers on its own port and through ingress and runs on this arch, the browser slicer's files are served
+# (engine presets), and G-code made by a browser is stored and printed through the API (bridge and HA mocked). The app has
+# no server-side slicer; the slicing itself runs in a browser (hub/tests/browser_test.sh). SKIP_BUILD=1 reuses an existing image $IMG.
 set -euo pipefail
 HERE=$(cd "$(dirname "$0")" && pwd); REPO=$(cd "$HERE/../.." && pwd)
 IMG=${IMG:-druckwerk-test}
 PLUGIN_ZIP=${PLUGIN_ZIP:-/tmp/druckwerk-plugin/plugin.zip}  # the real vendor zip; fetched once from the URL pinned in externals.py
 [ -n "${SKIP_BUILD:-}" ] || "$HERE/build_image.sh"
 docker image ls $IMG --format 'image size {{.Size}}'
+# The native slicer is gone (it was 733 MB of 967 MB on aarch64): the image must stay small.
+BYTES=$(docker image inspect $IMG --format '{{.Size}}'); MAX_MB=${MAX_IMAGE_MB:-450}
+[ "$BYTES" -le $((MAX_MB * 1000 * 1000)) ] || { echo "FAIL: image is $((BYTES / 1000000)) MB, the limit is $MAX_MB MB" >&2; exit 1; }
+echo "image size check: $((BYTES / 1000000)) MB <= $MAX_MB MB"
 "$HERE/no_vendor_libs.sh" $IMG
 if [ ! -s "$PLUGIN_ZIP" ]; then
   mkdir -p "$(dirname "$PLUGIN_ZIP")"; curl -fsSL -o "$PLUGIN_ZIP" "$(python3 -I -c "import sys;sys.path.insert(0,'$REPO/hub');import externals;print(externals.PLUGIN_URL)")"
@@ -31,10 +36,6 @@ for _ in $(seq 300); do curl -fs $BRIDGE/api/health | grep -q '"state": "ready"'
 echo "bridge health: $(curl -fsS $BRIDGE/api/health)"
 curl -fsS $BRIDGE/api/health | python3 -c 'import json,sys;d=json.load(sys.stdin);assert d["plugin"]["state"]=="ready" and d["plugin"]["error"] is None,d'
 docker exec $IMG /opt/bridge/bridge.sh --check
-# Every library the slicer links must be in the image: list all that are missing, not only the first the loader hits.
-MISSING=$(docker exec $IMG sh -c 'cd /opt/bs; LD=$(ls runtime/lib/ld-linux-*.so.[0-9] | head -1); L=$(ls -d runtime/lib/*-linux-gnu | head -1); $LD --library-path app/lib:$L:runtime/lib --list app/bin/bambu-studio' | grep 'not found' || true)
-[ -z "$MISSING" ] || { echo "FAIL: slicer libraries missing from the image:" >&2; echo "$MISSING" >&2; exit 1; }
-echo "slicer links: all libraries present"
 # The slim ffmpeg must do what server.py asks of it: H.264 to a JPEG still, H.264 to MPEG-TS (copy), MPEG-TS to a JPEG still.
 SAMPLE=$HERE/fixtures/sample.h264
 docker exec -i $IMG ffmpeg -loglevel error -f h264 -i - -frames:v 1 -f image2 -c:v mjpeg - < "$SAMPLE" | head -c2 | xxd -p | grep -qx ffd8 \
@@ -49,7 +50,7 @@ code=$(curl -s -o /dev/null -w '%{http_code}' $B/api/me); [ "$code" = 401 ] || {
 echo "GET /api/me without identity: $code"
 ME=$(curl -fsS "${ID[@]}" $B/api/me); echo "GET /api/me with identity: 200 $ME"
 echo "$ME" | python3 -c 'import json,sys;d=json.load(sys.stdin);assert d["user_id"]=="smoke-user" and d["is_admin"] is False and d["setup_done"] is False,d'
-# The slicing flow below runs as the integration (internal caller), which the mock HA cannot grant to a user.
+# The job flow below runs as the integration (internal caller), which the mock HA cannot grant to a user.
 SECRET=$(docker exec $IMG python3 -c 'import json;print(json.load(open("/data/hub.json"))["secret"])')
 ID=(-H "X-Hub-Secret: $SECRET")
 health() {  # $1 label, $2 url
@@ -63,17 +64,18 @@ health "via ingress" $B/api/bridge/api/health
 page=$(curl -fsS $B/); grep -q '<title>Druckwerk</title>' <<<"$page"
 js=$(curl -fsS $B/api.js); grep -q "api/me" <<<"$js"; curl -fsS -o /dev/null $B/views/queue.js; echo "web UI served at /"
 curl -fsS "${ID[@]}" $B/api/bridge/ | grep -q 'Druckwerk bridge'
+# The browser slices; the app only serves the engine and stores the G-code the browser uploads. Upload a model, ask for the
+# filament preset (read from the engine presets in the image), upload a real Bambu Studio H2S G-code like the browser does.
 J=$(curl -fsS "${ID[@]}" -X POST --data-binary @"$REPO/hub/tests/fixtures/test_plate.stl" "$B/api/jobs?name=test_plate.stl" | python3 -c 'import json,sys;print(json.load(sys.stdin)["id"])')
-curl -fsS "${ID[@]}" -X POST -d '{"serial":"H2S0001","quality":"better","tray":"0:0"}' $B/api/jobs/$J/slice >/dev/null
-S=$(date +%s)
-while :; do
-  STATE=$(curl -fsS "${ID[@]}" $B/api/jobs/$J | python3 -c 'import json,sys;print(json.load(sys.stdin)["state"])')
-  [ "$STATE" = done ] || [ "$STATE" = failed ] && break; sleep 2
-done
-echo "slice $STATE in $(( $(date +%s) - S )) s"
-curl -fsS "${ID[@]}" $B/api/jobs/$J | python3 -c 'import json,sys;j=json.load(sys.stdin);print(json.dumps({k:j.get(k) for k in ("state","error","settings","info")},indent=1));print(j.get("log","")[-800:])'
-[ "$STATE" = done ]
-curl -fsS "${ID[@]}" -o /dev/null -w 'plate.png %{http_code} %{size_download} B\n' $B/api/jobs/$J/plate.png
+FIL=$(curl -fsS "${ID[@]}" "$B/api/engine/filament?serial=H2S0001&tray=0:0" | python3 -c 'import json,sys;print(json.load(sys.stdin)["filament"])')
+echo "filament preset from the image's engine presets: $FIL"
+curl -fsS "${ID[@]}" -o /dev/null -w 'engine version.json %{http_code}\n' $B/engine/version.json
+code=$(curl -s -o /dev/null -w '%{http_code}' "${ID[@]}" -X POST $B/api/jobs/$J/slice)
+[ "$code" = 404 ] || { echo "FAIL: POST /api/jobs/<id>/slice gave $code, expected 404 (no server-side slicing)" >&2; exit 1; }
+echo "POST /api/jobs/<id>/slice: $code (no server-side slicing)"
+Q=$(python3 -c 'import sys,urllib.parse as u;print(u.urlencode({"serial":"H2S0001","quality":"better","tray":"0:0","filament":sys.argv[1],"seconds":7440,"grams":75.22,"metres":24.5,"engine":"mt","slice_s":9}))' "$FIL")
+curl -fsS "${ID[@]}" -X POST --data-binary @"$REPO/hub/tests/fixtures/gcode/bambu_multi_object.gcode" "$B/api/jobs/$J/gcode?$Q" \
+  | python3 -c 'import json,sys;j=json.load(sys.stdin);print(json.dumps({k:j.get(k) for k in ("state","error","info")}));assert j["state"]=="done" and j["info"]["seconds"]==7440,j'
 curl -fsS "${ID[@]}" -o /dev/null -w 'plate.gcode %{http_code} %{size_download} B\n' $B/api/jobs/$J/plate.gcode
 # The app sends the print to the real bridge, which has no account here: it must refuse with its own error text.
 code=$(curl -s -o /tmp/print.json -w '%{http_code}' "${ID[@]}" -X POST -d '{"confirm":true}' $B/api/jobs/$J/print); echo "print: $code $(cat /tmp/print.json)"

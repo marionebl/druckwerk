@@ -1,6 +1,7 @@
 #!/usr/bin/env python3
-"""Slicer server: upload a model, slice it on this machine, preview it, send it to a printer.
+"""Slicer server: serves the browser slicer (WASM engine and presets), stores the G-code the browser made, sends it to a printer.
 
+The app does not slice. The browser does, with the OrcaSlicer WASM engine (hub/slicer/engine).
 Printers and AMS trays come from the bridge. A print goes through the app's own send (PRINT), so its busy check
 and G-code guard apply. Run alone, it calls Home Assistant's druckwerk.print_file service instead.
 """
@@ -9,7 +10,6 @@ import os
 import re
 import secrets
 import shutil
-import subprocess
 import sys
 import threading
 import time
@@ -32,10 +32,7 @@ SHARE = env("SLICER_SHARE", "/share/druckwerk")
 SENDER = env("SLICER_SENDER_URL", "http://127.0.0.1:8098")
 CORE = env("SLICER_CORE_URL", "http://supervisor/core/api")
 PRINT = None  # the app sets a function that sends a print; without it the print goes through the HA service
-SLICE = env("SLICER_SLICE_CMD", os.path.join(HERE, "slice.sh")).split()
-PROFILES = env("SLICER_PROFILES", "/opt/bs/resources/profiles")
 ENGINE = env("SLICER_ENGINE", "/srv/engine")  # OrcaSlicer WASM runtime and presets/<model>.json (see engine/build.sh)
-BS = env("SLICER_BS", os.path.join(HERE, "bs.py"))
 MAX_MODEL = 100 * 1024 * 1024
 KEEP_JOBS = 10
 JOB_ID = r"([0-9a-f]{12})"
@@ -46,7 +43,6 @@ BEDS = ["Cool Plate", "Engineering Plate", "High Temp Plate", "Textured PEI Plat
 
 jobs = {}
 jobs_lock = threading.Lock()
-slice_lock = threading.Lock()  # one slicer at a time; the Pi has no room for two
 
 
 def log(msg):
@@ -115,8 +111,8 @@ def load_jobs():
                 job = json.load(f)
         except (OSError, ValueError):
             continue
-        if job.get("state") == "slicing":
-            job.update(state="failed", error="The app restarted during the slice.")
+        if job.get("state") in ("queued", "slicing"):  # a job of an older version that sliced on the server
+            job.update(state="failed", error="This job was left by an older version. Slice again in the browser.")
         jobs[jid] = job
 
 
@@ -140,69 +136,6 @@ def slice_info(path):
     return {"seconds": int(float(meta.get("prediction") or 0)), "grams": float(meta.get("weight") or 0),
             "filaments": fils, "warnings": warn, "has_png": "Metadata/plate_1.png" in names,
             "objects": [o.get("name") for o in plate.iter("object")]}
-
-
-# The CLI prints its steps as "<percent><text>" lines (PrusaSlicer's format, which the vendor's fork keeps); a "%" is accepted too.
-STEP = re.compile(r"^\s{0,2}(\d{1,3})\s*%?\s*([A-Z][^\n]*)$", re.M)
-
-
-def slice_progress(text):
-    """{percent, message} of the last step line in the slicer's log, or None."""
-    found = [m for m in STEP.finditer(text) if int(m.group(1)) <= 100]
-    return {"percent": int(found[-1].group(1)), "message": found[-1].group(2).strip()} if found else None
-
-
-def run_slicer(job, cmd, env, log_path):
-    """Run slice.sh and keep job["progress"] current from the log while it runs. Returns (returncode, output)."""
-    env = dict(env, SLICE_LOG=log_path)
-    p = subprocess.Popen(cmd, stdout=subprocess.PIPE, stderr=subprocess.STDOUT, text=True, env=env)
-    deadline = time.time() + 3 * 3600
-    while True:
-        try:
-            out, _ = p.communicate(timeout=1)
-            return p.returncode, out
-        except subprocess.TimeoutExpired:
-            if time.time() > deadline:
-                p.kill()
-                raise
-            try:
-                with open(log_path, errors="replace") as f:
-                    job["progress"] = slice_progress(f.read()) or job.get("progress")
-            except OSError:
-                pass  # the slicer has not started writing yet
-
-
-def run_slice(jid, printer, quality, tray, bed):
-    job = jobs[jid]
-    d = job_dir(jid)
-    cfg = PRINTERS[printer["model"]]
-    with slice_lock:
-        job.update(state="slicing", started=time.time())
-        save_job(job)
-        try:
-            preset = cfg["preset"]
-            fil = subprocess.run([sys.executable, "-I", BS, "filament-for", PROFILES, preset,
-                                  tray["idx"], tray["type"], want(tray)], capture_output=True, text=True, timeout=120)
-            if fil.returncode:
-                raise RuntimeError(fil.stderr.strip() or fil.stdout.strip())
-            filament = fil.stdout.strip()
-            job["settings"] = {"printer": preset, "process": cfg["quality"][quality], "filament": filament,
-                               "bed": bed, "tray": tray}
-            save_job(job)
-            out = os.path.join(d, "out")
-            shutil.rmtree(out, ignore_errors=True)
-            e = dict(os.environ, PRINTER=preset, PROCESS=cfg["quality"][quality], BED=bed, COLOURS=tray["colour"])
-            code, output = run_slicer(job, SLICE + [job["model"], out, filament], e, os.path.join(d, "slice.log"))
-            job["log"] = output[-4000:]
-            if code:
-                raise RuntimeError("Slicer failed (exit %d)." % code)
-            result = os.path.join(out, os.listdir(out)[0])
-            job.update(state="done", result=result, info=slice_info(result), progress={"percent": 100, "message": "Done"})
-        except Exception as ex:  # noqa: BLE001 - every failure is shown to the user
-            job.update(state="failed", error=str(ex))
-            log("job %s failed: %s" % (jid, ex))
-        job["finished"] = time.time()
-        save_job(job)
 
 
 def print_name(job):
@@ -269,10 +202,7 @@ def get_job(h, m, q):
     job = jobs.get(m.group(1))
     if not job:
         return h.send(404, {"error": "unknown job"})
-    out = public(job)
-    if job.get("state") == "slicing":
-        out["elapsed"] = int(time.time() - job["started"])
-    h.send(200, out)
+    h.send(200, public(job))
 
 
 def pick(h, body):
@@ -305,23 +235,6 @@ def tray_of(printer, body):
             "colour": "#" + (colour if len(colour) == 6 else "C8C8C8"), "spool_id": str(body.get("spool") or "") or None}
 
 
-def post_slice(h, m, q):
-    job = jobs.get(m.group(1))
-    if not job:
-        return h.send(404, {"error": "unknown job"})
-    if job["state"] == "slicing":
-        return h.send(409, {"error": "This job is slicing."})
-    picked = pick(h, h.json())
-    if not picked:
-        return
-    printer, quality, bed, tray = picked
-    job.update(state="queued", printer={k: printer[k] for k in ("serial", "name", "model")}, quality=quality,
-               error=None, info=None, log="", sent=None)
-    save_job(job)
-    threading.Thread(target=run_slice, args=(job["id"], printer, quality, tray, bed), daemon=True).start()
-    h.send(202, public(job))
-
-
 def presets_of(model):
     with open(os.path.join(ENGINE, "presets", model + ".json")) as f:
         return json.load(f)
@@ -335,7 +248,7 @@ def want(tray):
 
 
 def choose_filament(filaments, tray):
-    """Same rule as bs.py filament-for: the tray's filament id, else a preset named like brand and name (library spools),
+    """The tray's filament id, else a preset named like brand and name (library spools),
     else Generic of its type; fewest printers first."""
     words = want(tray).lower().split()
     def named(f):
@@ -371,8 +284,6 @@ def post_gcode(h, m, q):
     job = jobs.get(m.group(1))
     if not job:
         return h.send(404, {"error": "unknown job"})
-    if job["state"] in ("queued", "slicing"):
-        return h.send(409, {"error": "This job is slicing."})
     arg = {k: v[0] for k, v in q.items()}
     length = int(h.headers.get("Content-Length") or 0)
     if not 0 < length <= MAX_MODEL:
@@ -466,7 +377,6 @@ ROUTES = [
     ("GET", r"/api/printers", get_printers),
     ("POST", r"/api/jobs", post_job),
     ("GET", r"/api/jobs/" + JOB_ID, get_job),
-    ("POST", r"/api/jobs/" + JOB_ID + r"/slice", post_slice),
     ("POST", r"/api/jobs/" + JOB_ID + r"/gcode", post_gcode),
     ("GET", r"/api/jobs/" + JOB_ID + r"/(plate\.png|plate\.gcode)", get_file),
     ("GET", r"/api/jobs/" + JOB_ID + r"/model", get_model),

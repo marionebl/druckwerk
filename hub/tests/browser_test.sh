@@ -1,6 +1,6 @@
 #!/bin/bash
 # Slice the test plate in headless Chromium through the Druckwerk UI (New print) against the real image, in three setups
-# (isolated top-level, cross-origin iframe without COOP/COEP in the parent, no isolation), and natively with Bambu Studio.
+# (isolated top-level, cross-origin iframe without COOP/COEP in the parent, no isolation).
 # Fake HA, bridge and Supervisor (e2e_mock.py): nothing reaches a printer. Env: IMG, BUILD_ARGS, SKIP_BUILD=1 as in ui_e2e.sh.
 set -euo pipefail
 HERE=$(cd "$(dirname "$0")" && pwd); REPO=$(cd "$HERE/../.." && pwd)
@@ -16,6 +16,5 @@ docker run -d --rm --name $IMG --network host -v "$WORK/seeded:/data" -v "$WORK/
   -e HUB_SUPERVISOR_URL=http://127.0.0.1:18811/supervisor -e HUB_HA_WS=ws://127.0.0.1:18812/websocket -e HUB_HOSTNAME=hub-e2e \
   -e HUB_INGRESS_IPS=127.0.0.1 -e SLICER_JOBS=/tmp/jobs -e SLICER_SHARE=/tmp/share -e SUPERVISOR_TOKEN=tok $IMG -I /srv/hub.py >/dev/null
 for _ in $(seq 100); do curl -fs http://127.0.0.1:18813/index.html >/dev/null 2>&1 && break; sleep 0.2; done
-SECRET=$(docker exec $IMG python3 -c 'import json;print(json.load(open("/data/hub.json"))["secret"])')
 echo "isolation headers: $(curl -s -D - -o /dev/null http://127.0.0.1:18813/ | grep -i '^cross-origin\|^document-isolation' | tr -d '\r' | tr '\n' ' ')"
-HUB=http://127.0.0.1:18813 STL="$REPO/hub/tests/fixtures/test_plate.stl" JOBS="$WORK/jobs" SECRET="$SECRET" python3 "$HERE/browser_slice.py"
+HUB=http://127.0.0.1:18813 STL="$REPO/hub/tests/fixtures/test_plate.stl" JOBS="$WORK/jobs" python3 "$HERE/browser_slice.py"

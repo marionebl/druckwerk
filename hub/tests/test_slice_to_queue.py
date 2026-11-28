@@ -1,4 +1,4 @@
-"""Slicer routes behind identity, and POST /api/jobs/{id}/queue taking grams and the plate image from the slice."""
+"""Job routes behind identity and ownership, and POST /api/jobs/{id}/queue taking grams and the plate image from the stored browser slice."""
 import os
 
 from hubfakes import ADMIN, OTHER, SERIAL, USER
@@ -18,13 +18,6 @@ def test_upload_records_the_owner(hub):
     assert st == 200 and job["owner_user_id"] == USER
     assert hub.s.jobs[job["id"]]["owner_user_id"] == USER
     assert hub.req("POST", "/api/jobs?name=cube.stl", raw=b"solid x")[0] == 401
-
-
-def test_slice_needs_a_grant_on_the_printer(hub):
-    hub.setup_printers()
-    jid = hub.sliced(owner=USER)
-    st, body = hub.req("POST", "/api/jobs/%s/slice" % jid, {"serial": SERIAL, "quality": "good", "tray": "0:0"}, user=USER)
-    assert st == 403 and body["error"].startswith("rule:")
 
 
 def test_direct_print_is_for_printer_admins(hub):
