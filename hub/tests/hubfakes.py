@@ -1,4 +1,5 @@
 """Hub app tests: the real server on a loopback port with a fake Home Assistant and a fake bridge, no network."""
+import copy
 import http.client
 import importlib.util
 import json
@@ -50,7 +51,10 @@ def st(state, **attrs):
 class FakeHA:
     def __init__(self, vendor=True):
         """vendor=False is a Home Assistant without the vendor integration: no devices, no entities of it."""
-        self.users, self.devices, self.entities = USERS, DEVICES if vendor else [], ENTITIES if vendor else []
+        # Copies: tests append to these lists and must not leak into other tests.
+        self.users = list(USERS)
+        self.devices = copy.deepcopy(DEVICES) if vendor else []
+        self.entities = copy.deepcopy(ENTITIES) if vendor else []
         self.calls, self.fail = [], {}
         self.commands = []  # websocket commands that change HA: (type, fields)
         self.events = []  # bus events fired through the REST API: (type, data)

@@ -65,6 +65,9 @@ def app(tmp_path):
         except OSError:
             time.sleep(0.1)
     yield base, "http://127.0.0.1:%d" % mport, tmp_path
+    if os.environ.get("COVERAGE_PROCESS_START"):  # lets coverage write the data of the server process
+        server.terminate()
+        server.wait(5)
     server.kill()
     mocks.kill()
 

@@ -78,6 +78,7 @@ T0 = {H2S: NOW() - 58 * 60}
 CAMERA_DOWN, EMPTY_AMS, MOCK_SLICES, MOCK_LIGHT, LIGHT_LAG = set(), set(), [], [], [0]
 OFFLINE = set()  # test hook: these printers answer as offline
 CONNECTING = set()  # test hook: no status seen yet (online null)
+STALE = set()  # test hook: the status is 5 minutes old
 # AMS units with a dryer, per serial; a drying unit counts down from "until".
 DRYING = {H2S: {0: {"name": "AMS 2 Pro", "lo": 45, "hi": 65, "until": None, "filament": "", "temp": None},
                 128: {"name": "AMS HT", "lo": 45, "hi": 85, "until": None, "filament": "", "temp": None}}}
@@ -417,6 +418,7 @@ def printer_out(ident, p):
     s = p["serial"]
     p["role"] = "admin" if IDENT[ident]["is_admin"] else USER_PRINTERS.get(s)
     p["account"] = "acc1"
+    p["stale"], p["status_age"] = s in STALE, 300 if s in STALE else 0
     if s in OFFLINE:
         p["online"], p["status"] = False, "offline"
     if s in CONNECTING:
@@ -666,8 +668,8 @@ class H(BaseHTTPRequestHandler):
             return ok([printer_out(ident, PRINTERS[s]) for s in visible(ident)])
         if path == "api/_mock/queued":
             return ok(MOCK_QUEUED)
-        if path == "api/_mock/hook":  # ?set=camera_down|empty_ams|offline|connecting&serial=..&on=1|0
-            target = {"camera_down": CAMERA_DOWN, "empty_ams": EMPTY_AMS, "offline": OFFLINE, "connecting": CONNECTING}[q["set"][0]]
+        if path == "api/_mock/hook":  # ?set=camera_down|empty_ams|offline|connecting|stale&serial=..&on=1|0
+            target = {"camera_down": CAMERA_DOWN, "empty_ams": EMPTY_AMS, "offline": OFFLINE, "connecting": CONNECTING, "stale": STALE}[q["set"][0]]
             (target.add if (q.get("on") or ["1"])[0] == "1" else target.discard)(q["serial"][0])
             return ok({})
         if path == "api/_mock/start":  # ?serial=..&mode=sending|download|prepare|off&percent=..&stage=..

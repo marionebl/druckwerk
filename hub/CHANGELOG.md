@@ -1,5 +1,12 @@
 # Changelog
 
+## 3.25.0 (unreleased)
+
+- Tests: `FakeHA` copies the shared user, device and entity lists, so the suite passes in any file order (a test that added a user broke `test_access_routes.py` when it ran after `test_history.py`).
+- Tests: `actions.manifest()` must equal `tests/fixtures/manifest.json`.
+- Tests: `.coveragerc` measures the bridge and slicer servers in their subprocesses (`COVERAGE_PROCESS_START`); the bridge suite covers 90 % of `bridge/server.py`. No threshold yet.
+- UI mock: printers have `stale` and `status_age` like the real view, and `check_ui.py` checks the stale mark on a card.
+
 ## 3.20.0 (unreleased)
 
 - Bridge: the live camera upstream of each printer stays open at all times (`DW_LIVE_KEEP`, on by default). A viewer gets video without the 12 to 14 s mint and keyframe wait on the H2S, and stills and fresh stills (after a light switch) come from the live frames. A dropped upstream opens again after 5 s, then up to 120 s between tries. No new upstream opens while a print is sent. Cost on a Pi 4: about one core and the camera's bit rate per printer, all the time.
